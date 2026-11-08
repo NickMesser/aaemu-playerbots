@@ -64,6 +64,11 @@ const MIN_PARTIAL_M: f32 = 2.0;
 const TAIL_RAMP_M: f32 = 5.0;
 /// An indoor segment longer than this (a bridge, a long stair) is run, not walked.
 const LONG_INDOOR_RUN_M: f32 = 25.0;
+/// On an indoor segment the route's straight line between its two ends gives the height; where
+/// the terrain rises above that line by less than this (a hump between a door or a bridge end and
+/// the next corner of the mesh), the bot stands on the terrain instead of running inside the hill.
+/// A larger gap is a real tunnel, cave or floor under the ground, and the route's height stays.
+const INDOOR_TERRAIN_LIFT_M: f32 = 3.0;
 /// Cost (metres) added to the node a bot got stuck on, and to the nodes next to it.
 const STUCK_PENALTY_M: f32 = 80.0;
 const STUCK_PENALTY_NEAR_M: f32 = 40.0;
@@ -73,6 +78,16 @@ const STOP_NEAR_M: f32 = 6.0;
 const SAME_GOAL_M: f32 = 1.0;
 /// Extra time a trip may take beyond what its route needs at 3 m/s.
 const SLACK_MS: u64 = 30_000;
+
+/// The height of a bot on an indoor segment whose straight line is at `route_z`: the terrain
+/// when it lies above the line by less than [`INDOOR_TERRAIN_LIFT_M`], else the line (a floor
+/// above the ground, a bridge over water, a tunnel under a hill).
+fn indoor_z(route_z: f32, ground: Option<f32>) -> f32 {
+    match ground {
+        Some(g) if g > route_z && g - route_z < INDOOR_TERRAIN_LIFT_M => g,
+        _ => route_z,
+    }
+}
 
 /// Everything a bot needs to plan. One per bot, built when the bot task starts.
 pub struct NavLink {
@@ -829,7 +844,7 @@ impl NavState {
             Some(r) => {
                 let rz = r.position()[2];
                 if r.indoor_here() {
-                    rz
+                    indoor_z(rz, i.ground.ground_z(pos[0], pos[1]))
                 } else {
                     i.ground
                         .ground_z(pos[0], pos[1])
@@ -853,5 +868,22 @@ impl NavState {
             speed,
             arrived,
         }
+    }
+}
+
+#[cfg(test)]
+mod indoor_tests {
+    use super::indoor_z;
+
+    #[test]
+    fn an_indoor_segment_climbs_a_hump_but_keeps_floors_and_tunnels() {
+        // the terrain rises 1.2 m above the straight line between a door and a mesh corner
+        assert_eq!(indoor_z(100.0, Some(101.2)), 101.2);
+        // a floor or a bridge deck above the ground keeps its height
+        assert_eq!(indoor_z(100.0, Some(95.0)), 100.0);
+        // a tunnel well under a hill keeps its height
+        assert_eq!(indoor_z(100.0, Some(112.0)), 100.0);
+        // no terrain sample
+        assert_eq!(indoor_z(100.0, None), 100.0);
     }
 }
