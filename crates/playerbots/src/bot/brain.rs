@@ -45,6 +45,9 @@ use crate::roster::Temperament;
 pub const FAIL_COOLDOWN_MS: u64 = 60_000;
 /// Hit points (percent) below which a hurt bot rests instead of carrying on.
 const HURT_PCT: u8 = 30;
+/// The same for a bot that carries a trade pack: it is slow and cannot get away, so it stops to
+/// recover sooner.
+const HURT_CARRYING_PCT: u8 = 55;
 /// Pause between two goals.
 const GAP_MS: (u64, u64) = (800, 4_000);
 /// A forced goal that keeps failing is dropped after this many failures in a row.
@@ -400,12 +403,20 @@ impl Brain {
             self.director_wake(ctx, Trigger::Died);
             // Dead bots drop their goal (a dungeon run goes on inside the dungeon); the bot task
             // asks for the resurrection.
+            let mut why = None;
             let keep = match self.goal.as_mut() {
                 Some(Goal::Dungeon(g)) => g.on_dead(ctx),
+                Some(Goal::TradeRun(g)) => {
+                    // A death on a trade run is a failure: the cooldown applies and the run
+                    // avoids that route for a while.
+                    g.on_dead(ctx);
+                    why = Some(FailReason::Other("died"));
+                    false
+                }
                 _ => false,
             };
             if !keep {
-                self.end_goal(ctx, None);
+                self.end_goal(ctx, why);
             }
             return;
         }
@@ -493,7 +504,12 @@ impl Brain {
 
     /// A badly hurt bot that is not fighting and not resting yet.
     fn hurt_and_idle(&self, ctx: &Ctx<'_>) -> bool {
-        ctx.state.me.hp_pct() < HURT_PCT
+        let line = if super::goals::trade_run::carried_pack_of(ctx).is_some() {
+            HURT_CARRYING_PCT
+        } else {
+            HURT_PCT
+        };
+        ctx.state.me.hp_pct() < line
             && !ctx.combat.busy()
             && !matches!(self.choice, GoalChoice::Forced(_))
             && self.goal.as_ref().is_some_and(|g| {

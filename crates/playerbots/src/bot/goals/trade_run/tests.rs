@@ -874,3 +874,35 @@ fn the_carried_pack_is_found_in_the_equipment() {
         Some(PACK)
     );
 }
+
+fn route(craft: u32, bench: [f32; 2], buyer: [f32; 2]) -> Plan {
+    Plan {
+        craft,
+        item: PACK,
+        bench_tpl: BENCH_TPL,
+        buyer_tpl: BUYER_TPL,
+        bench,
+        buyer,
+        price: 0,
+        to_bench_m: 0.0,
+        carry_m: 0.0,
+    }
+}
+
+#[test]
+fn routes_through_danger_are_dropped_before_the_draw() {
+    let me = [0.0, 0.0];
+    let deadly_buyer = [5_000.0, 0.0];
+    let deadly_bench = [-900.0, 0.0];
+    let cands = [
+        route(1, [100.0, 0.0], deadly_buyer),
+        route(2, deadly_bench, [200.0, 0.0]),
+        route(3, [100.0, 0.0], [300.0, 0.0]),
+        route(3, [100.0, 0.0], [400.0, 0.0]),
+        route(4, [100.0, 0.0], [500.0, 0.0]),
+    ];
+    let safe = safe_routes(me, &cands, |_, to| to == deadly_buyer || to == deadly_bench);
+    let crafts: Vec<u32> = safe.iter().map(|p| p.craft).collect();
+    assert_eq!(crafts, [3, 3, 4]);
+    assert!(safe_routes(me, &cands[..2], |_, _| true).is_empty());
+}

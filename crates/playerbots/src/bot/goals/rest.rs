@@ -16,6 +16,9 @@ use super::{jitter_ms, GoalStatus};
 const MIN_MS: u64 = 10_000;
 /// Longest rest in milliseconds.
 const MAX_MS: (u64, u64) = (45_000, 90_000);
+/// Longest rest of a bot that goes back to a trade run afterwards: it walks on with the pack only
+/// once it has recovered (or after this long).
+const MAX_AFTER_RUN_MS: u64 = 180_000;
 /// Recovered enough: hit points and mana in percent.
 const HP_OK: u8 = 95;
 const MP_OK: u8 = 80;
@@ -37,6 +40,9 @@ impl Rest {
         self.min_end_ms = ctx.now_ms + MIN_MS;
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, MAX_MS.0, MAX_MS.1);
         self.after_run = ctx.state.econ.take_interrupted_run(ctx.now_ms);
+        if self.after_run {
+            self.end_ms = ctx.now_ms + MAX_AFTER_RUN_MS;
+        }
     }
 
     /// Whether the finished rest goes back to the trade run it interrupted: the bot still

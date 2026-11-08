@@ -45,6 +45,7 @@ use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, Pace};
 use crate::bot::state::{dist2d, BotState, UnitKind};
 
+use super::explore::plan::WorldChecks;
 use super::{FailReason, GoalStatus};
 
 pub use ledger::{spot_key, Ledger, Paid, SkipKind};
@@ -68,6 +69,8 @@ const GM_ITEM_CHUNK: u32 = 1_000;
 const RUN_TIMEOUT_MS: u64 = 40 * 60_000;
 /// How long a bench, buyer or craft that did not work stays out of the plans.
 const SKIP_MS: u64 = 30 * 60_000;
+/// The danger check looks at routes until it has this many distinct crafts.
+const ROUTES_CHECKED: usize = 4;
 
 /// The bot stops this far from the bench (the craft skill reaches 4 m).
 const BENCH_STOP_M: f32 = 1.8;
@@ -259,6 +262,15 @@ impl Env for Live<'_, '_> {
         let bench_ok =
             |_tpl: u32, p: [f32; 2]| !st.econ.skipped(SkipKind::Bench, spot_key(p[0], p[1]), now);
         let buyer_ok = |npc: u32| !st.econ.skipped(SkipKind::Buyer, npc, now);
+        // The explore goal's danger check: monsters well above the bot at the bench, at the
+        // buyer or along the straight lines between (a run picked by price alone walked bots
+        // through zones that killed them, pack and all).
+        let checks = WorldChecks {
+            world: ctx.world,
+            faction: st.me.faction,
+            level,
+            level_gap: ctx.cfg.explore.level_gap,
+        };
         // Walking: the shortest budget that has a route; `/move` makes distances irrelevant.
         let budgets: &[f32] = if teleport {
             &[f32::INFINITY]
@@ -275,7 +287,8 @@ impl Env for Live<'_, '_> {
                 buyer_ok: &buyer_ok,
             };
             let cands = plan::candidates(ctx.world, &q);
-            if let Some(p) = plan::pick(&cands, ctx.rng) {
+            let safe = safe_routes(q.from, &cands, |from, to| checks.dangerous(from, to));
+            if let Some(p) = plan::pick(&safe, ctx.rng) {
                 return Some(p);
             }
         }
@@ -417,6 +430,31 @@ pub fn unavailable(ctx: &Ctx<'_>) -> Option<&'static str> {
     (!possible).then_some("no trade pack can be crafted from the bag")
 }
 
+/// The routes of `cands` (sorted best first) that `dangerous` lets through, as far down the list
+/// as it takes to find [`ROUTES_CHECKED`] distinct crafts (the planner draws among the first few).
+/// `from` is the bot: the way to the bench is checked too.
+fn safe_routes(
+    from: [f32; 2],
+    cands: &[Plan],
+    mut dangerous: impl FnMut([f32; 2], [f32; 2]) -> bool,
+) -> Vec<Plan> {
+    let mut out: Vec<Plan> = Vec::new();
+    let mut crafts = 0;
+    for p in cands {
+        if crafts >= ROUTES_CHECKED {
+            break;
+        }
+        if dangerous(p.bench, p.buyer) || (p.bench_tpl != 0 && dangerous(from, p.bench)) {
+            continue;
+        }
+        if out.iter().all(|o| o.craft != p.craft) {
+            crafts += 1;
+        }
+        out.push(*p);
+    }
+    out
+}
+
 /// The trade pack the bot carries, if any.
 pub fn carried_pack_of(ctx: &Ctx<'_>) -> Option<u32> {
     carried_pack(&ctx.state.equipment, |t| {
@@ -464,8 +502,10 @@ impl TradeRun {
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
         let status = self.step(&mut Live(ctx));
         self.finished |= status != GoalStatus::Running;
-        if matches!(self.phase, Phase::ToBench | Phase::ToBuyer) {
-            // On the way: the combat controller only fights back against close attackers.
+        if matches!(self.phase, Phase::ToBench) {
+            // On the way to the bench: the combat controller only fights back against close
+            // attackers. With the pack on its back (the way to the buyer) the bot is slow and
+            // cannot outrun anything, so it fights back as it would anywhere else.
             ctx.combat.note_travelling(ctx.now_ms);
         }
         status
@@ -481,6 +521,29 @@ impl TradeRun {
         if !self.finished && carried_pack_of(ctx).is_some() {
             ctx.state.econ.note_interrupted_run(ctx.now_ms);
         }
+    }
+
+    /// The bot died during the run: the bench and the buyer of this route are skipped for
+    /// [`SKIP_MS`], so the next run after the resurrection takes another way instead of walking
+    /// back into what killed it. The brain ends the goal as failed (its cooldown applies).
+    pub fn on_dead(&mut self, ctx: &mut Ctx<'_>) {
+        self.finished = true;
+        let Some(plan) = self.plan else { return };
+        let now = ctx.now_ms;
+        let econ = &mut ctx.state.econ;
+        econ.skip(SkipKind::Buyer, plan.buyer_tpl, now, SKIP_MS);
+        if plan.bench_tpl != 0 {
+            econ.skip(
+                SkipKind::Bench,
+                spot_key(plan.bench[0], plan.bench[1]),
+                now,
+                SKIP_MS,
+            );
+        }
+        ctx.log.say(format!(
+            "trade run: died on the way; avoiding this route for {} min",
+            SKIP_MS / 60_000
+        ));
     }
 
     /// Appends what the bot is doing.
