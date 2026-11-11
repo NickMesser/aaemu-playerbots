@@ -1558,8 +1558,10 @@ mod tests {
             println!("size_of {name}: {n} bytes");
         }
         // 3 KB plus the fight watch, the death/duel/gate notes and the unreachable-monster
-        // pointer the behaviour fixes added (about 100 bytes).
-        assert!(size_of::<Bot>() < 3200, "Bot is {} bytes", size_of::<Bot>());
+        // pointer the behaviour fixes added (about 100 bytes); the merge with origin/main added
+        // 40 more: the trade-pack field in the reactions (the death note was already counted by
+        // the survival branch).
+        assert!(size_of::<Bot>() < 3250, "Bot is {} bytes", size_of::<Bot>());
         assert!(size_of::<goals::Goal>() <= 160);
         // the command channel slot: boxed orders keep it at the size it had before the travel
         // commands (a `PartyOrder` unboxed would add 8 bytes)
