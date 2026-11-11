@@ -145,6 +145,8 @@ pub struct Inner {
     /// Places where the server refused the record cast (a peace-zone buff lets only listed skills
     /// through): `(x, y, until)`, the last few. No new record is tried near them until then.
     pub no_record: SmallVec<[(f32, f32, u64); 4]>,
+    /// The mount and glider feature's memory (kept here so a bot pays no extra pointer).
+    pub mount: crate::bot::mount::Mem,
 }
 
 impl TravelState {
@@ -181,6 +183,11 @@ impl TravelState {
             }
             WorldEvent::PortalUsed { gate } => {
                 self.inner_mut().used = Some((*gate, now_ms));
+            }
+            WorldEvent::MateSpawned(mate) => {
+                self.inner_mut()
+                    .mount
+                    .on_spawned(mate.tl, mate.item_id, now_ms);
             }
             WorldEvent::SkillStarted {
                 caster_obj,
@@ -249,6 +256,65 @@ impl TravelState {
 
     pub(crate) fn inner_mut(&mut self) -> &mut Inner {
         self.inner.get_or_insert_with(Default::default)
+    }
+
+    /// The mount and glider memory, created on first use.
+    pub(crate) fn mount_mut(&mut self) -> &mut crate::bot::mount::Mem {
+        &mut self.inner_mut().mount
+    }
+
+    /// The mount and glider memory, when it exists.
+    pub fn mount_ref(&self) -> Option<&crate::bot::mount::Mem> {
+        self.inner.as_deref().map(|i| &i.mount)
+    }
+
+    /// The last skill the server answered for the bot.
+    pub fn skill_note(&self) -> Option<SkillNote> {
+        self.inner.as_deref().and_then(|i| i.skill)
+    }
+
+    /// An attach/detach of the bot (the mate seat; a boat seat is ignored by the mount code).
+    pub fn on_vehicle_event(&mut self, ev: &WorldEvent, me_obj: u32, now_ms: u64) {
+        let Some(inner) = self.inner.as_deref_mut() else {
+            return;
+        };
+        match ev {
+            WorldEvent::UnitAttached {
+                child,
+                parent,
+                point,
+                ..
+            } if *child == me_obj => {
+                inner.mount.on_attached(*parent, *point, now_ms);
+            }
+            WorldEvent::UnitDetached { obj, .. } if *obj == me_obj => {
+                inner.mount.on_detached(now_ms);
+            }
+            _ => {}
+        }
+    }
+
+    /// The mate's unit state came into view (its object id and position).
+    pub fn note_mate_state(
+        &mut self,
+        obj: u32,
+        tl: u16,
+        owner_id: u32,
+        me_char_id: u32,
+        pos: [f32; 3],
+    ) {
+        if let Some(inner) = self.inner.as_deref_mut() {
+            inner
+                .mount
+                .on_mate_state(obj, tl, owner_id, me_char_id, pos);
+        }
+    }
+
+    /// A movement update of a unit; only the mate is kept.
+    pub fn note_mate_moved(&mut self, obj: u32, pos: [f32; 3]) {
+        if let Some(inner) = self.inner.as_deref_mut() {
+            inner.mount.on_moved(obj, pos);
+        }
     }
 
     #[cfg(test)]

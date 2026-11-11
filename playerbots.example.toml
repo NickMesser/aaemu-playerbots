@@ -111,7 +111,7 @@ emotes = true
 entry_limit = false
 # A wish waits this many seconds for a full party (the dungeon's max_players, at most five) before
 # it goes with a smaller one (four bots start after 90 s of rallying, see the party planner). At
-# most 600.
+# most 600: a party wish is dropped after 720 s and the bot gathers for at most 660 s.
 relax_after_secs = 600
 
 [sail]
@@ -120,6 +120,39 @@ relax_after_secs = 600
 # gm_bootstrap or the scroll in the bag. The bigger boats need more room: a cutter is launched
 # from a beach with deep water, sails wide of the coast and berths out at sea.
 ship = "rowboat"
+
+[mounts]
+# Mounts and gliders: a bot summons the rideable mate of a summon item it owns for a long
+# overland trip, rides it, dismounts for a fight, a talk, a harvest or a dungeon door, and
+# dismisses it after standing idle. It also wears a glider on its back and glides down a ledge
+# when the way ahead falls away. With bots.gm_bootstrap a bot grants itself the cheapest rideable
+# mount / glider of its level when its bag holds none.
+enabled = true
+# Bots summon and ride mounts.
+mounts = true
+# Bots equip a glider and glide down a ledge on their way.
+gliders = true
+# The shortest trip a mount is summoned for, in metres.
+summon_over_m = 250.0
+# A mounted bot dismounts when the rest of the trip is this short, in metres.
+dismount_under_m = 40.0
+# Mounted run speed in m/s.
+speed = 10.0
+# The mount summon item template; 0 = the lowest-id rideable mount of the bot's level from the
+# game data (4177, the Lilyut horse, in the 1.2 data).
+item = 0
+# The glider item template; 0 = the lowest-id glider of the bot's level from the game data
+# (16385, Tooloop's old glider, in the 1.2 data).
+glider_item = 0
+# Dismiss the standing mate after this many seconds without a trip; 0 keeps it.
+idle_despawn_secs = 120
+# A drop at least this deep (metres) under the way ahead may be glided down ...
+glide_drop_m = 8.0
+# ... looking this far ahead (metres).
+glide_lookahead_m = 30.0
+# Glide horizontal speed and descent, in m/s.
+glide_speed = 9.0
+glide_descent = 3.0
 
 [market]
 # Selling what the bots gather: auction listings, trade-chat advertisements and sales to players.

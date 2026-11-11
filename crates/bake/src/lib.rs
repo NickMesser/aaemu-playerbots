@@ -723,3 +723,38 @@ fn bake_map(
     report.map_rect = Some(calibration.world);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_world::terrain::{write_height_grid, HeightGridHeader};
+
+    #[test]
+    fn map_only_bake_rejects_an_old_height_grid_with_a_rebake_hint() {
+        let dir = test_dir("bake-old-heights");
+        let path = dir.join("heights_main_world.bin");
+        let header = HeightGridHeader {
+            width: 2,
+            height: 2,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            step: 4.0,
+            scale: 1.0 / 32.0,
+            offset: 0.0,
+            flags: 0,
+        };
+        write_height_grid(&path, &header, &[0, 32, 64, 96]).unwrap();
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut f, b"PBHGT001").unwrap();
+        drop(f);
+
+        let Err(e) = HeightGrid::from_file(&path) else {
+            panic!("an old bake was accepted");
+        };
+        let msg = format!("{e:#}");
+        assert!(msg.contains("older playerbots"), "{msg}");
+        assert!(msg.contains("PBHGT001"), "{msg}");
+        assert!(msg.contains("`playerbots bake`"), "{msg}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

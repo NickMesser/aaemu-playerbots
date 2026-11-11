@@ -1032,6 +1032,7 @@ fn world(players: &[(u32, u32, f32)]) -> BotState {
                 faction: 0,
                 level: 5,
                 flags: 0,
+                target: 0,
                 name: None,
             },
         );
@@ -1060,6 +1061,7 @@ fn the_nearest_real_player_is_found_and_our_own_bots_are_not() {
             faction: 0,
             level: 1,
             flags: 0,
+            target: 0,
             name: None,
         },
     );

@@ -1453,7 +1453,8 @@ fn interesting_matches_what_parse_handles() {
 fn ignored_packets_do_not_read_their_body() {
     // A frequent packet bots ignore: it must parse to `None` whatever the body.
     assert_eq!(parse(1, sc::SCTimeOfDayPacket, &[]).unwrap(), None);
-    assert_eq!(parse(1, sc::SCUnitDamagedPacket, &[1, 2, 3]).unwrap(), None);
+    // A handled packet with a short body is a malformed packet, never a silent `None`.
+    assert!(parse(1, sc::SCUnitDamagedPacket, &[1, 2, 3]).is_err());
 }
 
 #[test]

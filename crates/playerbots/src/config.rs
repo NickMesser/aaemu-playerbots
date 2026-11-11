@@ -34,6 +34,8 @@ pub struct Config {
     pub dungeons: DungeonsCfg,
     /// Sailing: which boat the bots sail.
     pub sail: SailCfg,
+    /// Mounts and gliders: summon a ride and glide down ledges.
+    pub mounts: MountsCfg,
     /// Selling: the auction house, trade-chat advertisements, buyers.
     pub market: MarketCfg,
     /// Guilds (expeditions): bots found, join and run them.
@@ -296,7 +298,8 @@ pub struct DungeonsCfg {
     /// entry limit (`Dungeons.EntryLimit`). A refusal for the limit is answered either way.
     pub entry_limit: bool,
     /// Seconds a wish waits for a full party (the dungeon's `max_players`, at most five) before
-    /// it goes with a smaller one. At most 600; the bot waits up to
+    /// it goes with a smaller one. At most
+    /// [`MAX_RELAX_SECS`](crate::bot::coordinator::MAX_RELAX_SECS); the bot waits up to
     /// [`GATHER_MS`](crate::bot::goals::dungeon::machine::GATHER_MS) for an order.
     pub relax_after_secs: u64,
 }
@@ -356,6 +359,66 @@ pub struct SailCfg {
     /// `schooner` or `auto`. With `bots.gm_bootstrap` a bot gets the scroll with the GM
     /// `/item add` command; without, it needs the scroll in its bag.
     pub ship: ShipChoice,
+}
+
+/// `[mounts]`: the owned mount and glider a bot uses on long trips (switched on and off by
+/// `[mounts] enabled`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MountsCfg {
+    /// Master switch: summon mounts, equip and fly gliders.
+    pub enabled: bool,
+    /// Bots may summon and ride a mount (the rideable mate of a summon item they own).
+    pub mounts: bool,
+    /// Bots equip a glider and glide down a ledge they are walking over.
+    pub gliders: bool,
+    /// The shortest trip a bot summons its mount for, in metres.
+    pub summon_over_m: f32,
+    /// A mounted bot dismounts when the trip left is this short (metres).
+    pub dismount_under_m: f32,
+    /// Mounted run speed in m/s (the server does not validate character movement; the client
+    /// shows the mount and other clients interpolate at this speed).
+    pub speed: f32,
+    /// The summon item template a bot grants itself with `bots.gm_bootstrap` when its bag holds
+    /// none; `0` takes the lowest-id rideable mount of its level from the game data (4177, the
+    /// Lilyut horse, in the 1.2 data).
+    pub item: u32,
+    /// The glider item template a bot grants itself with `bots.gm_bootstrap` when its bag holds
+    /// none; `0` takes the lowest-id glider of its level from the game data (16385, Tooloop's old
+    /// glider, in the 1.2 data).
+    pub glider_item: u32,
+    /// A mounted mate is dismissed (despawned) after standing unused this long, in seconds;
+    /// `0` keeps it.
+    pub idle_despawn_secs: u32,
+    /// A drop at least this deep (metres) under the way ahead may be glided down.
+    pub glide_drop_m: f32,
+    /// How far ahead the terrain is sampled for a ledge, in metres.
+    pub glide_lookahead_m: f32,
+    /// Glide horizontal speed in m/s.
+    pub glide_speed: f32,
+    /// Glide descent in m/s (the 1.2 client's glide falls slowly; this is the bot's own
+    /// approximation, not a server value).
+    pub glide_descent: f32,
+}
+
+impl Default for MountsCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mounts: true,
+            gliders: true,
+            summon_over_m: 250.0,
+            dismount_under_m: 40.0,
+            speed: 10.0,
+            item: 0,
+            glider_item: 0,
+            idle_despawn_secs: 120,
+            glide_drop_m: 8.0,
+            glide_lookahead_m: 30.0,
+            glide_speed: 9.0,
+            glide_descent: 3.0,
+        }
+    }
 }
 
 /// Where a bot meets the buyer of something it advertised.
@@ -1246,10 +1309,48 @@ impl Config {
             w.jump_rate.is_finite() && w.jump_rate >= 0.0,
             "behavior.jump_rate must be a number >= 0"
         );
+        let m = &self.mounts;
         ensure!(
-            self.dungeons.relax_after_secs <= 600,
-            "dungeons.relax_after_secs {} is above 600, the most a wish may wait for a smaller party",
-            self.dungeons.relax_after_secs
+            m.summon_over_m.is_finite() && m.summon_over_m >= 0.0,
+            "mounts.summon_over_m must be a number >= 0"
+        );
+        ensure!(
+            m.dismount_under_m.is_finite()
+                && m.dismount_under_m >= 0.0
+                && m.dismount_under_m <= m.summon_over_m,
+            "mounts.dismount_under_m must be in 0..=mounts.summon_over_m"
+        );
+        ensure!(
+            m.speed.is_finite() && m.speed > 0.0 && m.speed <= 25.0,
+            "mounts.speed must be in (0, 25] m/s"
+        );
+        ensure!(
+            m.idle_despawn_secs <= 86_400,
+            "mounts.idle_despawn_secs must be at most 86400"
+        );
+        ensure!(
+            m.glide_drop_m.is_finite() && m.glide_drop_m > 0.0,
+            "mounts.glide_drop_m must be a number > 0"
+        );
+        ensure!(
+            m.glide_lookahead_m.is_finite() && (4.0..=200.0).contains(&m.glide_lookahead_m),
+            "mounts.glide_lookahead_m must be between 4 and 200 m"
+        );
+        ensure!(
+            m.glide_speed.is_finite() && m.glide_speed > 0.0 && m.glide_speed <= 25.0,
+            "mounts.glide_speed must be in (0, 25] m/s"
+        );
+        ensure!(
+            m.glide_descent.is_finite() && m.glide_descent > 0.0 && m.glide_descent <= 25.0,
+            "mounts.glide_descent must be in (0, 25] m/s"
+        );
+        ensure!(
+            self.dungeons.relax_after_secs <= crate::bot::coordinator::MAX_RELAX_SECS,
+            "dungeons.relax_after_secs {} is above {}: the coordinator drops a party wish after \
+             {} s, so a longer wait would never form the smaller party",
+            self.dungeons.relax_after_secs,
+            crate::bot::coordinator::MAX_RELAX_SECS,
+            crate::bot::coordinator::WISH_TTL.as_secs()
         );
         ensure!(
             self.market.ad_interval_secs >= 60,
@@ -1718,10 +1819,65 @@ relax_after_secs = 45
         .unwrap();
         assert!(cfg.dungeons.entry_limit);
         assert_eq!(cfg.dungeons.relax_after_secs, 45);
-        // 601 s is longer than a wish may wait for a smaller party
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 601\n").is_err());
+        // the wish lifetime and the sweep period cap the wait below the gather window
+        let cap = crate::bot::coordinator::MAX_RELAX_SECS;
+        assert_eq!(cap, 600);
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {cap}\n")).is_ok());
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {}\n", cap + 1)).is_err());
         assert!(Config::parse("[dungeons]\nentry_limit = 1\n").is_err());
         assert!(Config::parse("[dungeons]\nentry_limits = true\n").is_err());
+    }
+
+    #[test]
+    fn the_mounts_are_on_and_documented() {
+        let m = Config::default().mounts;
+        assert!(m.enabled && m.mounts && m.gliders);
+        assert_eq!(m.summon_over_m, 250.0);
+        assert_eq!(m.dismount_under_m, 40.0);
+        assert_documented(
+            "mounts",
+            &[
+                "enabled = true",
+                "mounts = true",
+                "gliders = true",
+                "summon_over_m = 250.0",
+                "dismount_under_m = 40.0",
+                "speed = 10.0",
+                "item = 0",
+                "glider_item = 0",
+                "idle_despawn_secs = 120",
+                "glide_drop_m = 8.0",
+                "glide_lookahead_m = 30.0",
+                "glide_speed = 9.0",
+                "glide_descent = 3.0",
+            ],
+        );
+        let ex = Config::parse(Config::example()).unwrap().mounts;
+        assert!(ex.enabled && ex.mounts && ex.gliders);
+        assert_eq!(ex.speed, 10.0);
+        for bad in [
+            "[mounts]
+dismount_under_m = 300.0
+",
+            "[mounts]
+speed = 0.0
+",
+            "[mounts]
+glide_drop_m = 0.0
+",
+            "[mounts]
+glide_speed = 30.0
+",
+            // the ledge search samples the ground every tick: a huge look-ahead would stall a bot
+            "[mounts]
+glide_lookahead_m = 1000000.0
+",
+            "[mounts]
+glide_lookahead_m = 3.0
+",
+        ] {
+            assert!(Config::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -134,6 +134,8 @@ enum Chain {
 #[derive(Debug)]
 struct Trip {
     goal: [f32; 2],
+    /// Height of the goal floor when the caller named one (an NPC on a building or cave floor).
+    goal_z: Option<f32>,
     radius: f32,
     /// Straight distance from the start to the stop point.
     straight_m: f32,
@@ -217,6 +219,13 @@ impl std::fmt::Debug for NavState {
 
 fn d2(a: [f32; 3], g: [f32; 2]) -> f32 {
     ((a[0] - g[0]).powi(2) + (a[1] - g[1]).powi(2)).sqrt()
+}
+
+/// The gap to the goal, in three dimensions when the caller named a floor: a bot under a house
+/// storey or under a cave floor is not there yet.
+fn gap3(a: [f32; 3], goal: [f32; 2], goal_z: Option<f32>) -> f32 {
+    let dz = goal_z.map_or(0.0, |z| a[2] - z);
+    (d2(a, goal).powi(2) + dz * dz).sqrt()
 }
 
 /// The stable lateral habit of bot `seed`: 0.35 to 1.1 m, either side.
@@ -311,14 +320,37 @@ impl NavState {
 
     // ---- the trip -------------------------------------------------------------------------
 
+    /// The floor height the running trip was asked to reach (see [`NavState::begin`]), if it named
+    /// one: a trip that is planned again (after a glide) keeps it.
+    pub fn goal_z(&self) -> Option<f32> {
+        self.trip.as_ref().and_then(|t| t.goal_z)
+    }
+
     /// Starts a trip from `pos` to the stop point `radius` metres short of `goal`. A trip that is
     /// not `count`ed (the combat controller's) stays out of the trip statistics.
-    pub fn begin(&mut self, pos: [f32; 3], goal: [f32; 2], radius: f32, now_ms: u64, count: bool) {
+    pub fn begin(
+        &mut self,
+        pos: [f32; 3],
+        goal: [f32; 2],
+        goal_z: Option<f32>,
+        radius: f32,
+        now_ms: u64,
+        count: bool,
+    ) {
         // The same goal again (a goal that asks every tick, the chase of a monster that stands
         // still): the trip goes on with its route and its search.
         if let Some(t) = self.trip.as_mut() {
             let moved = ((t.goal[0] - goal[0]).powi(2) + (t.goal[1] - goal[1]).powi(2)).sqrt();
-            if t.phase != Phase::Legacy && moved < SAME_GOAL_M && (t.radius - radius).abs() < 0.01 {
+            let same_z = match (t.goal_z, goal_z) {
+                (None, None) => true,
+                (Some(a), Some(b)) => (a - b).abs() < 1.0,
+                _ => false,
+            };
+            if t.phase != Phase::Legacy
+                && moved < SAME_GOAL_M
+                && same_z
+                && (t.radius - radius).abs() < 0.01
+            {
                 t.started_ms = now_ms;
                 t.limit_ms = t
                     .route
@@ -338,6 +370,7 @@ impl NavState {
         }
         self.trip = Some(Trip {
             goal,
+            goal_z,
             radius,
             straight_m: straight,
             walked_m: 0.0,
@@ -462,11 +495,13 @@ impl NavState {
 
     /// Asks for a route from `from` toward `goal`: answered at once for a short trip, queued
     /// for a long one.
+    #[allow(clippy::too_many_arguments)]
     fn request(
         &mut self,
         mesh: Arc<NavMesh>,
         from: [f32; 3],
         goal: [f32; 2],
+        goal_z: Option<f32>,
         penalties: Vec<(aa_world::nav::NodeRef, f32)>,
         boost: u8,
         prefer_pool: bool,
@@ -474,10 +509,15 @@ impl NavState {
         let (target, final_leg) = leg_target(from, goal);
         let terrain = self.scope == Scope::Main;
         let z = if terrain {
-            self.link
-                .world
-                .ground(target[0], target[1])
-                .filter(|z| *z > 0.0)
+            // The last leg goes to the floor the caller named (a house storey, a cave), so the
+            // search does not end on the terrain above or below the NPC.
+            if final_leg { goal_z } else { None }
+                .or_else(|| {
+                    self.link
+                        .world
+                        .ground(target[0], target[1])
+                        .filter(|z| *z > 0.0)
+                })
                 .unwrap_or(from[2])
         } else {
             from[2]
@@ -534,7 +574,7 @@ impl NavState {
             self.fall_back(t, Fallback::NoMeshForWorld);
             return;
         };
-        match self.request(mesh, pos, t.goal, Vec::new(), 0, false) {
+        match self.request(mesh, pos, t.goal, t.goal_z, Vec::new(), 0, false) {
             Req::Done(r, final_leg) => self.apply(t, r, final_leg, now_ms),
             Req::Queued(ticket, final_leg) => {
                 t.phase = Phase::Planning {
@@ -602,7 +642,15 @@ impl NavState {
         let Some(mesh) = self.mesh() else {
             return;
         };
-        t.chain = match self.request(mesh, from, t.goal, Vec::new(), t.chain_steps, true) {
+        t.chain = match self.request(
+            mesh,
+            from,
+            t.goal,
+            t.goal_z,
+            Vec::new(),
+            t.chain_steps,
+            true,
+        ) {
             Req::Done(r, final_leg) => Chain::Ready {
                 result: Box::new(r),
                 final_leg,
@@ -685,7 +733,15 @@ impl NavState {
                 }
                 t.route = None;
                 t.chain = Chain::None;
-                match self.request(mesh, pos, t.goal, penalties, t.stuck_replans, false) {
+                match self.request(
+                    mesh,
+                    pos,
+                    t.goal,
+                    t.goal_z,
+                    penalties,
+                    t.stuck_replans,
+                    false,
+                ) {
                     Req::Done(r, final_leg) => {
                         self.apply(&mut t, r, final_leg, now_ms);
                         t.phase != Phase::Legacy
@@ -732,7 +788,7 @@ impl NavState {
             match t.phase {
                 Phase::Legacy => return NavStep::Legacy,
                 Phase::Unplanned => {
-                    if d2(i.pos, t.goal) - t.radius <= MIN_NAV_M {
+                    if gap3(i.pos, t.goal, t.goal_z) - t.radius <= MIN_NAV_M {
                         // (a hop the straight line does as well)
                         t.phase = Phase::Legacy;
                     } else {
@@ -774,16 +830,17 @@ impl NavState {
         let mut speed = i.run;
         let mut arrived = false;
         for _ in 0..64 {
+            let (goal, goal_z, radius, straight_m) = (t.goal, t.goal_z, t.radius, t.straight_m);
             let Some(route) = t.route.as_mut() else {
                 self.fall_back(t, Fallback::RouteEnded);
                 break;
             };
-            let gap = d2(pos, t.goal) - t.radius;
-            if gap <= 0.02 {
+            let gap = d2(pos, goal) - radius;
+            if gap3(pos, goal, goal_z) - radius <= 0.02 {
                 arrived = true;
                 break;
             }
-            speed = Self::speed_on(route, t.straight_m, gap, i);
+            speed = Self::speed_on(route, straight_m, gap, i);
             if left_s <= 1e-4 {
                 break;
             }
@@ -799,7 +856,7 @@ impl NavState {
                 continue;
             }
             // the end of the route
-            if d2(pos, t.goal) - t.radius <= 0.02 {
+            if gap3(pos, goal, goal_z) - radius <= 0.02 {
                 arrived = true;
                 break;
             }
@@ -820,6 +877,14 @@ impl NavState {
                     break;
                 }
                 Chain::None => {
+                    // A route that ends at the spot above/below a named floor means the mesh
+                    // has no way up/down: stop there and let the goal judge the 3D distance
+                    // (it reports the target as unreachable) instead of walking the straight
+                    // line for another 90 s.
+                    if t.goal_z.is_some() && d2(pos, t.goal) - t.radius <= 0.02 {
+                        arrived = true;
+                        break;
+                    }
                     self.fall_back(t, Fallback::RouteEnded);
                     break;
                 }
@@ -853,5 +918,20 @@ impl NavState {
             speed,
             arrived,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_floor_goal_counts_the_height() {
+        let goal = [10.0, 20.0];
+        let under = [10.0, 20.0, 105.0];
+        assert_eq!(gap3(under, goal, None), 0.0);
+        let gap = gap3(under, goal, Some(129.63));
+        assert!((gap - 24.63).abs() < 0.01, "{gap}");
+        assert!(gap3([10.0, 20.0, 129.63], goal, Some(129.63)) < 0.01);
     }
 }

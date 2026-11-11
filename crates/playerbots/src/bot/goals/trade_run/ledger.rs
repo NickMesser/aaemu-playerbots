@@ -14,6 +14,7 @@ use aa_proto::sc_activity::{mail_type, ActivityEvent};
 use aa_proto::sc_world::WorldEvent;
 use smallvec::SmallVec;
 
+use crate::bot::state::dist2d;
 use crate::bot::watch::PayFault;
 
 /// `ErrorMessageType` of "the craft cannot go on"; the second field of the packet is the reason.
@@ -33,6 +34,16 @@ const MAX_DUE: usize = 4;
 const MAX_DONE: usize = 4;
 /// Quarantined routes remembered at once.
 const MAX_SKIPS: usize = 6;
+/// A dropped trade pack is gone back for this long after the death. The doodad itself lasts days
+/// (the server's `DoodadFuncFinal.After`), but a bot that cannot reach it in this time is better
+/// off crafting a new pack.
+pub const RECOVERY_TTL_MS: u64 = 45 * 60_000;
+/// A pack doodad this close to the death spot is the one the bot dropped (metres).
+pub const PACK_NEAR_M: f32 = 20.0;
+/// The bot walks back to the death spot from farther than this (metres).
+pub const PACK_RETURN_M: f32 = 25.0;
+/// A pack doodad that has not shown up this long after the bot arrived is gone.
+pub const PACK_APPEAR_MS: u64 = 10_000;
 
 /// Which kind of thing a quarantine entry names (ids of different tables may coincide).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +92,87 @@ struct Skip {
     until_ms: u64,
 }
 
+/// A trade pack the bot dropped when it died.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LostPack {
+    /// The pack item template.
+    pub item: u32,
+    /// Where the bot died.
+    pub pos: [f32; 3],
+    /// Instance the death happened in (0 = the main world).
+    pub inst: u32,
+    /// Bot clock of the death.
+    pub at_ms: u64,
+    /// Bot clock after which the pack is written off.
+    pub until_ms: u64,
+}
+
+/// Why a dropped pack is not coming back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackGone {
+    /// The bot died in another world (an instance) and cannot get back to it.
+    OtherWorld,
+    /// The recovery took too long.
+    Expired,
+    /// The doodad is not there (somebody took it, or it decayed).
+    Taken,
+}
+
+impl PackGone {
+    /// A short word for the log.
+    pub fn word(self) -> &'static str {
+        match self {
+            PackGone::OtherWorld => "in another world",
+            PackGone::Expired => "not reached in time",
+            PackGone::Taken => "taken or decayed",
+        }
+    }
+}
+
+/// What to do about a dropped pack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recovery {
+    /// Walk back to the death spot.
+    Return,
+    /// At the death spot: wait for the doodad to show up.
+    Wait,
+    /// The pack doodad is there: use it.
+    Pick(u32),
+    /// It is gone.
+    Gone(PackGone),
+}
+
+/// The decision for a dropped pack at `now_ms`: the bot is in world `inst` at `me`, `doodad` is a
+/// pack doodad in view near the death spot `(object id, distance to the bot)`, and `waited_ms` is
+/// how long the bot has stood at the spot without seeing one. Pure, so the whole after-death
+/// decision is tested without a server.
+pub fn recovery_step(
+    lost: &LostPack,
+    now_ms: u64,
+    inst: u32,
+    me: [f32; 3],
+    doodad: Option<(u32, f32)>,
+    waited_ms: u64,
+) -> Recovery {
+    if now_ms >= lost.until_ms {
+        return Recovery::Gone(PackGone::Expired);
+    }
+    if inst != lost.inst {
+        return Recovery::Gone(PackGone::OtherWorld);
+    }
+    if let Some((obj, _)) = doodad {
+        return Recovery::Pick(obj);
+    }
+    if dist2d(me, lost.pos) > PACK_RETURN_M {
+        return Recovery::Return;
+    }
+    if waited_ms < PACK_APPEAR_MS {
+        Recovery::Wait
+    } else {
+        Recovery::Gone(PackGone::Taken)
+    }
+}
+
 /// A payment that was collected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Paid {
@@ -101,6 +193,8 @@ struct Cold {
     done: SmallVec<[i64; 4]>,
     skips: SmallVec<[Skip; 4]>,
     paid: Option<Paid>,
+    /// The pack waiting at the spot the bot died at.
+    lost: Option<LostPack>,
 }
 
 impl Cold {
@@ -128,6 +222,8 @@ pub struct Ledger {
     pub payments: u32,
     /// Packs sold.
     pub packs_sold: u32,
+    /// Packs that were dropped at a death and never recovered.
+    pub packs_lost: u32,
     /// Unread received mail according to the server's counters.
     unread: i32,
     /// Packs sold whose payment has not been collected.
@@ -299,6 +395,42 @@ impl Ledger {
     pub fn note_sale(&mut self) {
         self.awaiting = self.awaiting.saturating_add(1);
         self.packs_sold += 1;
+    }
+
+    /// The bot died with a pack in the back slot: remember the spot, so the trade run can go back
+    /// for the doodad after the resurrection.
+    pub fn note_death_with_pack(&mut self, item: u32, pos: [f32; 3], inst: u32, now_ms: u64) {
+        let lost = LostPack {
+            item,
+            pos,
+            inst,
+            at_ms: now_ms,
+            until_ms: now_ms.saturating_add(RECOVERY_TTL_MS),
+        };
+        self.cold().lost = Some(lost);
+    }
+
+    /// The pack waiting at a death spot, if any.
+    pub fn lost_pack(&self) -> Option<LostPack> {
+        self.cold.as_deref().and_then(|c| c.lost)
+    }
+
+    /// Puts a dropped pack back after a reconnect (the note outlives the world state, like the
+    /// gear memory; the deadline is kept as it was).
+    pub fn restore_lost_pack(&mut self, lost: LostPack) {
+        self.cold().lost = Some(lost);
+    }
+
+    /// Forgets the dropped pack (it was picked up, or written off).
+    pub fn clear_lost_pack(&mut self) {
+        if let Some(c) = self.cold.as_deref_mut() {
+            c.lost = None;
+        }
+    }
+
+    /// A dropped pack was not recovered: count it (the log line says why).
+    pub fn note_pack_lost(&mut self) {
+        self.packs_lost = self.packs_lost.saturating_add(1);
     }
 
     /// Keeps `kind`/`id` out of the plans for `for_ms`.
@@ -705,6 +837,72 @@ mod tests {
         assert_ne!(spot_key(100.0, 100.0), spot_key(110.0, 100.0));
         assert_eq!(spot_key(100.0, 100.0), spot_key(101.0, 103.0));
     }
+    fn lost_pack() -> LostPack {
+        LostPack {
+            item: 31855,
+            pos: [100.0, 0.0, 100.0],
+            inst: 0,
+            at_ms: 1_000,
+            until_ms: 1_000 + RECOVERY_TTL_MS,
+        }
+    }
+
+    #[test]
+    fn a_dropped_pack_is_waited_for_recovered_or_written_off() {
+        let lost = lost_pack();
+        let far = [500.0, 0.0, 100.0];
+        let near = [110.0, 0.0, 100.0];
+        assert_eq!(
+            recovery_step(&lost, 2_000, 0, far, None, 0),
+            Recovery::Return,
+            "far from the death spot: walk back"
+        );
+        assert_eq!(
+            recovery_step(&lost, 2_000, 0, near, None, 0),
+            Recovery::Wait,
+            "there, but the doodad has not shown up yet"
+        );
+        assert_eq!(
+            recovery_step(&lost, 2_000, 0, near, Some((7, 3.0)), 0),
+            Recovery::Pick(7)
+        );
+        assert_eq!(
+            recovery_step(&lost, 2_000, 0, near, None, PACK_APPEAR_MS),
+            Recovery::Gone(PackGone::Taken),
+            "waited out: somebody took it or it decayed"
+        );
+        assert_eq!(
+            recovery_step(&lost, 2_000, 3, near, None, 0),
+            Recovery::Gone(PackGone::OtherWorld)
+        );
+        assert_eq!(
+            recovery_step(&lost, lost.until_ms, 0, near, None, 0),
+            Recovery::Gone(PackGone::Expired)
+        );
+        assert_eq!(PackGone::Taken.word(), "taken or decayed");
+    }
+
+    #[test]
+    fn a_dropped_pack_note_is_kept_until_it_is_cleared() {
+        let mut l = Ledger::default();
+        assert!(l.lost_pack().is_none());
+        l.note_death_with_pack(31855, [1.0, 2.0, 3.0], 0, 1_000);
+        let p = l.lost_pack().unwrap();
+        assert_eq!(
+            (p.item, p.pos, p.inst, p.at_ms),
+            (31855, [1.0, 2.0, 3.0], 0, 1_000)
+        );
+        assert_eq!(p.until_ms, 1_000 + RECOVERY_TTL_MS);
+        l.note_pack_lost();
+        assert_eq!(l.packs_lost, 1);
+        l.clear_lost_pack();
+        assert!(l.lost_pack().is_none());
+        // clearing a ledger that never had one does not allocate
+        let mut l = Ledger::default();
+        l.clear_lost_pack();
+        assert!(l.cold.is_none());
+    }
+
     #[test]
     fn an_interrupted_run_goes_only_to_the_goal_that_starts_in_the_same_tick() {
         let mut l = Ledger::default();

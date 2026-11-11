@@ -210,13 +210,13 @@ impl Grind {
     fn pick_target(&self, ctx: &Ctx<'_>) -> Option<u32> {
         let me = ctx.state.me.pos;
         let (own_faction, own_level) = (ctx.state.me.faction, ctx.state.me.level);
-        let mut best: Option<(u32, f32)> = None;
+        let mut best: Option<(u32, bool, f32)> = None;
         for (&obj, u) in &ctx.state.units {
             if self.ignored(obj, ctx.now_ms) || ctx.state.avoids(obj, u.id, ctx.now_ms) {
                 continue;
             }
             let d = u.dist2d(me);
-            if d > VIEW_RADIUS || best.is_some_and(|b| d >= b.1) {
+            if d > VIEW_RADIUS {
                 continue;
             }
             let Some(t) = attackable(ctx.world, own_faction, u) else {
@@ -226,7 +226,12 @@ impl Grind {
             if t.grade > 1 || !level_ok(own_level, level) {
                 continue;
             }
-            best = Some((obj, d));
+            // Monsters another character tagged (or is fighting) are left for them while a
+            // free one is in view: the kill would bring the grinder no credit anyway.
+            let taken = ctx.state.taken_by_other(obj);
+            if best.is_none_or(|b| better_target(taken, d, b.1, b.2)) {
+                best = Some((obj, taken, d));
+            }
         }
         best.map(|b| b.0)
     }
@@ -264,6 +269,16 @@ impl Grind {
             },
         );
         best.map(|b| (b.0, b.1))
+    }
+}
+
+/// Whether target A (`taken` by another character, `d` metres away) is a better pick than the
+/// best so far (`best_taken`, `best_d`): free beats taken, then the nearer wins.
+fn better_target(taken: bool, d: f32, best_taken: bool, best_d: f32) -> bool {
+    match (taken, best_taken) {
+        (false, true) => true,
+        (true, false) => false,
+        _ => d < best_d,
     }
 }
 

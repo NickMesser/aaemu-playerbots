@@ -161,6 +161,7 @@ fn the_census_feeds_the_world_view_through_a_real_hub() {
         faction,
         level: 20,
         flags: 0,
+        target: 0,
         name: Some(format!("P{id}").into()),
     };
     st.units.insert(1, unit(900, 101, WEST.0 + 10.0, WEST.1));

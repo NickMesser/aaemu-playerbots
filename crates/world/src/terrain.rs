@@ -11,8 +11,9 @@ use std::path::Path;
 use anyhow::{bail, ensure, Context};
 use memmap2::Mmap;
 
-pub const HEIGHTS_MAGIC: &[u8; 8] = b"PBHGT001";
+pub const HEIGHTS_MAGIC: &[u8; 8] = b"PBHGT002";
 pub const HEIGHTS_HEADER_LEN: usize = 64;
+const HEIGHTS_MAGIC_PREFIX: &[u8; 5] = b"PBHGT";
 
 /// Header of a height grid file.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +48,15 @@ impl HeightGridHeader {
             b.len() >= HEIGHTS_HEADER_LEN,
             "height grid shorter than its {HEIGHTS_HEADER_LEN}-byte header"
         );
-        ensure!(&b[0..8] == HEIGHTS_MAGIC, "bad height grid magic");
+        if &b[0..8] != HEIGHTS_MAGIC {
+            if &b[0..5] == HEIGHTS_MAGIC_PREFIX {
+                bail!(
+                    "this height grid was baked by an older playerbots ({}); re-run `playerbots bake`",
+                    String::from_utf8_lossy(&b[0..8])
+                );
+            }
+            bail!("bad height grid magic");
+        }
         let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
         let f32_at = |o: usize| f32::from_bits(u32_at(o));
         Ok(Self {
@@ -328,7 +337,7 @@ mod tests {
         assert!(Terrain::open(&p).is_err());
         // too short for the header
         let p = dir.join("short.bin");
-        std::fs::write(&p, b"PBHGT001").unwrap();
+        std::fs::write(&p, HEIGHTS_MAGIC).unwrap();
         assert!(Terrain::open(&p).is_err());
         // truncated samples
         let p = dir.join("trunc.bin");
@@ -345,6 +354,26 @@ mod tests {
         assert!(Terrain::open(&dir.join("missing.bin")).is_err());
         // sample count mismatch on write
         assert!(write_height_grid(&dir.join("w.bin"), &header(3, 2), &[1, 2, 3]).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_old_bake_is_rejected_with_a_rebake_hint() {
+        let dir = test_dir("terrain-old-bake");
+        let path = dir.join("heights_main_world.bin");
+        write_height_grid(&path, &header(3, 2), &small_samples()).unwrap();
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.write_all(b"PBHGT001").unwrap();
+        drop(f);
+
+        let Err(e) = Terrain::open(&path) else {
+            panic!("an old bake was accepted");
+        };
+        let msg = format!("{e:#}");
+        assert!(msg.contains("older playerbots"), "{msg}");
+        assert!(msg.contains("PBHGT001"), "{msg}");
+        assert!(msg.contains("`playerbots bake`"), "{msg}");
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

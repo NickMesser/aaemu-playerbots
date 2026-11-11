@@ -397,6 +397,8 @@ impl Brain {
         let interval = ctx.cfg.llm.director_interval_secs;
         self.chat(&mut *ctx.rng, interval).social.tick(ctx);
         if ctx.state.me.dead {
+            let base = (ctx.cfg.bots.move_speed, ctx.cfg.bots.walk_speed);
+            super::mount::on_gone(ctx.state, ctx.motion, ctx.out, base);
             self.director_wake(ctx, Trigger::Died);
             // Dead bots drop their goal (a dungeon run goes on inside the dungeon); the bot task
             // asks for the resurrection.
@@ -417,7 +419,12 @@ impl Brain {
         // The same for the mail the auction house sends.
         super::goals::auction::duty(ctx);
         let combat = Combat::tick(ctx);
+        // Mounts and gliders: get off for a fight, summon for a long trip, glide off a ledge.
+        super::mount::duty(ctx);
         let now = ctx.now_ms;
+        // A pack carrier (or a bot going back for a dropped one) does not take up anything new
+        // but its trade run: no market deal, trade, party, event or duel.
+        let pack_busy = super::goals::trade_run::pack_busy(ctx);
 
         self.director_step(ctx);
         self.publish_agent(ctx);
@@ -427,17 +434,19 @@ impl Brain {
         }
         // Market duty: negotiates in the trade chat whatever the bot does; a sale agreed there
         // starts the market goal (the meeting and the trade).
-        if super::goals::market::duty(ctx, self.goal.as_ref().map(Goal::kind))
+        if !pack_busy
+            && super::goals::market::duty(ctx, self.goal.as_ref().map(Goal::kind))
             && !self.is_disabled(GoalKind::Market)
         {
             self.start_goal(ctx, GoalKind::Market, None);
         }
         // Trade requests no goal asked for are answered here; the house marker follows `houses`.
+        // (a pack carrier declines: the run is not interrupted for a trade)
         if super::goals::trade::unsolicited(
             ctx,
             self.goal.as_ref().map(Goal::kind),
             self.base[GoalKind::Trade.index()],
-            self.is_disabled(GoalKind::Trade),
+            self.is_disabled(GoalKind::Trade) || pack_busy,
         ) {
             self.start_goal(ctx, GoalKind::Trade, None);
         }
@@ -445,7 +454,8 @@ impl Brain {
         // Party duty: answers the invitations of real players, keeps a companion's membership in
         // order and reads the chat commands whatever the bot does; a bot that is in a real player's
         // party and runs nothing it must not drop turns to the companion goal.
-        if super::companion::duty(ctx, self.goal.as_ref().map(Goal::kind))
+        if !pack_busy
+            && super::companion::duty(ctx, self.goal.as_ref().map(Goal::kind))
             && !matches!(self.choice, GoalChoice::Forced(_))
             && !self.is_disabled(GoalKind::Companion)
             && !self.cooldown_until.active(GoalKind::Companion, now)
@@ -455,11 +465,15 @@ impl Brain {
         // Guild duty: answers invitations, recruits, promotes and talks whatever the bot does.
         super::guild::duty(ctx, self.goal.as_ref().map(Goal::kind));
         // Equip duty: puts on the better piece of the bag whatever the bot does (not in a fight).
-        super::gear::duty(ctx, self.goal.as_ref().map(Goal::kind));
+        // A pack carrier is left alone: a back-slot change could replace or drop the pack.
+        if !pack_busy {
+            super::gear::duty(ctx, self.goal.as_ref().map(Goal::kind));
+        }
         super::goals::housing::sync_marker(ctx);
         // A rift is running and the bot is free enough to help: the event goal replaces the small
         // things (never an operator's choice, and not while the goal cools down after a failure).
-        if !matches!(self.choice, GoalChoice::Forced(_))
+        if !pack_busy
+            && !matches!(self.choice, GoalChoice::Forced(_))
             && !self.is_disabled(GoalKind::Event)
             && !self.cooldown_until.active(GoalKind::Event, now)
             && super::goals::event::duty(ctx, self.goal.as_ref().map(Goal::kind))
@@ -468,7 +482,7 @@ impl Brain {
         }
         if self.goal.is_none() && now >= self.next_think_ms {
             self.pick(ctx);
-        } else if self.hurt_and_idle(ctx) {
+        } else if !pack_busy && self.hurt_and_idle(ctx) {
             self.start_goal(ctx, GoalKind::Rest, None);
         }
         // Portal duty: records book entries, steps a far trip by portal, hops through a gate. While
@@ -606,7 +620,12 @@ impl Brain {
             return;
         }
         let s = self.scores_now(ctx);
-        let kind = choose(&s, ctx.rng).unwrap_or(GoalKind::Wander);
+        let kind = match choose(&s, ctx.rng) {
+            Some(kind) => kind,
+            // (everything but the run is blocked: wait out its cooldown without wandering off)
+            None if super::goals::trade_run::pack_busy(ctx) => GoalKind::Rest,
+            None => GoalKind::Wander,
+        };
         self.start_goal(ctx, kind, None);
     }
 
@@ -614,6 +633,10 @@ impl Brain {
     /// choice and the director's eligibility read.
     fn scores_now(&self, ctx: &Ctx<'_>) -> [f32; GoalKind::COUNT] {
         let mut blocked = self.disabled | self.gated_goals(ctx);
+        // (asked again here: the gate answer is cached, a pack can start or end in between)
+        if super::goals::trade_run::pack_busy(ctx) {
+            blocked |= super::goals::trade_run::pack_block_mask();
+        }
         for g in GoalKind::ALL {
             if self.cooldown_until.active(g, ctx.now_ms) {
                 blocked |= 1 << g.index();
@@ -1045,6 +1068,24 @@ mod tests {
         let s = scores(&b, &i);
         let mut drawn = |kind| (0..5000).any(|_| choose(&s, &mut rng) == Some(kind));
         assert!(drawn(GoalKind::TradeRun) && drawn(GoalKind::Housing));
+    }
+
+    #[test]
+    fn a_pack_carrier_is_only_offered_the_trade_run() {
+        let mask = super::super::goals::trade_run::pack_block_mask();
+        for g in GoalKind::ALL {
+            let blocked = mask & (1 << g.index()) != 0;
+            assert_eq!(blocked, g != GoalKind::TradeRun, "{g:?}");
+        }
+        // with that mask the draw can only land on the trade run
+        let b = [1.0; GoalKind::COUNT];
+        let mut i = input(100);
+        i.blocked = mask;
+        let s = scores(&b, &i);
+        let mut rng = fastrand::Rng::with_seed(17);
+        for _ in 0..2_000 {
+            assert_eq!(choose(&s, &mut rng), Some(GoalKind::TradeRun));
+        }
     }
 
     #[test]

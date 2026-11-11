@@ -2,9 +2,10 @@
 //! the start kind): the server refuses to start a quest whose requirements the character does not
 //! meet and answers nothing, so a bot checks the ones it can judge before it walks to the giver.
 //!
-//! Judged: level, maximum level, race, gender, mother faction, "item in the bag" and "quest
-//! completed" / "quest not completed". Everything else (buffs, zones, time of day, ...) is treated
-//! as met; the server has the last word and a refused start follows the usual failure policy.
+//! Judged: level, maximum level, race, gender, mother faction, "item in the bag", "quest
+//! completed" / "quest not completed" and "quest in progress" (`PreCompleteQuestContext`, what
+//! quest 1137 needs of 1136). Everything else (buffs, zones, time of day, ...) is treated as met;
+//! the server has the last word and a refused start follows the usual failure policy.
 //! The semantics mirror the server's `UnitReqs.Validate` and `CanComponentRun`: all requirements of a
 //! component must hold, or one of them when the component is flagged `or_unit_reqs`, and every
 //! start component of the quest has to be open.
@@ -24,6 +25,9 @@ mod kind {
     pub const OWN_ITEM: u16 = 0x0A;
     pub const COMPLETE_QUEST: u16 = 0x1F;
     pub const EXCEPT_COMPLETE_QUEST: u16 = 0x24;
+    /// The quest must be started and not finished (`PreCompleteQuestContext`): quest 1137
+    /// (unit_reqs kind 0x25 value 1136) needs 1136 in progress.
+    pub const PRE_COMPLETE_QUEST: u16 = 0x25;
     pub const MOTHER_FACTION: u16 = 0x2A;
     pub const MOTHER_FACTION_ONLY: u16 = 0x38;
     pub const MOTHER_FACTION_ONLY_NOT: u16 = 0x3B;
@@ -53,6 +57,8 @@ pub struct Who<'a> {
     pub mother_faction: u32,
     /// Whether a quest is completed.
     pub done: &'a dyn Fn(u32) -> bool,
+    /// Whether a quest is in the journal (started and not finished).
+    pub in_journal: &'a dyn Fn(u32) -> bool,
     /// Whether the bag holds an item template.
     pub owns: &'a dyn Fn(u32) -> bool,
 }
@@ -69,6 +75,7 @@ impl Req {
             kind::OWN_ITEM => (who.owns)(self.v1),
             kind::COMPLETE_QUEST => (who.done)(self.v1),
             kind::EXCEPT_COMPLETE_QUEST => !(who.done)(self.v1),
+            kind::PRE_COMPLETE_QUEST => !(who.done)(self.v1) && (who.in_journal)(self.v1),
             kind::MOTHER_FACTION | kind::MOTHER_FACTION_ONLY => who.mother_faction == self.v1,
             kind::MOTHER_FACTION_ONLY_NOT => who.mother_faction != self.v1,
             _ => return None,
@@ -221,6 +228,7 @@ mod tests {
             gender: 2,
             mother_faction: 148,
             done,
+            in_journal: &|_| false,
             owns: &|item| item == 2142,
         }
     }
@@ -298,6 +306,22 @@ mod tests {
         assert!(g.open(9, &who(5, &done_50)));
         let unknown = StartGates::from_tables([(9, true, vec![(kind::RACE, 4, 0), (0x0B, 1, 0)])]);
         assert!(unknown.open(9, &who(5, &none)));
+    }
+
+    #[test]
+    fn a_precomplete_quest_must_be_in_progress() {
+        // quest 1137: unit_reqs kind 0x25 value 1136 (quest 1136 started, not finished)
+        let g = StartGates::from_tables([(1137, false, vec![(kind::PRE_COMPLETE_QUEST, 1136, 0)])]);
+        let none = |_: u32| false;
+        assert!(!g.open(1137, &who(20, &none)));
+        let mut w = who(20, &none);
+        w.in_journal = &|q| q == 1136;
+        assert!(g.open(1137, &w));
+        // completed is not "in progress" any more
+        let done_1136 = |q: u32| q == 1136;
+        let mut w = who(20, &done_1136);
+        w.in_journal = &|q| q == 1136;
+        assert!(!g.open(1137, &w));
     }
 
     #[test]

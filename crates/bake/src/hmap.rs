@@ -2,8 +2,11 @@
 //!
 //! Ported from the AAEmu Rust server (`aaemu-game/src/systems/npcs/heightmap.rs`, `hmap` module and
 //! `load_cell_height_map`; GPL-3.0-or-later), which is a port of the C# `Hmap` / `NodeCell` /
-//! `AABB`. The arithmetic (including its quirks, see [`NodeCell::up_scale`]) is kept bit-exact so
-//! bots see the same terrain heights as the server.
+//! `AABB`. Low-resolution nodes are resampled with the original 1.2 client's rule (see
+//! [`NodeCell::get_height`]), matching the AAEmu server since AAEmu/AAEmu-1.2-Rust PR #56. The
+//! check against the original 1.2 client's terrain height at 12 points showed the C# `UpScale`
+//! was wrong (off by up to ~25 m; the client rule is within 0.1 m), so the sample decode is kept
+//! bit-exact but the upscale quirk is not.
 //!
 //! A cell is 1024 m wide and made of 16 x 16 sectors of 64 m. Each sector is a quadtree node with
 //! `n_size` x `n_size` u16 samples (33 x 33 for full detail); the server reads 32 x 32 samples of
@@ -117,7 +120,6 @@ impl NodeCell {
         if n.version < 7 {
             n.rescale_to_int();
         }
-        n.up_scale();
         Ok(n)
     }
 
@@ -144,61 +146,8 @@ impl NodeCell {
         }
     }
 
-    fn raw_data_by_index(&self, n_x: u16, n_y: u16) -> u16 {
-        if self.n_size > 0 {
-            let index = i32::from(n_x)
-                .wrapping_mul(self.n_size)
-                .wrapping_add(i32::from(n_y));
-            if index as i64 >= self.data.len() as i64 {
-                return 0;
-            }
-            return self.data[index as usize];
-        }
-        0
-    }
-
     fn lerp(s: f32, e: f32, t: f32) -> f32 {
         s + (e - s) * t
-    }
-
-    fn blerp(c00: f32, c10: f32, c01: f32, c11: f32, tx: f32, ty: f32) -> f32 {
-        Self::lerp(Self::lerp(c00, c10, tx), Self::lerp(c01, c11, tx), ty)
-    }
-
-    /// `UpScale` (game version) for nodes with fewer than 33 samples per side. The server's C#
-    /// has two quirks that are reproduced: every target point interpolates between the raw points
-    /// (0,0), (1,0), (0,1), (1,1), and `n_size` keeps the original value so the upscaled 33 x 33
-    /// data is indexed with the old stride.
-    fn up_scale(&mut self) {
-        if self.n_size > 0 && self.n_size < 33 {
-            let n_size = self.n_size;
-            let source_scale = n_size as f32 / 33f32;
-            let mut result = vec![0u16; 33 * 33];
-            for target_x in 0..=32i32 {
-                for target_y in 0..=32i32 {
-                    let index = (target_x * 33 + target_y) as usize;
-                    let source_x = f64::from(target_x as f32 * source_scale).floor() as u16;
-                    let source_y = f64::from(target_y as f32 * source_scale).floor() as u16;
-                    let left = i32::from(source_x) / n_size;
-                    let top = i32::from(source_y) / n_size;
-                    let (right, bottom) = (left + 1, top + 1);
-                    let raw =
-                        |x: i32, y: i32| f32::from(self.raw_data_by_index(x as u16, y as u16));
-                    let off_x = target_x as f32 * source_scale - f32::from(source_x);
-                    let off_y = target_y as f32 * source_scale - f32::from(source_y);
-                    let height = Self::blerp(
-                        raw(left, top),
-                        raw(right, top),
-                        raw(left, bottom),
-                        raw(right, bottom),
-                        off_x,
-                        off_y,
-                    );
-                    result[index] = f64::from(height).round_ties_even() as u16;
-                }
-            }
-            self.data = result;
-        }
     }
 
     /// `RawDataToHeight`.
@@ -207,16 +156,46 @@ impl NodeCell {
             + (i64::from(data >> 4) * i64::from(self.i_step)) as f32 * 0.05f32
     }
 
-    /// `GetHeight(nX, nY)` in metres: `data[x * n_size + y]`.
+    /// `GetHeight(nX, nY)` in metres. A full-resolution node holds 33 x 33 samples (x-major). A
+    /// low-resolution node keeps its `size x size` samples and is resampled on read like the
+    /// original 1.2 client, as in the AAEmu server's `NodeCell::get_height`
+    /// (`rust/crates/aaemu-game/src/systems/npcs/heightmap.rs`): target `i` maps to source
+    /// `i * (size - 1) / 32`, bilinear over the node's own samples in f32, with the upper index
+    /// clamped to `size - 2` (the far edge is the last sample at fraction 1). The C# upscaled
+    /// the node up front and then read the 33-wide result with the wrong stride (it reused
+    /// `n_size`), so low-resolution sectors came out mirrored. A 1 x 1 node (not present in the
+    /// 1.2 data; the client treats it as invalid) is our choice to cover the sector with its one
+    /// height.
     fn get_height(&self, n_x: u16, n_y: u16) -> Option<f32> {
+        if self.data.len() == 33 * 33 {
+            let index = i32::from(n_x).wrapping_mul(33).wrapping_add(i32::from(n_y));
+            let raw = *self.data.get(index as u32 as usize)?;
+            return Some(self.raw_data_to_height(u32::from(raw)));
+        }
         if self.n_size <= 0 {
             return Some(0.0);
         }
-        let index = i32::from(n_x)
-            .wrapping_mul(self.n_size)
-            .wrapping_add(i32::from(n_y));
-        let raw = *self.data.get(index as u32 as usize)?;
-        Some(self.raw_data_to_height(u32::from(raw)))
+        if n_x > 32 || n_y > 32 {
+            return None;
+        }
+        if self.n_size == 1 {
+            return Some(self.raw_data_to_height(u32::from(self.data[0])));
+        }
+        let n_size = self.n_size as usize;
+        if self.data.len() != n_size * n_size {
+            return None;
+        }
+        let source_scale = (n_size - 1) as f32 / 32.0;
+        let (fx, fy) = (f32::from(n_x) * source_scale, f32::from(n_y) * source_scale);
+        let (ix, iy) = (
+            (fx.floor() as usize).min(n_size - 2),
+            (fy.floor() as usize).min(n_size - 2),
+        );
+        let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+        let h = |x: usize, y: usize| self.raw_data_to_height(u32::from(self.data[x * n_size + y]));
+        let top = Self::lerp(h(ix, iy), h(ix + 1, iy), tx);
+        let bottom = Self::lerp(h(ix, iy + 1), h(ix + 1, iy + 1), tx);
+        Some(Self::lerp(top, bottom, ty))
     }
 }
 
@@ -403,17 +382,73 @@ mod tests {
         assert!(decode_cell(&few).is_err());
     }
 
+    /// The original client's resampling rule, as in the AAEmu server's `NodeCell::get_height`
+    /// (`rust/crates/aaemu-game/src/systems/npcs/heightmap.rs`), in raw `data >> 4` units:
+    /// target `i` -> source `i * (size - 1) / 32`, bilinear over the node's own samples, upper
+    /// index clamped to `size - 2` (the far edge is the last sample at fraction 1). Independent
+    /// of the implementation (h-dec units, no height decode).
+    fn client_upscaled_hdec(data: &[u16], size: usize, x: usize, y: usize) -> f32 {
+        let s = (size - 1) as f32 / 32.0;
+        let (fx, fy) = (x as f32 * s, y as f32 * s);
+        let (ix, iy) = (
+            (fx.floor() as usize).min(size - 2),
+            (fy.floor() as usize).min(size - 2),
+        );
+        let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+        let h = |a: usize, b: usize| f32::from(data[a * size + b] >> 4);
+        let top = h(ix, iy) * (1.0 - tx) + h(ix + 1, iy) * tx;
+        let bottom = h(ix, iy + 1) * (1.0 - tx) + h(ix + 1, iy + 1) * tx;
+        top * (1.0 - ty) + bottom * ty
+    }
+
     #[test]
-    fn small_nodes_are_upscaled_with_the_servers_quirk() {
-        // a 2x2 node becomes 33x33 data indexed with stride 2
-        let mut b = Reader {
-            data: &node_bytes(0.0, 0.0, 0.0, 1.0 / 320.0, 2, &|x, y| {
-                ((x * 2 + y) as u16) << 4
-            }),
-            pos: 0,
-        };
-        let n = NodeCell::read(&mut b).unwrap();
-        assert_eq!(n.n_size, 2);
-        assert_eq!(n.data.len(), 33 * 33);
+    fn low_resolution_nodes_resample_like_the_client() {
+        // Sizes 2, 5, 9 and 17 (the low-resolution nodes of the 1.2 data). The node keeps its
+        // own samples and `get_height` interpolates them in f32, so the only difference to the
+        // rule is the source samples' existing 5 cm decode.
+        for size in [2usize, 5, 9, 17] {
+            let data: Vec<u16> = (0..size * size)
+                .map(|i| ((i as u16 * 37 + 8) % 7 * 32) << 4)
+                .collect();
+            let mut b = Reader {
+                data: &node_bytes(0.0, 0.0, 0.0, 0.0001, size as i32, &|x, y| {
+                    data[x as usize * size + y as usize]
+                }),
+                pos: 0,
+            };
+            let n = NodeCell::read(&mut b).unwrap();
+            assert_eq!(n.n_size, size as i32);
+            // The node is not upscaled up front; the samples stay as read.
+            assert_eq!(n.data, data);
+            for x in 0..33usize {
+                for y in 0..33usize {
+                    let want = client_upscaled_hdec(&data, size, x, y) * 0.05;
+                    let got = n.get_height(x as u16, y as u16).unwrap();
+                    assert!(
+                        (got - want).abs() <= 1e-3,
+                        "size {size} height ({x}, {y}): {got}, rule {want}"
+                    );
+                }
+            }
+            // The sample lattice: every source sample maps to its own grid target.
+            for i in 0..size {
+                let target = (i * 32) / (size - 1);
+                assert_eq!(
+                    n.get_height(target as u16, 0).unwrap(),
+                    f32::from(data[i * size] >> 4) * 0.05,
+                    "size {size} lattice x {i}"
+                );
+                assert_eq!(
+                    n.get_height(0, target as u16).unwrap(),
+                    f32::from(data[i] >> 4) * 0.05,
+                    "size {size} lattice y {i}"
+                );
+            }
+            // The far edge is the last sample (fraction 1), not a duplicated inner row.
+            assert_eq!(
+                n.get_height(32, 32).unwrap(),
+                f32::from(data[(size - 1) * size + size - 1] >> 4) * 0.05
+            );
+        }
     }
 }

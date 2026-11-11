@@ -69,6 +69,9 @@ pub enum IssueKind {
     NpcMissing,
     /// A doodad the world data says is here is not.
     DoodadMissing,
+    /// An NPC or doodad is in view but no walkable way gets the bot within the server's reach
+    /// (a house storey or a cave floor the navigation mesh does not connect).
+    TargetUnreachable,
     /// A monster that should take damage is immune or never loses health.
     TargetImmune,
     /// The bot's character died but the server never said so.
@@ -93,7 +96,7 @@ pub enum IssueKind {
 
 impl IssueKind {
     /// Every kind, in declaration order.
-    pub const ALL: [IssueKind; 21] = [
+    pub const ALL: [IssueKind; 22] = [
         IssueKind::UnexpectedDisconnect,
         IssueKind::Kicked,
         IssueKind::LoginFailure,
@@ -105,6 +108,7 @@ impl IssueKind {
         IssueKind::QuestTurnInRefused,
         IssueKind::NpcMissing,
         IssueKind::DoodadMissing,
+        IssueKind::TargetUnreachable,
         IssueKind::TargetImmune,
         IssueKind::DeathWithoutPacket,
         IssueKind::LoggedInDead,
@@ -131,6 +135,7 @@ impl IssueKind {
             IssueKind::QuestTurnInRefused => "quest_turn_in_refused",
             IssueKind::NpcMissing => "npc_missing",
             IssueKind::DoodadMissing => "doodad_missing",
+            IssueKind::TargetUnreachable => "target_unreachable",
             IssueKind::TargetImmune => "target_immune",
             IssueKind::DeathWithoutPacket => "death_without_packet",
             IssueKind::LoggedInDead => "logged_in_dead",
@@ -783,7 +788,7 @@ mod tests {
             assert_eq!(back, k);
             assert!(seen.insert(k.as_str()), "{k} listed twice");
         }
-        assert_eq!(seen.len(), 21);
+        assert_eq!(seen.len(), 22);
         assert_eq!(serde_json::to_string(&Suspect::Data).unwrap(), "\"data\"");
         assert_eq!(serde_json::to_string(&Severity::High).unwrap(), "\"high\"");
         assert_eq!(serde_json::to_string(&Dir::C2S).unwrap(), "\"c2s\"");

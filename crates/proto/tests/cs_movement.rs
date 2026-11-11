@@ -394,3 +394,31 @@ fn facing_a_target_writes_the_direction_into_rotation_z() {
     // Rotation z is the third of the three rotation bytes after the position and velocity.
     assert_eq!(cs::move_unit(&m).body[9 + 9 + 6 + 2] as i8, 32);
 }
+
+#[test]
+fn gliding_is_an_air_update_in_the_glide_stance() {
+    // The 1.2 gliding stance is 4 (`skills/glider.rs:71`); the flight is an airborne update
+    // (`JumpPhase::Air`: no ground actor flag) with the descent in vel.z. The server reads and
+    // relays the stance byte unchanged (`models/movement.rs:417`, `packets/c2g_world.rs:224`).
+    let m = MoveUnit {
+        pos: (100.0, 200.0, 80.0),
+        vel: (9.0, 0.0, -3.0),
+        moving: true,
+        stance: cs::STANCE_GLIDE,
+        jump: JumpPhase::Air,
+        ..base()
+    };
+    check(
+        &m,
+        expected(
+            0x02,
+            (100.0, 200.0, 80.0),
+            [wire(9.0), 0, wire(-3.0)],
+            0,
+            [0, 127, 0],
+            4,
+            0,
+            0,
+        ),
+    );
+}

@@ -60,6 +60,9 @@ struct Zones {
     info: Vec<(u16, u16, u32)>,
     /// Sorted zone groups that take part in the zone conflicts (`conflict_zones`, not closed).
     conflict_groups: Vec<u16>,
+    /// Sorted zone keys whose `zones.closed` is set (Aubre Cradle, Airain Rock, Rainbow Field 1,
+    /// ...): no ordinary player may be there, so no bot plans a quest there.
+    closed: Vec<u16>,
 }
 
 /// What the static data says about a zone (`zones` row).
@@ -77,12 +80,16 @@ impl Zones {
         let mut names: Vec<(u16, Box<str>)> = Vec::new();
         let mut ids = Vec::new();
         let mut info: Vec<(u16, u16, u32)> = Vec::new();
+        let mut closed: Vec<u16> = Vec::new();
         each_row(
             conn,
-            "SELECT id, name, zone_key, group_id, faction_id FROM zones",
+            "SELECT id, name, zone_key, group_id, faction_id, closed FROM zones",
             |r| {
                 let (id, key) = (r.u32(0), r.u16(2));
                 info.push((key, r.u16(3), r.u32(4)));
+                if r.flag(5) {
+                    closed.push(key);
+                }
                 let name: Box<str> = texts
                     .get(TextTable::Zone, id)
                     .or_else(|| texts.get(TextTable::ZoneGroup, r.u32(3)))
@@ -97,6 +104,8 @@ impl Zones {
         names.sort_by_key(|n| n.0);
         info.sort_by_key(|i| i.0);
         info.dedup_by_key(|i| i.0);
+        closed.sort_unstable();
+        closed.dedup();
         // (an old database without the table has no conflict zones)
         let mut conflict_groups: Vec<u16> = Vec::new();
         let _ = each_row(
@@ -111,6 +120,7 @@ impl Zones {
             key_of_id: IdMap::build(ids),
             info,
             conflict_groups,
+            closed,
         })
     }
 
@@ -127,12 +137,17 @@ impl Zones {
             .map(|i| &*self.names[i].1)
     }
 
+    fn closed(&self, key: u16) -> bool {
+        self.closed.binary_search(&key).is_ok()
+    }
+
     fn bytes(&self) -> usize {
         self.names.capacity() * std::mem::size_of::<(u16, Box<str>)>()
             + self.names.iter().map(|n| n.1.len()).sum::<usize>()
             + self.key_of_id.shallow_bytes()
             + self.info.capacity() * std::mem::size_of::<(u16, u16, u32)>()
             + self.conflict_groups.capacity() * 2
+            + self.closed.capacity() * 2
     }
 }
 
@@ -534,6 +549,28 @@ impl World {
         self.npc_spawns.has(template)
     }
 
+    /// Whether a spawn of `template` is on the navigation mesh and connected to the mesh node
+    /// under `from`. Without a baked mesh every spawn counts as reachable (the bot then walks
+    /// there and fails the way the data allows).
+    pub fn npc_reachable(&self, template: u32, from: Vec3) -> bool {
+        let Some(nav) = self.nav() else {
+            return true;
+        };
+        let Some(start) = nav.locate(from, 24.0) else {
+            return true;
+        };
+        for p in self.npc_spawns(template) {
+            let Some(goal) = nav.locate(*p, 24.0) else {
+                continue;
+            };
+            if nav.may_reach(start, goal) != Some(false) {
+                return true;
+            }
+        }
+        // Every spawn is off the mesh or in another, unreachable component.
+        false
+    }
+
     /// Counters from reading the NPC spawn files.
     pub fn npc_spawn_stats(&self) -> SpawnStats {
         self.npc_spawn_stats
@@ -695,6 +732,12 @@ impl World {
         self.item_uses.needs(skill)
     }
 
+    /// The NPC templates of quest monster group `group` (`quest_monster_npcs`); empty when the
+    /// data has none.
+    pub fn quest_monster_group(&self, group: u32) -> &[u32] {
+        self.item_uses.group_members(group)
+    }
+
     /// Skill ids of class ability `ability` (1..=10) ordered by required ability level.
     pub fn ability_skills(&self, ability: u8) -> &[u32] {
         self.skills.ability_skills(ability)
@@ -810,6 +853,17 @@ impl World {
     /// is partly one) and without the baked grid.
     pub fn zone_info_at(&self, x: f32, y: f32) -> Option<ZoneInfo> {
         self.zones.info(self.zone_key_at(x, y)?)
+    }
+
+    /// Whether `zones.closed` is set for a zone key: no ordinary player may enter it (Aubre
+    /// Cradle, Airain Rock, Rainbow Field 1, ...), so a bot does not plan quests there.
+    pub fn zone_closed(&self, zone_key: u16) -> bool {
+        self.zones.closed(zone_key)
+    }
+
+    /// [`World::zone_closed`] at (x, y); `false` when the position is in no known zone.
+    pub fn zone_closed_at(&self, x: f32, y: f32) -> bool {
+        self.zone_key_at(x, y).is_some_and(|k| self.zone_closed(k))
     }
 
     /// Spots (x, y) inside the conflict zone group `group`: the centres of every fourth sector

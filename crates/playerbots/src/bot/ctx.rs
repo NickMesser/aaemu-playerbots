@@ -218,6 +218,14 @@ impl Ctx<'_> {
         }
     }
 
+    /// Starts a trip to (x, y, z), stopping `radius` metres short in three dimensions: the
+    /// navmesh search uses `z` to pick the floor the target stands on (a house storey, a cave
+    /// under the terrain). No portal or `/move` is used: this is for the last few hundred metres
+    /// to an NPC or doodad in view.
+    pub fn travel_to_floor(&mut self, x: f32, y: f32, z: f32, radius: f32, pace: Pace) {
+        self.motion.go_to_z(x, y, z, radius, pace, self.now_ms);
+    }
+
     /// Whether `bots.gm_bootstrap` lets this bot use `/move` for a trip of `dist` metres.
     pub fn would_teleport(&self, dist: f32) -> bool {
         self.cfg.bots.gm_bootstrap

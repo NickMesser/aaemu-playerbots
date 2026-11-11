@@ -961,7 +961,10 @@ impl Combat {
 
     fn step(ctx: &mut Ctx<'_>) -> CombatStatus {
         let now = ctx.now_ms;
-        let travelling = ctx.combat.travelling(now);
+        // A trade pack must reach the buyer: a carrier only fights what attacks it, whatever
+        // goal it is in (the run itself notes travelling; this also covers the fallback rest).
+        let carrying = crate::bot::goals::trade_run::carried_pack_of(ctx).is_some();
+        let travelling = ctx.combat.travelling(now) || carrying;
         if ctx.combat.fleeing {
             // running from a character: no new fight until the run is over
             if pvp::fight::flee_step(ctx) {
@@ -984,12 +987,14 @@ impl Combat {
                     .say(format!("pvp: defending against {}", char_name_of(ctx, obj)));
                 ctx.combat.engage(obj);
                 ctx.combat.defending = obj;
-            } else if let Some(obj) = pick_assist(ctx, travelling) {
-                // (a team member's fight: help, and share the loot)
-                ctx.log
-                    .debug(format!("assisting the party against unit {obj}"));
-                ctx.combat.engage(obj);
-                ctx.combat.assisting = obj;
+            } else if !carrying {
+                if let Some(obj) = pick_assist(ctx, travelling) {
+                    // (a team member's fight: help, and share the loot)
+                    ctx.log
+                        .debug(format!("assisting the party against unit {obj}"));
+                    ctx.combat.engage(obj);
+                    ctx.combat.assisting = obj;
+                }
             }
         }
         let Some(obj) = ctx.combat.target else {
@@ -1881,6 +1886,7 @@ mod tests {
             faction: 0,
             level: 5,
             flags: 0,
+            target: 0,
             name: None,
         }
     }

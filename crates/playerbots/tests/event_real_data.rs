@@ -236,6 +236,7 @@ impl Rig {
                 faction: 0,
                 level,
                 flags: 0,
+                target: 0,
                 name: None,
             },
         );

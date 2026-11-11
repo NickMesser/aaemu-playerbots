@@ -305,6 +305,7 @@ fn grinding_fights_a_monster_in_view_and_loots_it() {
             faction: 0,
             level,
             flags: 0,
+            target: 0,
             name: None,
         },
     );
@@ -435,7 +436,7 @@ fn forcing_a_travel_goal_the_bot_cannot_do_now_does_no_harm() {
 
 #[test]
 #[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
-fn a_rest_that_cut_a_trade_run_short_gives_it_back_while_a_pack_is_carried() {
+fn a_hurt_pack_carrier_does_not_leave_the_trade_run_for_a_rest() {
     let Some(world) = world() else {
         eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
         return;
@@ -478,22 +479,17 @@ fn a_rest_that_cut_a_trade_run_short_gives_it_back_while_a_pack_is_carried() {
         "the run carries the pack"
     );
 
-    // badly hurt: the brain rests instead
+    // badly hurt: a carrier does not leave the run for a rest in the open (the run itself rests
+    // to 80 % before it plans and crafts, and a pack that stands still is no safer on the road)
     rig.state.me.hp = 200;
-    rig.tick(250);
-    assert_eq!(rig.brain.goal_name(), "rest");
-    // recovered: the rest ends after its ten seconds and the run goes on
-    rig.state.me.hp = 1000;
-    let mut resumed_after = None;
-    for i in 0..(100 * 4) {
+    for _ in 0..16 {
         rig.tick(250);
-        if rig.brain.goal_name() == "trade_run" {
-            resumed_after = Some(i * 250);
-            break;
-        }
+        assert_eq!(
+            rig.brain.goal_name(),
+            "trade_run",
+            "a hurt carrier keeps the run"
+        );
     }
-    let ms = resumed_after.expect("the rest gave the trade run back");
-    assert!(ms >= 9_000, "after the minimum rest, not at once: {ms} ms");
 }
 
 #[test]
@@ -553,6 +549,7 @@ fn a_trade_run_only_fights_back_against_close_attackers() {
                 faction: 0,
                 level,
                 flags: 0,
+                target: 0,
                 name: None,
             },
         );
@@ -583,6 +580,54 @@ fn a_trade_run_only_fights_back_against_close_attackers() {
     );
 }
 
+#[test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+fn a_carrier_in_a_rest_only_fights_close_attackers() {
+    let Some(world) = world() else {
+        eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
+        return;
+    };
+    // any trade pack: the back slot is what makes the bot a carrier
+    let pack = world
+        .pack_crafts()
+        .map(|c| c.product.0)
+        .next()
+        .expect("a pack craft");
+    let mut rig = Rig::new(world.clone(), "Darkrunner", 7);
+    rig.state.equipment.push(EquipSlot {
+        slot: 26,
+        template: pack,
+        id: 77,
+        grade: 0,
+    });
+    rig.brain.queue(GoalKind::Rest, None);
+    for _ in 0..4 {
+        rig.tick(250);
+    }
+    assert_eq!(rig.brain.goal_name(), "rest");
+
+    let template = weak_hostile(&world, rig.state.me.faction);
+    let mob = 0x901;
+    let attack_from = |rig: &mut Rig, dx: f32| {
+        place_mob(rig, template, mob, dx);
+        let now = rig.now_ms;
+        rig.state.threats.clear();
+        rig.state.threats.push((mob, now));
+    };
+    // standing (rest) with a pack: a far attacker is not chased
+    attack_from(&mut rig, 40.0);
+    rig.tick(250);
+    assert_eq!(
+        rig.combat.target(),
+        None,
+        "a carrier does not chase a far attacker"
+    );
+    // a close one is fought back
+    attack_from(&mut rig, 8.0);
+    rig.tick(250);
+    assert_eq!(rig.combat.target(), Some(mob));
+}
+
 /// A monster of `template` in view, `dx` metres east of the bot and not hurt by anything.
 fn place_mob(rig: &mut Rig, template: u32, obj: u32, dx: f32) {
     let level = rig.world.npc(template).unwrap().level;
@@ -597,6 +642,7 @@ fn place_mob(rig: &mut Rig, template: u32, obj: u32, dx: f32) {
             faction: 0,
             level,
             flags: 0,
+            target: 0,
             name: None,
         },
     );
@@ -862,6 +908,7 @@ fn start_duel(rig: &mut Rig, foe: u32) {
             faction: rig.state.me.faction,
             level: 1,
             flags: 0,
+            target: 0,
             name: Some("Foe".into()),
         },
     );
@@ -1282,6 +1329,7 @@ fn trade_request_from(rig: &mut Rig, obj: u32, char_id: u32) {
             faction: rig.state.me.faction,
             level: 1,
             flags: 0,
+            target: 0,
             name: Some("Visitor".into()),
         },
     );

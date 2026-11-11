@@ -552,3 +552,34 @@ fn unit_movement_batches_are_not_parsed() {
         None
     );
 }
+
+#[test]
+fn mate_spawned_has_ten_skill_slots() {
+    // SCMateSpawnedPacket writer, G/systems/vehicles/packets.rs:579-592: tl u16, id u32,
+    // item id u64, user state u8, experience i32, mileage i32, spawn delay u32, then the skills
+    // and 10 - skills zero i32 slots.
+    let mut s = PacketStream::new();
+    s.write_u16(0x0102)
+        .write_u32(7)
+        .write_u64(0x1122_3344_5566_7788)
+        .write_u8(1)
+        .write_i32(300)
+        .write_i32(5)
+        .write_u32(0)
+        .write_u32(11)
+        .write_u32(12);
+    for _ in 0..8 {
+        s.write_i32(0);
+    }
+    let WorldEvent::MateSpawned(m) = game(sc::SCMateSpawnedPacket, &s) else {
+        panic!("not a mate spawn");
+    };
+    assert_eq!(m.tl, 0x0102);
+    assert_eq!(m.id, 7);
+    assert_eq!(m.item_id, 0x1122_3344_5566_7788);
+    assert_eq!((m.user_state, m.experience, m.mileage), (1, 300, 5));
+    assert_eq!(m.spawn_delay_ms, 0);
+    assert_eq!(&*m.skills, &[11, 12, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(s.len(), 2 + 4 + 8 + 1 + 4 + 4 + 4 + 10 * 4);
+    truncation_is_rejected(sc::SCMateSpawnedPacket, s.as_bytes(), s.len());
+}

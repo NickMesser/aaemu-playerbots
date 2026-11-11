@@ -305,6 +305,25 @@ impl EventBoard {
         self.running.load(Ordering::Relaxed) > 0
     }
 
+    /// Whether a running event's waves wait for NPC `template` (a quest whose targets only
+    /// exist during an event may be accepted only while one of them runs).
+    pub fn runs_kill_target(&self, template: u32) -> bool {
+        if !self.any() {
+            return false;
+        }
+        let Some(defs) = self.events() else {
+            return false;
+        };
+        let g = self.inner.lock();
+        g.events.iter().any(|run| {
+            defs.get(run.id.def).is_some_and(|d| {
+                d.steps
+                    .iter()
+                    .any(|s| s.kills.iter().any(|k| k.template == template))
+            })
+        })
+    }
+
     /// The running events.
     pub fn views(&self) -> SmallVec<[View; 4]> {
         self.inner.lock().events.iter().map(Running::view).collect()

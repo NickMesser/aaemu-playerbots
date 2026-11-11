@@ -77,8 +77,8 @@ for a minute. The bot defends itself whatever it is doing.
 | **Player trade** | The coordinator pairs two bots; they meet, open the trade window, put up goods and/or money, lock and confirm. A trade request from a real player is accepted when the bot is idle. A bot puts up only tradable items it does not hold back for a quest (see [Selling](#selling-market)). |
 | **Housing** | Picks a design and a free spot in a housing area, quotes the tax, places the house, builds it and later "goes home" to rest there. |
 | **Auction** | Walks to the nearest auctioneer, lists surplus goods, buys a bargain and goes home (see [Auction house](#auction-house)). Needs `[market] enabled` and `auction`. |
-| **Trade run** | Crafts a trade pack at a specialty workbench, carries it to a specialty NPC that buys it, sells it and collects the payment mail. |
-| **Dungeon** | Bots that like a fight ask the coordinator for a party of up to five (the dungeon's player limit, never more than five; same alliance, a level the dungeon accepts; with `dungeon_level_up` and GM rights a lower level is raised). The planner prefers a tank and a healer, and a tank leads: it pulls and holds aggro, the rest assist its target and the healer heals the lowest member from behind. A full party starts at once, four bots rally 90 s for a fifth, a smaller one waits `[dungeons] relax_after_secs` (600 s). The leader invites, the party walks to the entrance doodad and waits there a bounded time for a member that died on the way, goes in one by one, clears the dungeon along a route of its hostile spawns (everybody rests when low; deaths inside resume at the arrival point and the bot walks back; two wipes end the run), uses the exit doodad and disbands. The server's refusals are typed and answered (a dungeon it turned away is left alone; the entry limit is counted only with `[dungeons] entry_limit`); what the server does that the data contradicts is filed as an issue. |
+| **Trade run** | Crafts a trade pack at a specialty workbench, carries it to a specialty NPC that buys it, sells it and collects the payment mail. It starts only when healthy and skips routes through deadly areas or zones of the hostile alliance. While carrying, the run is the only goal: no events, quests, duels, dungeons, other fights or blocked portals. A bot that dies with the pack goes back to the death spot for the dropped doodad; a pack it cannot recover is logged as lost and counted. |
+| **Dungeon** | Bots that like a fight ask the coordinator for a party of up to five (the dungeon's player limit, never more than five; same alliance, a level the dungeon accepts; with `dungeon_level_up` and GM rights a lower level is raised). The planner prefers a tank and a healer, and a tank leads: it pulls and holds aggro, the rest assist its target and the healer heals the lowest member from behind. A full party starts at once, four bots rally 90 s for a fifth, a smaller one waits `[dungeons] relax_after_secs` (600 s) before going with a smaller one. The leader invites, the party walks to the entrance doodad and waits there a bounded time for a member that died on the way, goes in one by one, clears the dungeon along a route of its hostile spawns (the leader picks targets, the members follow and assist, everybody rests when low; deaths inside resume at the arrival point and the bot walks back; two wipes end the run), uses the exit doodad and disbands. The server's refusals are typed and answered (a dungeon it turned away is left alone; the entry limit is counted only with `[dungeons] entry_limit`); what the server does that the data contradicts is filed as an issue. |
 | **Sail** | Summons a boat from a scroll at a beach, sails it 1 to 3 km over the sea (twice as far in a 6 m/s hull; a crossing to another beach or a loop) with a heading controller that finds the wheel's direction itself, then leaves the boat, despawns it and swims ashore. A rowboat by default; `[sail] ship` picks a clipper, cutter, junk, yawl or schooner. Sea only (no lakes or rivers). Needs a boat scroll in the bag or `gm_bootstrap`. See [DESIGN.md](DESIGN.md#sailing-goal-sail). |
 | **Guild** | A bot with no guild that can pay the charter asks the coordinator for a founding team (a duty, whatever it is doing); five bots of one faction found a guild together. What a bot does in its guild afterwards (answer invitations, recruit, promote, talk, leave) is a duty that runs whatever the goal is. Needs `[guild] enabled`; see [Guilds](#guilds-guild). |
 | **Gank** | Off until `[pvp] enabled` and `gank`, and someone may be attacked (`attack_bots`, or `attack_players` without `gm_bootstrap`). Plans an ambush post on the route between a specialty workbench and the NPC that buys its pack (outside the victims' home zones, where the server protects them; conflict zones and wars score higher), waits there and attacks a carrier of the hostile alliance when the odds are fair. Bots that wait close together form a squad of up to `max_squad` through the coordinator, so a stronger carrier can be taken. When the carrier dies the dropped pack is picked up (within 3 m, skill 11361) and a trade run sells it. It gives up on stronger groups, at the retreat line, on a protected target and after a death. See [Player versus player](#player-versus-player-pvp). |
@@ -143,7 +143,8 @@ Safety of the GM lines:
   (logged); `false` keeps dungeons to the bots whose level fits.
 * `[dungeons] relax_after_secs = 600` (default): how long a wish waits for a smaller party
   (the dungeon's `max_players`, at most five) before it starts; four bots start after 90 s of
-  rallying for a fifth, and the value is at most 600.
+  rallying for a fifth. At most 600: the coordinator drops a party wish after 720 s and the bot
+  gathers for at most 660 s, so a longer wait would never form the smaller party.
 * `[dungeons] entry_limit = false` (default): the bots do not count the server's entry limit (three
   entries per zone group and four hours) and never skip a dungeon for the count, as on the 1.2
   server (`Dungeons.EntryLimit` is off there). A refusal for the limit is still answered. `true`
@@ -528,6 +529,72 @@ ship = "cutter"    # rowboat (default) | clipper | cutter | junk | yawl | schoon
   and plans again; a fourth grounding ends the trip.
 * Issue reports of the goal are `sail:*` (no boat, no seat, dead wheel, no thrust, slow boat, ignored
   despawn); see [ISSUES.md](ISSUES.md).
+
+## Mounts and gliders (`[mounts]`)
+
+Bots use the mount and glider they own the way a player does on a long trip: they summon the
+rideable mate of a `SummonMate` item, board it, ride at mount speed and get off again for a
+fight, a quest talk, a harvest or a dungeon door. They also wear a glider on their back and fly
+down a cliff that lies on their way instead of walking around it.
+
+**The mount.** The summon is the item's use skill (`item_summon_mates` names the mate's NPC
+template; the skill carries the `SpawnPet` effect), then `CSMountMatePacket` (0x0a7) takes the
+driver seat; the server answers `SCUnitAttached` and the mate's unit state (with its timeline id
+and object id). While riding, the bot sends its movement updates **for the mate** — a riding
+player's own `CSMoveUnit` is ignored by the server (`world/session.rs:1191`), so the client moves
+the mount instead — and gets off with `CSUnMountMatePacket` (0x0a8) or dismisses it with
+`CSRemoveMatePacket` (0x0a4). The mate is summoned only when the rest of the trip is at least
+`summon_over_m` long and the bot is moving, not fighting, not on a boat, not in an instance and
+not travelling by portal; it leaves the seat when the trip is down to `dismount_under_m`, when a
+fight starts or a blocking situation appears, and the standing mate is dismissed after
+`idle_despawn_secs`. A mate that stands too far away to board (the server allows 6 m) is dismissed
+and summoned again on the next long trip.
+
+Every request has a deadline: a summon without `SCMateSpawned`, a mount without
+`SCUnitAttached`, a refused skill (`SCSkillStarted.result != 0`) or an `SCErrorMsg` during the
+request backs every mount attempt off for two minutes; no item without GM rights backs it off for
+half an hour. A bot never loops on a refusal.
+
+**The glider.** A glider is a back-slot item (`item_backpacks.backpack_type_id = 2`) whose use
+skill the client starts with the item as caster; the server checks the back slot and the item's
+own skill (`systems/skills/glider.rs`). The bot puts the best glider it owns in the back slot
+(with `CSSwapItems`) while it is not fighting, and leaves a carried trade pack alone (the server
+refuses a glider swap while a pack is worn). While it walks with at least 20 m left it samples
+the ground up to `glide_lookahead_m` ahead: when the way falls away by at least `glide_drop_m` in one abrupt step
+(a cliff, not a slope), the line before the edge has no wall and the landing is dry, and the edge is
+within 6 m ahead (a cliff further off waits until the walk has brought it that close), it deploys
+the glider, runs the last steps along the ground until the ground falls away from under it, and
+then flies down along the current heading at `glide_speed` while descending
+`glide_descent`. The flight is the bot's own client-side physics (the 1.2 client's glider is not
+on the wire); it lands when the terrain meets it or the flight is 30 seconds old, sends the glide
+stance (4) in its movement updates and plans its navmesh route again from where it landed.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Master switch of mounts and gliders. |
+| `mounts` | `true` | Bots summon and ride mounts. |
+| `gliders` | `true` | Bots equip a glider and glide down a ledge. |
+| `summon_over_m` | `250.0` | The shortest trip a mount is summoned for, metres. |
+| `dismount_under_m` | `40.0` | A mounted bot dismounts when the rest of the trip is this short. |
+| `speed` | `10.0` | Mounted run and walk speed, m/s. |
+| `item` | `0` | The mount summon item; `0` = the lowest-id rideable mount of the bot's level (4177, the Lilyut horse). |
+| `glider_item` | `0` | The glider item; `0` = the lowest-id glider of the bot's level (16385, Tooloop's old glider). |
+| `idle_despawn_secs` | `120` | Dismiss a standing mate after this long without a trip (0 = keep it). |
+| `glide_drop_m` | `8.0` | The smallest fall that is worth gliding, metres. |
+| `glide_lookahead_m` | `30.0` | How far ahead the ground is sampled for a ledge, metres (4 to 200; a glide starts only when the edge is within 6 m). |
+| `glide_speed` | `9.0` | Glide horizontal speed, m/s. |
+| `glide_descent` | `3.0` | Glide descent, m/s. |
+
+With `bots.gm_bootstrap` a bot grants itself the lowest-id rideable mount / glider of its level
+when its bag holds none (`/item add self <template> 1`). Without it, a bot only uses what it
+already carries; a mount it never gets is not retried for half an hour.
+
+**Limits.** The summon item and the glider are real items from the server data; a server whose
+data has no `item_summon_mates` / glider rows gets no mounts or gliders. There is no capture of
+the 1.2 client's exact mount speed or glider physics in this project, so `speed`, `glide_speed`
+and `glide_descent` are operator settings (the defaults are a horse's pace and a conservative
+glide), and the server does not validate either on a GM account. A bot does not use a carriage,
+an airship or a player's mount as a passenger.
 
 ## Farming (`[farm]`)
 

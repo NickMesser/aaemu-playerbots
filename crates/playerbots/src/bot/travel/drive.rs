@@ -554,7 +554,11 @@ fn refresh(ctx: &Ctx<'_>, inner: &mut Inner) {
 
 /// The route for a trip to `dest`.
 fn plan_route(ctx: &Ctx<'_>, inner: &Inner, dest: [f32; 2]) -> Route {
-    if laden(ctx) {
+    let gate_ok = blocked_by_buff(ctx, OPEN_SKILL).is_none();
+    let recall_ok = blocked_by_buff(ctx, RECALL_SKILL).is_none();
+    // a carried pack blocks every gate (610); a buff that blocks the skill makes the trip walk
+    // from the start instead of failing at a gate (the "blocked by a buff" log line)
+    if !plan::portal_allowed(laden(ctx), gate_ok, recall_ok) {
         return Route::Walk;
     }
     let now = ctx.now_ms;
@@ -609,6 +613,8 @@ fn plan_route(ctx: &Ctx<'_>, inner: &Inner, dest: [f32; 2]) -> Route {
         recall_at: recall,
         can_open,
         can_topup: ctx.gm_allowed(),
+        gate_ok,
+        recall_ok,
     });
     tracing::debug!(
         bot = %ctx.persona.name,
@@ -818,8 +824,13 @@ pub fn has_route(ctx: &mut Ctx<'_>, x: f32, y: f32) -> bool {
 }
 
 fn far_trip_with(ctx: &mut Ctx<'_>, inner: &mut Inner, x: f32, y: f32) -> bool {
-    // the server refuses a gate to a bot with a trade pack: walk (or /move) like before
-    if laden(ctx) && inner.auto.is_none() {
+    // the server refuses a gate to a bot with a trade pack, and a buff can block the skill: walk
+    // (or /move) like before, without starting a journey that can only fail
+    if !plan::portal_allowed(
+        laden(ctx),
+        blocked_by_buff(ctx, OPEN_SKILL).is_none(),
+        blocked_by_buff(ctx, RECALL_SKILL).is_none(),
+    ) {
         return false;
     }
     let now = ctx.now_ms;

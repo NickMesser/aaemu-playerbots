@@ -38,13 +38,15 @@ use std::fmt::Write as _;
 
 use aa_proto::cs::{self, Out};
 use aa_proto::sc_world::EquipSlot;
-use aa_world::Craft;
+use aa_world::{Craft, Relation};
 use smallvec::SmallVec;
 
+use crate::bot::cmd::{GoalKind, GoalMask};
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, Pace};
 use crate::bot::state::{dist2d, BotState, UnitKind};
 
+use super::quest::progress;
 use super::{FailReason, GoalStatus};
 
 pub use ledger::{spot_key, Ledger, Paid, SkipKind};
@@ -91,6 +93,22 @@ const SPAWN_MATCH_M: f32 = 15.0;
 const LEG_M: f32 = 280.0;
 /// Failed trips in a row after which the walk is given up.
 const MAX_TRIP_FAILS: u8 = 3;
+
+/// A run is only planned at this much health (hit points percent): a pack is dropped on death,
+/// so the bot rests first.
+const START_HP_PCT: u8 = 80;
+/// A bot that goes back for a dropped pack waits for this much health first (it just died).
+const RECOVER_HP_PCT: u8 = 60;
+/// A dropped pack is used from this close (metres).
+const PACK_CAST_M: f32 = 2.8;
+/// The bot walks up to this close to the dropped pack (metres).
+const PACK_STOP_M: f32 = 1.5;
+/// A use of the pack doodad is repeated after this long (ms).
+const PACK_CAST_GAP_MS: u64 = 2_500;
+/// Most uses of the pack doodad in one recovery.
+const MAX_PACK_CASTS: u8 = 4;
+/// The skill that picks a dropped pack up (`DoodadFuncRecoverItem`).
+const PACK_RECOVER_SKILL: u32 = 11_361;
 
 /// How long to wait for a bench or NPC object to show up once the bot stands at its spawn.
 const FIND_WAIT_MS: u64 = 8_000;
@@ -144,6 +162,14 @@ pub trait Env {
     fn craft(&self, id: u32) -> Option<&Craft>;
     /// Whether `item` is a trade pack some NPC buys.
     fn is_pack(&self, item: u32) -> bool;
+    /// Whether `template` is the doodad a dropped trade pack turns into.
+    fn is_pack_doodad(&self, _template: u32) -> bool {
+        false
+    }
+    /// The use skill of a doodad template (0 when unknown).
+    fn doodad_use_skill(&self, _template: u32) -> u32 {
+        0
+    }
     /// The lowest character level any pack craft needs (the craft skill's level requirement;
     /// selling needs none).
     fn min_pack_level(&self) -> u8;
@@ -217,6 +243,14 @@ impl Env for Live<'_, '_> {
         !self.0.world.specialty_buyers(item).is_empty()
     }
 
+    fn is_pack_doodad(&self, template: u32) -> bool {
+        self.0.world.is_pack_doodad(template)
+    }
+
+    fn doodad_use_skill(&self, template: u32) -> u32 {
+        self.0.world.doodad_use_skill(template)
+    }
+
     fn min_pack_level(&self) -> u8 {
         self.0.world.min_pack_craft_level()
     }
@@ -239,7 +273,8 @@ impl Env for Live<'_, '_> {
         let teleport = gm && ctx.cfg.bots.long_travel_teleport_m > 0.0;
         let labor = i32::from(ctx.state.me.labor);
         let st = &*ctx.state;
-        let level = st.me.level;
+        let (level, faction) = (st.me.level, st.me.faction);
+        let world = ctx.world;
         let craft_ok = |c: &Craft| {
             if st.econ.skipped(SkipKind::Craft, c.id, now) {
                 return false;
@@ -274,7 +309,15 @@ impl Env for Live<'_, '_> {
                 bench_ok: &bench_ok,
                 buyer_ok: &buyer_ok,
             };
-            let cands = plan::candidates(ctx.world, &q);
+            let cands: Vec<Plan> = plan::candidates(world, &q)
+                .into_iter()
+                .filter(|p| {
+                    // a GM bot is levelled to the craft in Supply: judge the route at the level
+                    // the bot will have for the run, not at its current one
+                    let run_level = level.max(world.craft(p.craft).map_or(0, |c| c.req_level));
+                    !route_risky(world, faction, run_level, [me[0], me[1]], p)
+                })
+                .collect();
             if let Some(p) = plan::pick(&cands, ctx.rng) {
                 return Some(p);
             }
@@ -329,6 +372,8 @@ enum Phase {
     /// Choose the route.
     #[default]
     Plan,
+    /// Walk back to the spot the bot died at and pick the dropped pack up.
+    Recover,
     /// Get the materials and labor.
     Supply,
     /// Walk to the workbench.
@@ -399,7 +444,7 @@ pub fn carried_pack(equipment: &[EquipSlot], is_pack: impl Fn(u32) -> bool) -> O
 /// GM supplies the rest. Without it the character needs the level of the lowest pack recipe and,
 /// for some recipe at its level, the labor and the materials in the bag.
 pub fn unavailable(ctx: &Ctx<'_>) -> Option<&'static str> {
-    if carried_pack_of(ctx).is_some() || ctx.gm_allowed() {
+    if pack_busy(ctx) || ctx.gm_allowed() {
         return None;
     }
     let (level, labor) = (ctx.state.me.level, i32::from(ctx.state.me.labor));
@@ -419,9 +464,63 @@ pub fn unavailable(ctx: &Ctx<'_>) -> Option<&'static str> {
 
 /// The trade pack the bot carries, if any.
 pub fn carried_pack_of(ctx: &Ctx<'_>) -> Option<u32> {
-    carried_pack(&ctx.state.equipment, |t| {
-        !ctx.world.specialty_buyers(t).is_empty()
-    })
+    carried_pack_in(ctx.world, &ctx.state.equipment)
+}
+
+/// [`carried_pack_of`] for code that has the world and the equipment but no [`Ctx`] (the bot
+/// task's command path).
+pub fn carried_pack_in(world: &aa_world::World, equipment: &[EquipSlot]) -> Option<u32> {
+    carried_pack(equipment, |t| !world.specialty_buyers(t).is_empty())
+}
+
+/// Whether the bot must not start anything but its trade run: it carries a pack, or one it
+/// dropped at a death spot waits to be picked up.
+pub fn pack_busy(ctx: &Ctx<'_>) -> bool {
+    // (a note past its deadline no longer holds the bot: the recovery writes it off when the run
+    // next looks at it, but nothing else may wait for that)
+    carried_pack_of(ctx).is_some()
+        || ctx
+            .state
+            .econ
+            .lost_pack()
+            .is_some_and(|lost| ctx.now_ms < lost.until_ms)
+}
+
+/// The goals that are not drawn while [`pack_busy`]: every goal but the trade run. A carrying
+/// bot does not leave the run for an event, a quest, a duel, another fight or a rest in the open;
+/// it only defends itself and sells the pack.
+pub fn pack_block_mask() -> GoalMask {
+    let mut mask = 0;
+    for g in GoalKind::ALL {
+        if g != GoalKind::TradeRun {
+            mask |= 1 << g.index();
+        }
+    }
+    mask
+}
+
+/// Whether a planned run crosses an area that is deadly for the bot or a zone owned by a hostile
+/// alliance (its guards attack on sight). Such a run is not crafted; another budget or route may
+/// avoid the area.
+pub fn route_risky(
+    world: &aa_world::World,
+    faction: u32,
+    level: u8,
+    from: [f32; 2],
+    plan: &Plan,
+) -> bool {
+    let deadly = |a: [f32; 2], b: [f32; 2]| {
+        progress::deadly(world, faction, level, (a[0], a[1]), (b[0], b[1]))
+    };
+    let mut hostile = |x: f32, y: f32| {
+        world.zone_info_at(x, y).is_some_and(|z| {
+            z.faction != 0 && world.relation(faction, z.faction) == Relation::Hostile
+        })
+    };
+    deadly(from, plan.bench)
+        || deadly(plan.bench, plan.buyer)
+        || plan::crosses_hostile_zone(from, plan.bench, &mut hostile)
+        || plan::crosses_hostile_zone(plan.bench, plan.buyer, &mut hostile)
 }
 
 /// Craft, carry and sell trade packs. See the module docs.
@@ -464,7 +563,7 @@ impl TradeRun {
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
         let status = self.step(&mut Live(ctx));
         self.finished |= status != GoalStatus::Running;
-        if matches!(self.phase, Phase::ToBench | Phase::ToBuyer) {
+        if matches!(self.phase, Phase::ToBench | Phase::ToBuyer | Phase::Recover) {
             // On the way: the combat controller only fights back against close attackers.
             ctx.combat.note_travelling(ctx.now_ms);
         }
@@ -478,7 +577,8 @@ impl TradeRun {
         if ctx.motion.is_moving() {
             ctx.motion.stop();
         }
-        if !self.finished && carried_pack_of(ctx).is_some() {
+        // (a death dropped the pack: the run is recovered by the next trade run, not by a rest)
+        if !self.finished && !ctx.state.me.dead && carried_pack_of(ctx).is_some() {
             ctx.state.econ.note_interrupted_run(ctx.now_ms);
         }
     }
@@ -497,6 +597,7 @@ impl TradeRun {
         }
         match self.phase {
             Phase::Plan => self.do_plan(env),
+            Phase::Recover => self.do_recover(env),
             Phase::Supply => self.do_supply(env),
             Phase::ToBench => self.do_to_bench(env),
             Phase::Craft => self.do_craft(env),
@@ -529,6 +630,15 @@ impl TradeRun {
     }
 
     fn headline(&self, env: &dyn Env) -> String {
+        if matches!(self.phase, Phase::Recover) {
+            return match env.state().econ.lost_pack() {
+                Some(lost) => format!(
+                    "Trade run: going back for the dropped pack ({})",
+                    length(dist2d(env.pos(), lost.pos))
+                ),
+                None => "Trade run: going back for the dropped pack".into(),
+            };
+        }
         let Some(plan) = self.plan else {
             return "Trade run: planning a route".into();
         };
@@ -536,6 +646,7 @@ impl TradeRun {
         let buyer = env.name(Named::Npc, plan.buyer_tpl);
         match self.phase {
             Phase::Plan => "Trade run: planning a route".into(),
+            Phase::Recover => "Trade run: going back for the dropped pack".into(),
             Phase::Supply => format!("Trade run: getting materials for {item}"),
             Phase::ToBench => format!(
                 "Trade run: going to {} to craft {item} ({})",
@@ -556,6 +667,48 @@ impl TradeRun {
 
     fn do_plan(&mut self, env: &mut dyn Env) -> GoalStatus {
         let carried = carried_pack(&env.state().equipment, |t| env.is_pack(t));
+        if let Some(lost) = env.state().econ.lost_pack() {
+            if carried == Some(lost.item) {
+                // (the pack is in the back slot again: recovered, or a relog in between)
+                env.state_mut().econ.clear_lost_pack();
+                env.say(&format!(
+                    "trade run: picked the dropped pack back up ({})",
+                    env.name(Named::Item, lost.item)
+                ));
+            } else if carried.is_some() {
+                env.state_mut().econ.clear_lost_pack();
+                env.state_mut().econ.note_pack_lost();
+                env.say("trade run: pack lost (a newer pack replaced the dropped one)");
+            } else if !env.is_pack(lost.item) {
+                // (the back slot held a glider, not a trade pack)
+                env.state_mut().econ.clear_lost_pack();
+            } else {
+                if env.state().me.hp_pct() < RECOVER_HP_PCT {
+                    env.stop();
+                    let text = "Trade run: resting before going back for the dropped pack";
+                    if self.text.as_ref() != text {
+                        env.say("trade run: resting first, the bot just died");
+                        self.text = text.into();
+                    }
+                    return GoalStatus::Running;
+                }
+                self.until_ms = 0;
+                self.enter(env, Phase::Recover);
+                return GoalStatus::Running;
+            }
+        }
+        if carried.is_none() && env.state().me.hp_pct() < START_HP_PCT {
+            env.stop();
+            let text = "Trade run: resting before the run";
+            if self.text.as_ref() != text {
+                env.say(&format!(
+                    "trade run: resting first ({}% hit points)",
+                    env.state().me.hp_pct()
+                ));
+                self.text = text.into();
+            }
+            return GoalStatus::Running;
+        }
         let need = env.min_pack_level();
         if carried.is_none() && env.state().me.level < need && !env.gm_allowed() {
             env.say(&format!(
@@ -593,6 +746,112 @@ impl TradeRun {
             self.enter(env, Phase::Supply);
         }
         GoalStatus::Running
+    }
+
+    /// Goes back to the spot the bot died at and picks the dropped pack up. The decision is
+    /// [`ledger::recovery_step`]; this only carries it out.
+    fn do_recover(&mut self, env: &mut dyn Env) -> GoalStatus {
+        let Some(lost) = env.state().econ.lost_pack() else {
+            self.enter(env, Phase::Plan);
+            return GoalStatus::Running;
+        };
+        // the pack is in the back slot again: the run goes on
+        if let Some(item) = carried_pack(&env.state().equipment, |t| env.is_pack(t)) {
+            env.state_mut().econ.clear_lost_pack();
+            env.say(&format!(
+                "trade run: picked the dropped pack back up ({})",
+                env.name(Named::Item, item)
+            ));
+            self.enter(env, Phase::Plan);
+            return GoalStatus::Running;
+        }
+        let pack = find_pack_doodad(env, lost.pos);
+        let waited_ms = if self.sent_ms == 0 {
+            0
+        } else {
+            env.now_ms().saturating_sub(self.sent_ms)
+        };
+        match ledger::recovery_step(
+            &lost,
+            env.now_ms(),
+            env.state().place.instance_id(),
+            env.pos(),
+            pack.map(|(obj, _, _, d)| (obj, d)),
+            waited_ms,
+        ) {
+            ledger::Recovery::Gone(why) => {
+                env.state_mut().econ.clear_lost_pack();
+                env.state_mut().econ.note_pack_lost();
+                env.say(&format!(
+                    "trade run: pack lost ({}; {})",
+                    env.name(Named::Item, lost.item),
+                    why.word()
+                ));
+                let reason = match why {
+                    ledger::PackGone::Expired => FailReason::Timeout,
+                    _ => FailReason::NoTarget,
+                };
+                self.fail(env, reason, "the dropped pack is gone")
+            }
+            ledger::Recovery::Return => {
+                self.sent_ms = 0;
+                match self.walk(env, [lost.pos[0], lost.pos[1]], ledger::PACK_RETURN_M) {
+                    Walk::Going => GoalStatus::Running,
+                    Walk::Stuck => self.fail(
+                        env,
+                        FailReason::Stuck,
+                        "could not get back to the dropped pack",
+                    ),
+                    Walk::There => {
+                        self.sent_ms = env.now_ms();
+                        GoalStatus::Running
+                    }
+                }
+            }
+            ledger::Recovery::Wait => {
+                if self.sent_ms == 0 {
+                    self.sent_ms = env.now_ms();
+                }
+                env.stop();
+                GoalStatus::Running
+            }
+            ledger::Recovery::Pick(obj) => {
+                let Some((_, template, pos, dist)) = pack else {
+                    return GoalStatus::Running;
+                };
+                if self.sent_ms == 0 {
+                    self.sent_ms = env.now_ms();
+                }
+                if dist > PACK_CAST_M {
+                    return match self.walk(env, [pos[0], pos[1]], PACK_STOP_M) {
+                        Walk::Going | Walk::There => GoalStatus::Running,
+                        Walk::Stuck => {
+                            self.fail(env, FailReason::Stuck, "could not reach the dropped pack")
+                        }
+                    };
+                }
+                if env.now_ms() < self.until_ms {
+                    return GoalStatus::Running;
+                }
+                if self.tries >= MAX_PACK_CASTS {
+                    return self.fail(
+                        env,
+                        FailReason::Timeout,
+                        "could not pick up the dropped pack",
+                    );
+                }
+                self.tries += 1;
+                self.until_ms = env.now_ms() + PACK_CAST_GAP_MS;
+                env.stop();
+                env.face(pos[0], pos[1]);
+                let skill = match env.doodad_use_skill(template) {
+                    0 => PACK_RECOVER_SKILL,
+                    s => s,
+                };
+                env.send(cs::start_skill_doodad(skill, env.state().me.obj, obj));
+                GoalStatus::Running
+            }
+        }
     }
 
     /// What the bot lacks for crafting plus selling.
@@ -726,6 +985,18 @@ impl TradeRun {
                 self.enter(env, Phase::Supply);
                 return GoalStatus::Running;
             }
+        }
+        if env.state().me.hp_pct() < START_HP_PCT {
+            env.stop();
+            let text = "Trade run: resting before crafting";
+            if self.text.as_ref() != text {
+                env.say(&format!(
+                    "trade run: resting first ({}% hit points)",
+                    env.state().me.hp_pct()
+                ));
+                self.text = text.into();
+            }
+            return GoalStatus::Running;
         }
         env.stop();
         env.face(pos[0], pos[1]);
@@ -1006,9 +1277,10 @@ pub fn collect_payments(ctx: &mut Ctx<'_>) {
         let e = &ctx.state.econ;
         let _ = write!(
             text,
-            " (mail {}; {} packs sold, {} earned in all)",
+            " (mail {}; {} packs sold, {} lost, {} earned in all)",
             p.mail_id,
             e.packs_sold,
+            e.packs_lost,
             coins(e.earned)
         );
         ctx.log.say(text);
@@ -1032,6 +1304,21 @@ fn find_bench(st: &BotState, plan: &Plan) -> Option<(u32, [f32; 3])> {
         .filter(|c| c.2 <= SPAWN_MATCH_M)
         .min_by(|a, b| a.2.total_cmp(&b.2))
         .map(|c| (c.0, c.1))
+}
+
+/// The dropped-pack doodad in view near the death spot `at` (the one nearest to the spot):
+/// `(object, template, position, distance to the bot)`. The distance is the bot's, not the
+/// spot's: the doodad is in view long before the bot is within reach of it.
+fn find_pack_doodad(env: &dyn Env, at: [f32; 3]) -> Option<(u32, u32, [f32; 3], f32)> {
+    let me = env.pos();
+    env.state()
+        .doodads
+        .iter()
+        .filter(|(_, d)| env.is_pack_doodad(d.template))
+        .map(|(&obj, d)| (obj, d.template, d.pos, dist2d(d.pos, at)))
+        .filter(|c| c.3 <= ledger::PACK_NEAR_M)
+        .min_by(|a, b| a.3.total_cmp(&b.3))
+        .map(|(obj, template, pos, _)| (obj, template, pos, dist2d(pos, me)))
 }
 
 /// The living buyer NPC in view that belongs to the planned spawn: `(object id, position)`.

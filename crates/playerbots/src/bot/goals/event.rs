@@ -535,6 +535,11 @@ fn offer(ctx: &Ctx<'_>, ask: bool) -> Option<Offer> {
     if !cfg.enabled || !board.any() {
         return None;
     }
+    // (a trade pack carrier does not leave the run for a rift, and neither does a bot that is
+    // going back for a pack it dropped)
+    if crate::bot::goals::trade_run::pack_busy(ctx) {
+        return None;
+    }
     let me = &ctx.state.me;
     let place = &ctx.state.place;
     let away = !me.spawned || me.dead || place.in_instance() || place.loading();

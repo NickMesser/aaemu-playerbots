@@ -168,6 +168,29 @@ pub struct MySlaveInfo {
     pub pos: Pos,
 }
 
+/// `SCMateSpawnedPacket` (G/systems/vehicles/packets.rs:69, writer :579-592): the owner's
+/// client creates its record of a summoned mate from it. The mate's unit state follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MateInfo {
+    /// Mate timeline id (`tl`); what `CSMountMate` / `CSUnMountMate` / `CSRemoveMate` name.
+    pub tl: u16,
+    /// Mate database id (`mates.id`).
+    pub id: u32,
+    /// The summon item instance id.
+    pub item_id: u64,
+    /// The mate's user state (1 = the server's default on spawn).
+    pub user_state: u8,
+    /// Mate experience.
+    pub experience: i32,
+    /// Mate mileage.
+    pub mileage: i32,
+    /// Spawn delay in milliseconds (0 on a summon).
+    pub spawn_delay_ms: u32,
+    /// The mount-bar skill slots: exactly ten `u32`s on the wire, zero padded (the 1.2 data has
+    /// at most nine).
+    pub skills: Box<[u32]>,
+}
+
 /// A ship's movement update (`SCOneUnitMovementPacket`, move type 3: `ShipMove`,
 /// G/models/movement.rs:552, built by G/systems/ai/physics/replication.rs:198).
 ///
@@ -286,6 +309,36 @@ pub(crate) fn read_processing_instance(s: &mut PacketStream) -> Res<Option<World
 }
 
 // ---- readers: boats ------------------------------------------------------------------------
+
+/// `SCMateSpawnedPacket` (G/systems/vehicles/packets.rs:69, writer :579): `u16 tl, u32 id,
+/// u64 item id, u8 user state, i32 experience, i32 mileage, u32 spawn delay`, then ten `u32`
+/// skill slots (the writer pads `10 - skills` zeros, G/systems/vehicles/packets.rs:90-92).
+pub(crate) fn read_mate_spawned(s: &mut PacketStream) -> Res<Option<WorldEvent>> {
+    let tl = s.read_u16()?;
+    let id = s.read_u32()?;
+    let item_id = s.read_u64()?;
+    let user_state = s.read_u8()?;
+    let experience = s.read_i32()?;
+    let mileage = s.read_i32()?;
+    let spawn_delay_ms = s.read_u32()?;
+    let mut skills = Vec::with_capacity(MATE_SKILL_SLOTS);
+    for _ in 0..MATE_SKILL_SLOTS {
+        skills.push(s.read_u32()?);
+    }
+    some(WorldEvent::MateSpawned(Box::new(MateInfo {
+        tl,
+        id,
+        item_id,
+        user_state,
+        experience,
+        mileage,
+        spawn_delay_ms,
+        skills: skills.into_boxed_slice(),
+    })))
+}
+
+/// Mount-bar skill slots of `SCMateSpawnedPacket` (`packets.rs:586`: always ten).
+pub const MATE_SKILL_SLOTS: usize = 10;
 
 /// `SCSlaveCreatedPacket` (G/systems/vehicles/packets.rs:107).
 pub(crate) fn read_slave_created(s: &mut PacketStream) -> Res<Option<WorldEvent>> {
