@@ -104,6 +104,45 @@ jump_rate = 1.0
 # Emotes (a wave, a bow, a sit) in life-like moments.
 emotes = true
 
+[survival]
+# Fewer deaths: when a bot may pull, when it runs and how it rests after a resurrection. The
+# defaults come from the 2026-11-11 death journal (1,407 deaths in 9.6 h, about three per
+# bot-hour while logged in). false = the old engagement, resting and travel behaviour; the death
+# line (killer, level gap, attackers, HP/MP, goal, zone, fleeing) is logged either way.
+enabled = true
+# A bot does not start a new fight below this many percent of hit points or mana.
+pull_min_hp_pct = 60
+pull_min_mp_pct = 20
+# Below this many percent of hit points a goal ends and the bot rests.
+rest_hp_pct = 50
+# Monsters this many levels above the bot and above grade 1 (elites, bosses) are not pulled;
+# neither is a target with more than max_pack hostile monsters within pack_radius_m of it (the
+# target included). Quest kill objectives obey the same rules.
+max_level_gap = 1
+max_grade = 1
+max_pack = 2
+pack_radius_m = 8.0
+# A monster fight is given up and the bot runs below this many percent of hit points, or with at
+# least flee_adds attackers while below flee_adds_hp_pct (0 = never run).
+flee_hp_pct = 40
+flee_adds = 3
+flee_adds_hp_pct = 60
+# After a resurrection the bot rests until this many percent of hit points, for at most
+# post_rez_rest_ms (milliseconds), before it takes the next goal. A rest that starts next to a
+# hostile monster first walks rest_safe_spot_m away from one within rest_hostile_m, and casts a
+# heal the rotation has (the Cleric's antithesis) below heal_hp_pct.
+post_rez_hp_pct = 75
+post_rez_rest_ms = 120000
+rest_safe_spot_m = 40.0
+rest_hostile_m = 20.0
+heal_hp_pct = 60
+# While travelling, a bot takes one waypoint around an aggressive monster more than
+# travel_danger_gap levels above it whose travel_aggro_m radius the straight line crosses, up to
+# travel_lookahead_m ahead.
+travel_danger_gap = 4
+travel_aggro_m = 15.0
+travel_lookahead_m = 60.0
+
 [sail]
 # The boat the sailing goal uses: "rowboat" (default), "clipper", "cutter", "junk", "yawl",
 # "schooner" or "auto" (the boat whose scroll the bot holds, else a boat of its own). Needs

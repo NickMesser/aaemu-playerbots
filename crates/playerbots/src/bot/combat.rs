@@ -33,6 +33,7 @@ use super::rotation::{
     self, CastKind, Decision, Inputs, LearnCtx, Learner, RotState, Rotation, SkillBook, TargetView,
 };
 use super::state::{dist2d, Unit, UnitKind};
+use super::survival::{self, PullBlocker, PullFacts};
 use super::watch::classify::{self, Refusal};
 use super::watch::Finding;
 
@@ -128,6 +129,14 @@ const KITE_MS: u64 = 2_500;
 const KITE_GAP_MS: u64 = 7_000;
 /// Hit points (percent) below which an unexpected duel challenge is declined.
 const DUEL_MIN_HP_PCT: u8 = 50;
+/// A monster fight the bot runs from lasts at most this long.
+const MONSTER_FLEE_MS: u64 = 12_000;
+/// ... and ends once the monster is this far behind.
+const MONSTER_FLEE_SAFE_M: f32 = 35.0;
+/// After running from a monster it is left alone this long.
+const FLEE_SHUN_MS: u64 = 8_000;
+/// A blocked pull is not tried again this soon.
+pub const PULL_RETRY_MS: u64 = 5_000;
 
 /// What one combat step came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,6 +539,14 @@ pub struct Combat {
     immune_refused: u32,
     /// The bot is running from a fight with a character (see [`pvp::fight::start_flee`]).
     fleeing: bool,
+    /// The monster the bot runs from (0 = the run is from a character).
+    flee_from: u32,
+    /// Until when the run from that monster lasts.
+    flee_until_ms: u64,
+    /// The bot's hit points when the fight began.
+    start_hp_pct: u8,
+    /// The bot's mana when the fight began.
+    start_mp_pct: u8,
 }
 
 impl Default for Combat {
@@ -577,6 +594,10 @@ impl Combat {
             obstructed: 0,
             immune_refused: 0,
             fleeing: false,
+            flee_from: 0,
+            flee_until_ms: 0,
+            start_hp_pct: 0,
+            start_mp_pct: 0,
         }
     }
 
@@ -675,9 +696,16 @@ impl Combat {
         self.fleeing = on;
     }
 
-    /// Whether the bot is running from a fight with a character.
+    /// Whether the bot is running from a fight.
     pub fn fleeing(&self) -> bool {
         self.fleeing
+    }
+
+    /// The hit points and mana (percent) the current fight started with, once the controller has
+    /// seen the target.
+    pub fn fight_start(&self) -> Option<(u8, u8)> {
+        self.engaged_at_ms
+            .map(|_| (self.start_hp_pct, self.start_mp_pct))
     }
 
     /// The result of the last [`Combat::tick`].
@@ -962,7 +990,11 @@ impl Combat {
         let now = ctx.now_ms;
         let travelling = ctx.combat.travelling(now);
         if ctx.combat.fleeing {
-            // running from a character: no new fight until the run is over
+            // running from a monster or a character: no new fight until the run is over
+            if ctx.combat.flee_from != 0 {
+                Self::monster_flee_step(ctx);
+                return CombatStatus::Idle;
+            }
             if pvp::fight::flee_step(ctx) {
                 return CombatStatus::Idle;
             }
@@ -995,7 +1027,16 @@ impl Combat {
             Self::loot_step(ctx);
             return CombatStatus::Idle;
         };
-        let engaged_at = *ctx.combat.engaged_at_ms.get_or_insert(now);
+        let engaged_at = match ctx.combat.engaged_at_ms {
+            Some(t) => t,
+            None => {
+                // what the bot had when the fight began, for the death line
+                ctx.combat.engaged_at_ms = Some(now);
+                ctx.combat.start_hp_pct = ctx.state.me.hp_pct();
+                ctx.combat.start_mp_pct = ctx.state.me.mp_pct();
+                now
+            }
+        };
 
         let Some((upos, dead, is_char, target_hp)) = ctx
             .state
@@ -1022,6 +1063,19 @@ impl Combat {
         let dist = dist2d(me, upos);
         // a fight with a character outside a duel is a pvp fight (`bot/pvp`): it has limits
         let pvp_fight = is_char && !ctx.combat.duel.in_duel();
+        // a monster fight that is going badly is left instead of fought to the death
+        let attackers = u8::try_from(ctx.state.threats.len())
+            .unwrap_or(u8::MAX)
+            .max(1);
+        if !is_char
+            && ctx.combat.duel_opponent == 0
+            && survival::should_flee(&ctx.cfg.survival, ctx.state.me.hp_pct(), attackers)
+        {
+            if Self::start_monster_flee(ctx, obj, upos) {
+                return CombatStatus::Idle;
+            }
+            return Self::lose(ctx, LostReason::Retreat);
+        }
         let (lost_at, timeout) = if pvp_fight {
             (pvp::fight::LOST_DISTANCE, pvp::fight::FIGHT_TIMEOUT_MS)
         } else if is_char {
@@ -1240,6 +1294,58 @@ impl Combat {
             }
             _ => {}
         }
+    }
+
+    /// Starts running from monster `obj` at `upos`: a recall point of the bot's own side within
+    /// reach, else straight away from it. Returns whether there is somewhere to run to.
+    fn start_monster_flee(ctx: &mut Ctx<'_>, obj: u32, upos: [f32; 3]) -> bool {
+        let name = monster_name(ctx, obj);
+        let Some(dest) = pvp::fight::flee_destination(ctx, upos) else {
+            return false;
+        };
+        let now = ctx.now_ms;
+        let hp = ctx.state.me.hp_pct();
+        let c = &mut *ctx.combat;
+        c.flee_from = obj;
+        c.flee_until_ms = now + MONSTER_FLEE_MS;
+        c.set_fleeing(true);
+        c.last_goto = None;
+        ctx.motion.chase_to(dest[0], dest[1], 4.0, Pace::Run, now);
+        ctx.log
+            .say(format!("survival: {hp}% hit points, running from {name}"));
+        true
+    }
+
+    /// One tick of a run from a monster; true while it lasts. The target is left alone for a
+    /// moment afterwards, so the controller does not turn round and fight it again at once.
+    fn monster_flee_step(ctx: &mut Ctx<'_>) -> bool {
+        let now = ctx.now_ms;
+        let from = ctx.combat.flee_from;
+        let me = ctx.state.me.pos;
+        let threat = ctx
+            .state
+            .units
+            .get(&from)
+            .filter(|u| u.kind == UnitKind::Npc && !u.dead())
+            .map(|u| u.dist2d(me));
+        let safe = threat.is_none_or(|d| d > MONSTER_FLEE_SAFE_M);
+        let over = now >= ctx.combat.flee_until_ms || safe || ctx.state.me.dead;
+        if !over && ctx.motion.is_moving() {
+            return true;
+        }
+        ctx.combat.flee_from = 0;
+        ctx.combat.set_fleeing(false);
+        ctx.combat.disengage();
+        if ctx.motion.is_moving() {
+            ctx.motion.stop();
+        }
+        if ctx.state.me.dead {
+            return false;
+        }
+        ctx.state.avoid_mut().ignore_obj(from, now + FLEE_SHUN_MS);
+        ctx.log
+            .debug(format!("survival: the run from unit {from} is over"));
+        false
     }
 
     /// Leaves `obj` alone after the controller gave it up. A goal that picked the fight does the
@@ -1584,6 +1690,52 @@ fn char_name(ctx: &Ctx<'_>, char_id: u32) -> String {
         .find(|u| u.kind == UnitKind::Character && u.id == char_id)
         .and_then(|u| u.name.as_deref())
         .map_or_else(|| format!("character {char_id}"), str::to_owned)
+}
+
+/// The name of a monster: the template's when the unit is gone.
+fn monster_name(ctx: &Ctx<'_>, obj: u32) -> String {
+    let Some(u) = ctx.state.units.get(&obj) else {
+        return format!("unit {obj}");
+    };
+    ctx.world
+        .npc(u.id)
+        .map_or_else(|| format!("unit {obj}"), |t| t.name.to_string())
+}
+
+/// Whether the bot must not start a fight with monster `obj` (`[survival]`), and why. Counts the
+/// hostile monsters around the target (the target included) as its pack; a character target is
+/// never gated here (PvP has its own rules).
+pub fn pull_blocked(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlocker> {
+    let cfg = &ctx.cfg.survival;
+    if !cfg.enabled {
+        return None;
+    }
+    let me = &ctx.state.me;
+    let u = ctx.state.units.get(&obj)?;
+    let template = attackable(ctx.world, me.faction, u)?;
+    let level = if u.level != 0 {
+        u.level
+    } else {
+        template.level
+    };
+    let mut hostiles = 0u8;
+    let radius = cfg.pack_radius_m.max(0.0);
+    for other in ctx.state.units.values() {
+        if other.dist2d(u.pos) <= radius && attackable(ctx.world, me.faction, other).is_some() {
+            hostiles = hostiles.saturating_add(1);
+        }
+    }
+    survival::pull_blocker(
+        cfg,
+        &PullFacts {
+            hp_pct: me.hp_pct(),
+            mp_pct: me.mp_pct(),
+            level: me.level,
+            target_level: level,
+            target_grade: template.grade,
+            hostiles,
+        },
+    )
 }
 
 /// The name of the unit with object id `obj` if it is a character in view.

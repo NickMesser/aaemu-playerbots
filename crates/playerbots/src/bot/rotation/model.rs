@@ -293,6 +293,15 @@ impl Rotation {
     pub fn uses_skill(&self, skill: u32) -> bool {
         self.skills.binary_search(&skill).is_ok()
     }
+
+    /// The first skill the rotation casts as a heal (`castHeal`), for the rest goal's self heal.
+    pub fn heal_skill(&self) -> Option<u32> {
+        self.rules
+            .iter()
+            .chain(self.filler.iter())
+            .find(|e| e.action == Action::CastHeal && e.skill != 0)
+            .map(|e| e.skill)
+    }
 }
 
 // ---- the file format -------------------------------------------------------------------------
@@ -817,6 +826,7 @@ mod tests {
         assert_eq!(r.filler[0].weight, 3.0);
         assert_eq!(r.filler[1].cond, Cond::Pvp);
         assert_eq!(&*r.filler[0].name, "cast:bolt");
+        assert_eq!(r.heal_skill(), Some(20), "the castHeal row's skill");
     }
 
     #[test]

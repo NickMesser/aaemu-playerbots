@@ -13,7 +13,9 @@ use aa_world::{Relation, Vec3};
 use smallvec::SmallVec;
 
 use crate::bot::avoid::UNREACHABLE_MS;
-use crate::bot::combat::{attackable, CombatStatus, Loss, FIGHT_TIMEOUT_MS};
+use crate::bot::combat::{
+    attackable, pull_blocked, CombatStatus, Loss, FIGHT_TIMEOUT_MS, PULL_RETRY_MS,
+};
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, Pace};
 
@@ -92,10 +94,21 @@ impl Grind {
         if ctx.combat.busy() {
             return GoalStatus::Running;
         }
-        if now >= self.end_ms || ctx.state.me.hp_pct() < LOW_HP_PCT {
+        let hurt_line = if ctx.cfg.survival.enabled {
+            ctx.cfg.survival.rest_hp_pct
+        } else {
+            LOW_HP_PCT
+        };
+        if now >= self.end_ms || ctx.state.me.hp_pct() < hurt_line {
             return GoalStatus::Done;
         }
         if let Some(obj) = self.pick_target(ctx) {
+            if let Some(why) = pull_blocked(ctx, obj) {
+                ctx.log
+                    .debug(format!("grind: not pulling unit {obj}: {}", why.word()));
+                self.ignore_for(obj, now + PULL_RETRY_MS);
+                return GoalStatus::Running;
+            }
             if self.phase == Phase::Walk {
                 ctx.motion.stop();
                 self.phase = Phase::Scan;

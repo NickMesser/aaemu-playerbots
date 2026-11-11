@@ -42,7 +42,7 @@ use aa_world::{
 use smallvec::SmallVec;
 
 use crate::bot::avoid::UNREACHABLE_MS;
-use crate::bot::combat::{CombatStatus, Loss};
+use crate::bot::combat::{pull_blocked, CombatStatus, Loss, PULL_RETRY_MS};
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, MoveFailure, Pace};
 use crate::bot::state::{dist2d, BotState, StateError, UnitKind};
@@ -588,7 +588,12 @@ impl Inner {
         }
         // (a trip is not cut short by the end of the run: it has a time limit of its own)
         let travelling = self.mode == Mode::Travel;
-        if (now >= self.end_ms && !travelling) || ctx.state.me.hp_pct() < LOW_HP_PCT {
+        let hurt_line = if ctx.cfg.survival.enabled {
+            ctx.cfg.survival.rest_hp_pct
+        } else {
+            LOW_HP_PCT
+        };
+        if (now >= self.end_ms && !travelling) || ctx.state.me.hp_pct() < hurt_line {
             return GoalStatus::Done;
         }
         let status = match self.mode {
@@ -1357,6 +1362,15 @@ impl Inner {
 
     fn do_kill(&mut self, ctx: &mut Ctx<'_>, templates: &[u32]) -> GoalStatus {
         if let Some(obj) = self.pick_mob(ctx, templates) {
+            if let Some(why) = pull_blocked(ctx, obj) {
+                ctx.log.debug(format!(
+                    "quest {}: not pulling unit {obj}: {}",
+                    self.quest,
+                    why.word()
+                ));
+                self.ignore_for(obj, ctx.now_ms + PULL_RETRY_MS);
+                return GoalStatus::Running;
+            }
             if ctx.motion.is_moving() && self.spot.is_some() {
                 ctx.motion.stop();
             }
