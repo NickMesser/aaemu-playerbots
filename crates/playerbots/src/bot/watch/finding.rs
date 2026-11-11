@@ -104,6 +104,28 @@ pub enum Finding {
         /// Spawn points the bot stood at.
         spots: u8,
     },
+    /// An NPC or doodad is in view but the bot cannot get within the server's reach of it in
+    /// 3D (a house storey or a cave floor the navigation mesh has no way to).
+    RoleUnreachable {
+        /// Template id.
+        template: u32,
+        /// A doodad, not an NPC.
+        doodad: bool,
+        /// What for.
+        role: Role,
+        /// Closest 3D distance the bot could get, in metres.
+        dist_m: f32,
+    },
+    /// `SCQuestUnitReqFailed`: a start component's unit requirement refused the quest (for
+    /// example "quest 1136 must be in progress first").
+    QuestUnitReq {
+        /// Quest template.
+        quest: u32,
+        /// `unit_reqs.kind_id`.
+        kind: u8,
+        /// Requirement value (the quest id for kind 0x25).
+        value: u32,
+    },
     /// Confirmed casts at a target never cost it a point (or the server said it is immune).
     TargetImmune {
         /// The monster template.
@@ -389,6 +411,56 @@ impl Finding {
                 .fact("template", template)
                 .fact("role", role.word())
             }
+            Finding::RoleUnreachable {
+                template,
+                doodad,
+                role,
+                dist_m,
+            } => {
+                let name = if doodad {
+                    named(template, names.doodad(template))
+                } else {
+                    npc_name(names, template)
+                };
+                IssueReport::new(
+                    IssueKind::TargetUnreachable,
+                    format!("template={template} role={}", role.word()),
+                    format!(
+                        "{} {} {name} could not be reached (closest {dist_m:.0} m)",
+                        if doodad { "Doodad" } else { "NPC" },
+                        role.word()
+                    ),
+                )
+                .expected("the bot walks within the server's quest reach (15 m) of the target")
+                .actual(format!(
+                    "the nearest walkable spot stayed {dist_m:.0} m away in 3D: the target is on \
+                     another floor and the navigation mesh has no way there"
+                ))
+                .suspect(Suspect::Bot)
+                .severity(Severity::Low)
+                .area(if doodad { AREA_WORLD } else { AREA_NPCS })
+                .fact("template", template)
+                .fact("role", role.word())
+                .fact("distance_m", format!("{dist_m:.1}"))
+            }
+            Finding::QuestUnitReq { quest, kind, value } => IssueReport::new(
+                IssueKind::QuestRefused,
+                format!("quest={quest} unit_req={kind}:{value}"),
+                format!(
+                    "The server refused to start quest {} (unit requirement {kind} value {value})",
+                    quest_name(names, quest)
+                ),
+            )
+            .expected("the quest starts: the bot's own start gates let it through")
+            .actual(format!(
+                "SCQuestUnitReqFailed with kind {kind} and value {value}"
+            ))
+            .suspect(if kind == 0x25 { Suspect::Bot } else { Suspect::Unknown })
+            .severity(Severity::Low)
+            .area(AREA_QUESTS)
+            .fact("quest", quest)
+            .fact("kind", kind)
+            .fact("value", value),
             Finding::TargetImmune {
                 npc,
                 casts,
@@ -711,6 +783,17 @@ mod tests {
                 doodad: true,
                 role: Role::Objective,
                 spots: 1,
+            },
+            Finding::RoleUnreachable {
+                template: 5224,
+                doodad: false,
+                role: Role::TurnIn,
+                dist_m: 46.0,
+            },
+            Finding::QuestUnitReq {
+                quest: 1137,
+                kind: 0x25,
+                value: 1136,
             },
             Finding::TargetImmune {
                 npc: 5,

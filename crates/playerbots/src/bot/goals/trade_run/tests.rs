@@ -17,8 +17,10 @@ const BENCH_TPL: u32 = 4233;
 const BUYER_TPL: u32 = 14766;
 const BENCH_OBJ: u32 = 0x777;
 const BUYER_OBJ: u32 = 0x888;
+const PACK_OBJ: u32 = 0x999;
 const ME_OBJ: u32 = 0x400;
 const BACKPACK_SLOT: u8 = 26;
+const PACK_DOODAD: u32 = 6059;
 
 struct Fake {
     now: u64,
@@ -74,6 +76,8 @@ impl Fake {
         st.me.spawned = true;
         st.me.labor = 50;
         st.me.level = 10;
+        st.me.hp = 1_000;
+        st.me.hp_max = 1_000;
         let mut crafts = FxHashMap::default();
         crafts.insert(CRAFT, craft());
         Fake {
@@ -139,6 +143,20 @@ impl Fake {
         self.feed(WorldEvent::UnitState(Box::new(npc(
             BUYER_OBJ, BUYER_TPL, 300.0, 0.0,
         ))));
+    }
+
+    fn show_pack(&mut self, x: f32, y: f32) {
+        self.feed(WorldEvent::DoodadsCreated(smallvec![DoodadInfo {
+            obj: PACK_OBJ,
+            template: PACK_DOODAD,
+            pos: (x, y, 100.0),
+            owner_obj: 0,
+            parent_obj: 0,
+            phase: 1,
+            owner_id: 0,
+            quest_glow: 0,
+            has_loot: false,
+        }]));
     }
 
     fn equip_pack(&mut self) {
@@ -215,6 +233,12 @@ impl Env for Fake {
     }
     fn is_pack(&self, item: u32) -> bool {
         item == PACK
+    }
+    fn is_pack_doodad(&self, template: u32) -> bool {
+        template == PACK_DOODAD
+    }
+    fn doodad_use_skill(&self, _template: u32) -> u32 {
+        0
     }
     fn min_pack_level(&self) -> u8 {
         10
@@ -648,6 +672,121 @@ fn at_the_buyer() -> (Fake, TradeRun) {
     steps(&mut g, &mut f, 4);
     assert_eq!(g.phase, Phase::Selling, "{:?}", g.phase);
     (f, g)
+}
+
+#[test]
+fn a_hurt_bot_rests_before_crafting() {
+    let mut f = Fake::new(true);
+    f.st.me.hp = 500; // 50 %
+    let mut g = run();
+    steps(&mut g, &mut f, 3);
+    assert_eq!(g.phase, Phase::Plan);
+    assert!(f.new_plan.is_some(), "no plan was drawn while hurt");
+    assert!(f.said_any("resting first (50% hit points)"));
+    // healthy again: the run is planned
+    f.st.me.hp = 1_000;
+    steps(&mut g, &mut f, 2);
+    assert_eq!(g.phase, Phase::Supply);
+}
+
+#[test]
+fn a_dropped_pack_is_fetched_and_the_run_goes_on() {
+    use aa_proto::opcodes::cs as op;
+    let mut f = Fake::new(true);
+    f.st.econ
+        .note_death_with_pack(PACK, [100.0, 0.0, 100.0], 0, f.now);
+    f.carry_plan = Some(Plan {
+        craft: 0,
+        bench_tpl: 0,
+        to_bench_m: 0.0,
+        ..plan()
+    });
+    f.pos = [0.0, 0.0, 100.0];
+    let mut g = run();
+    // the death spot is far: walk back there first
+    steps(&mut g, &mut f, 2);
+    assert_eq!(g.phase, Phase::Recover);
+    assert_eq!(
+        *f.travels.last().unwrap(),
+        (100.0, 0.0, ledger::PACK_RETURN_M)
+    );
+    assert!(g
+        .text
+        .starts_with("Trade run: going back for the dropped pack"));
+    f.arrive();
+    // nothing in view yet: wait, then the doodad appears
+    steps(&mut g, &mut f, 2);
+    assert_eq!(g.phase, Phase::Recover);
+    f.show_pack(100.0, 0.0);
+    steps(&mut g, &mut f, 1);
+    assert_eq!(
+        f.out.last().unwrap(),
+        &cs::start_skill_doodad(PACK_RECOVER_SKILL, ME_OBJ, PACK_OBJ)
+    );
+    assert_eq!(f.out.last().unwrap().opcode, op::CSStartSkillPacket);
+    // the pack is in the back slot: the run carries it to the buyer
+    f.equip_pack();
+    steps(&mut g, &mut f, 3);
+    assert!(f.st.econ.lost_pack().is_none());
+    assert!(f.said_any("picked the dropped pack back up"));
+    assert_eq!(g.phase, Phase::ToBuyer);
+    assert_eq!(*f.travels.last().unwrap(), (300.0, 0.0, NPC_STOP_M));
+}
+
+#[test]
+fn a_dropped_pack_in_view_from_afar_is_walked_up_to_before_the_pickup() {
+    let mut f = Fake::new(true);
+    f.st.econ
+        .note_death_with_pack(PACK, [100.0, 0.0, 100.0], 0, f.now);
+    f.carry_plan = Some(Plan {
+        craft: 0,
+        bench_tpl: 0,
+        to_bench_m: 0.0,
+        ..plan()
+    });
+    // 20 m short of the death spot: inside the return radius, the doodad already in view
+    f.pos = [80.0, 0.0, 100.0];
+    f.show_pack(100.0, 0.0);
+    let mut g = run();
+    steps(&mut g, &mut f, 2);
+    assert_eq!(g.phase, Phase::Recover);
+    // no skill is sent from out of reach: the bot walks to the doodad first
+    assert!(
+        !f.out
+            .iter()
+            .any(|o| o.opcode == aa_proto::opcodes::cs::CSStartSkillPacket),
+        "the pickup was tried from 20 m away"
+    );
+    assert_eq!(
+        *f.travels.last().expect("a walk to the doodad"),
+        (100.0, 0.0, PACK_STOP_M)
+    );
+    // at the doodad the pickup is sent
+    f.arrive();
+    steps(&mut g, &mut f, 2);
+    assert_eq!(
+        f.out.last().unwrap(),
+        &cs::start_skill_doodad(PACK_RECOVER_SKILL, ME_OBJ, PACK_OBJ)
+    );
+}
+
+#[test]
+fn a_dropped_pack_that_is_gone_is_logged_and_counted() {
+    let mut f = Fake::new(true);
+    f.st.econ
+        .note_death_with_pack(PACK, [100.0, 0.0, 100.0], 0, f.now);
+    f.pos = [110.0, 0.0, 100.0]; // at the death spot
+    let mut g = run();
+    steps(&mut g, &mut f, 2);
+    assert_eq!(g.phase, Phase::Recover);
+    // the doodad never shows up
+    f.now += ledger::PACK_APPEAR_MS + 1_000;
+    let s = steps(&mut g, &mut f, 1);
+    assert_eq!(s, GoalStatus::Failed(FailReason::NoTarget));
+    assert!(f.said_any("the dropped pack is gone"));
+    assert!(f.said_any("pack lost (Item31855; taken or decayed)"));
+    assert_eq!(f.st.econ.packs_lost, 1);
+    assert!(f.st.econ.lost_pack().is_none());
 }
 
 #[test]

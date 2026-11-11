@@ -835,6 +835,66 @@ fn unit_points_are_divided_by_one_hundred() {
 }
 
 #[test]
+fn unit_damaged_reports_caster_and_target() {
+    // systems/skills/packets.rs:334-389: CastAction::Skill, SkillCaster::Unit, the two object
+    // ids, crime state, two PISC groups, the hit tail.
+    let mut s = PacketStream::new();
+    s.write_u8(0)
+        .write_u32(14_001)
+        .write_u16(7) // CastAction::Skill
+        .write_u8(0)
+        .write_bc(0x0102) // SkillCaster::Unit
+        .write_bc(0x0102)
+        .write_bc(0x0304)
+        .write_u8(0) // crime state
+        .write_pisc(&[1_000, 5, 0])
+        .write_pisc(&[0, 0, 9])
+        .write_u8(0)
+        .write_u16(288 | 1)
+        .write_u8(1)
+        .write_u8(1);
+    assert_eq!(
+        game(sc::SCUnitDamagedPacket, &s),
+        WorldEvent::UnitDamaged {
+            caster: 0x0102,
+            target: 0x0304,
+        }
+    );
+    no_panic_on_truncation(sc::SCUnitDamagedPacket, s.as_bytes());
+    // An item caster carries the item fields after the object id.
+    let mut s = PacketStream::new();
+    s.write_u8(0)
+        .write_u32(14_001)
+        .write_u16(7)
+        .write_u8(2)
+        .write_bc(0x0102)
+        .write_u64(0x55)
+        .write_u32(0x66)
+        .write_u8(1)
+        .write_u32(0x77)
+        .write_bc(0x0102)
+        .write_bc(0x0304)
+        .write_u8(0)
+        .write_pisc(&[1, 0, 0])
+        .write_pisc(&[0, 0, 0])
+        .write_u8(0)
+        .write_u16(288)
+        .write_u8(1)
+        .write_u8(1);
+    assert_eq!(
+        game(sc::SCUnitDamagedPacket, &s),
+        WorldEvent::UnitDamaged {
+            caster: 0x0102,
+            target: 0x0304,
+        }
+    );
+    // An unknown cast action is a malformed packet, not a hit.
+    let mut s = PacketStream::new();
+    s.write_u8(9).write_raw(&[0; 40]);
+    assert!(parse(1, sc::SCUnitDamagedPacket, s.as_bytes()).is_err());
+}
+
+#[test]
 fn unit_death_with_and_without_a_killer() {
     // systems/skills/packets.rs:407
     let mut s = PacketStream::new();

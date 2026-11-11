@@ -6,9 +6,13 @@ World coordinates: metres, x east, y north, z up; `main_world` spans 35×38 cell
 
 ## `heights_<world>.bin` — terrain height grid
 
+The magic doubles as the format version: `PBHGT002` since low-resolution sector nodes are
+resampled like the original client. Files baked with `PBHGT001` hold the old C# heights and are
+rejected with a re-bake hint: existing installs must re-run `playerbots bake`.
+
 | Offset | Type | Field |
 | --- | --- | --- |
-| 0 | `[u8; 8]` | magic `PBHGT001` |
+| 0 | `[u8; 8]` | magic `PBHGT002` |
 | 8 | u32 | `width` — samples along x |
 | 12 | u32 | `height` — samples along y |
 | 16 | f32 | `origin_x` — world x of sample column 0 |

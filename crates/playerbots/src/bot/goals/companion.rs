@@ -390,11 +390,12 @@ impl Run {
                 };
                 self.door = pick_door(d, near);
             }
+            let entry_limit = ctx.cfg.dungeons.entry_limit.then_some(d.enter_count);
             let blocked = ctx
                 .state
                 .party
                 .as_deref()
-                .is_some_and(|p| p.blocked(d.zone_group, d.enter_count, now));
+                .is_some_and(|p| p.blocked(d.zone_group, entry_limit, now));
             f.door_known = self.door.is_some() && !blocked;
             let can_raise = ctx.gm_allowed() && ctx.cfg.behavior.dungeon_level_up;
             f.can_raise = can_raise;

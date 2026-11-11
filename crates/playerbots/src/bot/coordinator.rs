@@ -107,6 +107,10 @@ pub const LEVEL_GROWTH_SECS: u64 = 8;
 const LEVEL_WEIGHT_M: f32 = 25.0;
 /// Seconds between two sweeps (expiry and another look for pairs).
 const SWEEP_SECS: u64 = 3;
+/// The longest `[dungeons] relax_after_secs` that can still form a smaller party: a wish is dropped
+/// at [`WISH_TTL`] before the sweep plans, so the wait has to end with a sweep or two to spare.
+pub const MAX_RELAX_SECS: u64 = 140;
+const _: () = assert!(MAX_RELAX_SECS + 2 * SWEEP_SECS < WISH_TTL.as_secs());
 /// Most remembered pairings.
 const RECENT_MAX: usize = 64;
 /// Capacity of the coordinator's inbox.
@@ -229,6 +233,8 @@ pub struct Coordinator {
     standing: Vec<Standing>,
     formed: Vec<Formed>,
     next_party: u32,
+    /// Seconds a dungeon wish waits for a full party before a smaller one is formed.
+    relax_after_secs: u64,
     /// The wishes for a founding team (set by [`Coordinator::with_guilds`]).
     guilds: Option<GuildWishes>,
 }
@@ -248,6 +254,7 @@ pub fn channel(sink: Arc<dyn Dispatch>) -> (CoordHandle, Coordinator) {
             standing: Vec::new(),
             formed: Vec::new(),
             next_party: 1,
+            relax_after_secs: party::RELAX_AFTER_SECS,
             guilds: None,
         },
     )
@@ -257,6 +264,13 @@ impl Coordinator {
     /// Gives the coordinator the dungeons it may send parties to ([`party::sites`]).
     pub fn with_sites(mut self, sites: Vec<Site>) -> Coordinator {
         self.sites = sites;
+        self
+    }
+
+    /// Sets how long a dungeon wish waits for a full party before a smaller one is formed
+    /// (`[dungeons] relax_after_secs`).
+    pub fn with_party_relax(mut self, secs: u64) -> Coordinator {
+        self.relax_after_secs = secs;
         self
     }
 
@@ -440,7 +454,7 @@ impl Coordinator {
                 .iter()
                 .map(|w| (w.wish, now.saturating_duration_since(w.since).as_secs()))
                 .collect();
-            let Some(f) = party::plan(&wishes, &self.sites) else {
+            let Some(f) = party::plan(&wishes, &self.sites, self.relax_after_secs) else {
                 return;
             };
             let bots: SmallVec<[u32; party::MAX_PARTY]> =
@@ -858,6 +872,40 @@ mod tests {
     }
 
     #[test]
+    fn five_wishes_fill_a_five_player_dungeon_and_four_wait_for_the_relax_time() {
+        let (rec, _h, c) = coordinator();
+        let mut c = c.with_sites(vec![site(0, 50, 18, 55, 5, (0.0, 0.0))]);
+        let t0 = Instant::now();
+        for b in 1..=4u32 {
+            c.handle(CoordMsg::Party(wish(b, (b as f32, 0.0), 20)), t0);
+        }
+        assert!(parties(&rec).is_empty(), "four are not enough at first");
+        c.handle(CoordMsg::Party(wish(5, (5.0, 0.0), 25)), t0);
+        let sent = parties(&rec);
+        assert_eq!(sent.len(), 5, "every member is told");
+        let order = &sent[0].1;
+        assert!(sent.iter().all(|(_, o)| o == order), "one order for all");
+        assert_eq!(order.leader, 5, "the highest level leads");
+        let mut m: Vec<u32> = order.members.iter().copied().collect();
+        m.sort_unstable();
+        assert_eq!(m, [1, 2, 3, 4, 5]);
+        assert_eq!(c.wishing(), 0);
+        // four go after the configured relax time, not before
+        let (rec, _h, c) = coordinator();
+        let mut c = c
+            .with_sites(vec![site(0, 50, 18, 55, 5, (0.0, 0.0))])
+            .with_party_relax(30);
+        for b in 1..=4u32 {
+            c.handle(CoordMsg::Party(wish(b, (b as f32, 0.0), 20)), t0);
+        }
+        assert!(parties(&rec).is_empty());
+        c.expire(t0 + Duration::from_secs(29));
+        assert!(parties(&rec).is_empty(), "not yet");
+        c.expire(t0 + Duration::from_secs(31));
+        assert_eq!(parties(&rec).len(), 4, "a party of four after the wait");
+    }
+
+    #[test]
     fn a_pair_is_formed_only_after_the_wait_and_never_across_alliances() {
         let (rec, _h, c) = coordinator();
         let mut c = c.with_sites(vec![site(0, 50, 18, 55, 3, (0.0, 0.0))]);
@@ -929,6 +977,9 @@ mod tests {
             };
             c.handle(CoordMsg::Party(w), t0);
         }
+        // the high dungeon holds five: three wait for the relax time before going
+        assert!(parties(&rec).is_empty());
+        c.expire(t0 + Duration::from_secs(party::RELAX_AFTER_SECS + 1));
         let sent = parties(&rec);
         assert_eq!(sent.len(), 3);
         assert_eq!(sent[0].1.zone_group(), 45);

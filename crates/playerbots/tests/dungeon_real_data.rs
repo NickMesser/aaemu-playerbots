@@ -99,7 +99,7 @@ fn sharpwind_mines_is_the_cheapest_dungeon_for_three_level_20_bots_at_its_door()
         jump: false,
     };
     let wishes = [(wish(1, 0.0), 0), (wish(2, 2.0), 0), (wish(3, 4.0), 0)];
-    let f = party::plan(&wishes, &sites).expect("a party forms");
+    let f = party::plan(&wishes, &sites, party::RELAX_AFTER_SECS).expect("a party forms");
     assert_eq!(f.site.zone_group, 50);
     assert_eq!(f.members.len(), 3);
     // the nearest exit of the instance world from its spawn point

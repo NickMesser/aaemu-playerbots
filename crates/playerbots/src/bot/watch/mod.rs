@@ -250,6 +250,21 @@ impl Finding {
                 classify::TradeFault::ItemsOut { .. } => (8, 2, 0),
             },
             Finding::Payment { fault } => (9, fault as u64, 0),
+            Finding::RoleUnreachable {
+                template,
+                doodad,
+                role,
+                ..
+            } => (
+                10,
+                u64::from(template),
+                u64::from(doodad) | (role as u64) << 1,
+            ),
+            Finding::QuestUnitReq { quest, kind, value } => (
+                11,
+                u64::from(quest),
+                u64::from(kind) << 32 | u64::from(value),
+            ),
         };
         tag << 56 ^ a.rotate_left(24) ^ b.wrapping_mul(0x9E37_79B9_7F4A_7C15)
     }

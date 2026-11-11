@@ -32,12 +32,11 @@ pub use remote::{LootRule, Remote};
 
 /// The most members of one party (the server's team size for dungeons is 5).
 pub const MAX_PARTY: usize = 5;
-/// The size the coordinator aims at (capped by the dungeon's player limit).
-pub const PARTY_SIZE: usize = 3;
-/// A party of this many is formed after a wish has waited [`RELAX_AFTER_SECS`].
+/// The smallest party that runs a dungeon.
 pub const MIN_PARTY: usize = 2;
-/// Seconds after which a smaller party is good enough.
-pub const RELAX_AFTER_SECS: u64 = 45;
+/// Default seconds a wish waits for a full party before a smaller one is formed
+/// (`[dungeons] relax_after_secs`).
+pub const RELAX_AFTER_SECS: u64 = 120;
 /// Bots of one party start at most this far from each other (metres) ...
 pub const PARTY_NEAR_M: f32 = 800.0;
 /// ... plus this much for every second the longest-waiting member has waited.
@@ -488,10 +487,13 @@ impl PartyMem {
         }
     }
 
-    /// Whether the bot should not try `zone_group` now: the `enter_count` entries the server
-    /// allows per window are used up, or the server refused the dungeon lately.
-    pub fn blocked(&self, zone_group: u32, enter_count: u32, now_ms: u64) -> bool {
-        self.entries_in_window(zone_group, now_ms) >= enter_count as usize
+    /// Whether the bot should not try `zone_group` now: the server refused the dungeon lately,
+    /// or `enter_count` is set and the entries it allows per window are used up. `None` means the
+    /// entry limit is not counted (`[dungeons] entry_limit` off, as for 1.2).
+    pub fn blocked(&self, zone_group: u32, enter_count: Option<u32>, now_ms: u64) -> bool {
+        let used_up =
+            enter_count.is_some_and(|n| self.entries_in_window(zone_group, now_ms) >= n as usize);
+        used_up
             || self
                 .backoff
                 .iter()
@@ -648,20 +650,20 @@ fn dist((ax, ay): (f32, f32), (bx, by): (f32, f32)) -> f32 {
 ///
 /// Every wish in turn, longest-waiting first, is a seed; for each dungeon its bot can run, the
 /// planner takes the nearest other bots of the same alliance that can run it too, up to the
-/// party size ([`PARTY_SIZE`], less than the dungeon's limit) and within a distance that grows
-/// with the waiting time. A party of [`PARTY_SIZE`] is formed at once, a smaller one
-/// ([`MIN_PARTY`]) only after the seed waited [`RELAX_AFTER_SECS`]. Among the dungeons the
-/// cheapest wins (walking distance to the entrance plus a level-mismatch penalty); the leader is
-/// the member with the highest level. Without GM travel a dungeon farther than
-/// [`WALK_NEAR_M`] (growing with the waiting time) is out of reach.
-pub fn plan(wishes: &[(Wish, u64)], sites: &[Site]) -> Option<Formation> {
+/// dungeon's player limit ([`Site::max_party`], never more than [`MAX_PARTY`]) and within a
+/// distance that grows with the waiting time. A full party is formed at once, a smaller one
+/// ([`MIN_PARTY`]) only after the seed waited `relax_after_secs`. Among the dungeons the cheapest
+/// wins (walking distance to the entrance plus a level-mismatch penalty); the leader is the member
+/// with the highest level. Without GM travel a dungeon farther than [`WALK_NEAR_M`] (growing with
+/// the waiting time) is out of reach.
+pub fn plan(wishes: &[(Wish, u64)], sites: &[Site], relax_after_secs: u64) -> Option<Formation> {
     let mut seeds: SmallVec<[usize; 16]> = (0..wishes.len()).collect();
     seeds.sort_by_key(|&i| std::cmp::Reverse(wishes[i].1));
     for seed in seeds {
         let (sw, waited) = wishes[seed];
         let mut best: Option<(f32, Formation)> = None;
         for site in sites.iter().filter(|s| sw.fits(s)) {
-            let want = PARTY_SIZE.min(usize::from(site.max_party)).min(MAX_PARTY);
+            let want = usize::from(site.max_party).clamp(MIN_PARTY, MAX_PARTY);
             let near = PARTY_NEAR_M + PARTY_NEAR_GROWTH_M * waited as f32;
             let mut mates: SmallVec<[(f32, usize); 16]> = wishes
                 .iter()
@@ -677,7 +679,7 @@ pub fn plan(wishes: &[(Wish, u64)], sites: &[Site]) -> Option<Formation> {
             mates.sort_by(|a, b| a.0.total_cmp(&b.0));
             mates.truncate(want.saturating_sub(1));
             let size = mates.len() + 1;
-            let enough = size >= want || (size >= MIN_PARTY && waited >= RELAX_AFTER_SECS);
+            let enough = size >= want || (size >= MIN_PARTY && waited >= relax_after_secs);
             if !enough {
                 continue;
             }
@@ -1122,6 +1124,7 @@ mod tests {
             faction: 0,
             level: 20,
             flags: 0,
+            target: 0,
             name: None,
         }
     }
@@ -1135,6 +1138,7 @@ mod tests {
             faction: 0,
             level: 20,
             flags: 0,
+            target: 0,
             name: Some("x".into()),
         }
     }
@@ -1205,26 +1209,44 @@ mod tests {
     #[test]
     fn the_entry_limit_and_refusals_block_a_dungeon() {
         let mut m = PartyMem::default();
-        assert!(!m.blocked(50, 3, 10));
+        assert!(!m.blocked(50, Some(3), 10));
         for i in 0..3 {
             m.note_entry(50, 100 + i);
         }
-        assert!(m.blocked(50, 3, 1_000), "three entries used up");
+        assert!(m.blocked(50, Some(3), 1_000), "three entries used up");
         assert!(
-            !m.blocked(50, 3, 1_000 + ENTRY_WINDOW_MS),
+            !m.blocked(50, Some(3), 1_000 + ENTRY_WINDOW_MS),
             "the window passed"
         );
         // the server refused a group for ten minutes
         m.back_off(47, 600_000);
-        assert!(m.blocked(47, 3, 1_000));
-        assert!(!m.blocked(47, 3, 600_000));
+        assert!(m.blocked(47, Some(3), 1_000));
+        assert!(!m.blocked(47, Some(3), 600_000));
         // for good
         m.back_off(47, u64::MAX);
-        assert!(m.blocked(47, 3, u64::MAX - 1));
+        assert!(m.blocked(47, Some(3), u64::MAX - 1));
         for g in 0..10 {
             m.back_off(100 + g, 5);
         }
         assert_eq!(m.backoff.len(), 4);
+    }
+
+    #[test]
+    fn the_entry_limit_is_not_counted_when_it_is_switched_off() {
+        let mut m = PartyMem::default();
+        for i in 0..6 {
+            m.note_entry(50, 100 + i);
+        }
+        // `None` is `[dungeons] entry_limit = false` (the default): the entries never block
+        assert!(!m.blocked(50, None, 1_000));
+        assert!(
+            m.blocked(50, Some(3), 1_000),
+            "counting it blocks as before"
+        );
+        // a refusal the server sent is still learned with the counting switched off
+        m.back_off(47, 600_000);
+        assert!(m.blocked(47, None, 1_000));
+        assert!(!m.blocked(47, None, 600_000));
     }
 
     fn site(idx: u16, group: u32, lo: u8, hi: u8, max: u8, at: (f32, f32)) -> Site {
@@ -1267,7 +1289,7 @@ mod tests {
             at_secs(wish(3, (1100.0, 0.0), 19), 0),
             at_secs(wish(4, (1000.0, 50.0), 22), 0),
         ];
-        let f = plan(&w, &sites).expect("a party");
+        let f = plan(&w, &sites, RELAX_AFTER_SECS).expect("a party");
         assert_eq!(f.site.zone_group, 50);
         assert_eq!(f.members.len(), 3, "the dungeon holds three");
         // the leader is the highest level of the three that were chosen
@@ -1280,18 +1302,54 @@ mod tests {
     }
 
     #[test]
+    fn five_bots_of_the_right_level_nearby_fill_a_five_player_dungeon() {
+        let sites = [site(0, 50, 18, 55, 5, (1000.0, 0.0))];
+        let w = [
+            at_secs(wish(1, (900.0, 0.0), 20), 0),
+            at_secs(wish(2, (950.0, 10.0), 25), 0),
+            at_secs(wish(3, (1100.0, 0.0), 19), 0),
+            at_secs(wish(4, (1000.0, 50.0), 22), 0),
+            at_secs(wish(5, (980.0, -20.0), 21), 0),
+        ];
+        let f = plan(&w, &sites, RELAX_AFTER_SECS).expect("a party");
+        assert_eq!(f.site.zone_group, 50);
+        assert_eq!(f.members.len(), 5, "the dungeon holds five");
+        // the leader is the highest level of the five
+        let chosen = bots(&f, &w);
+        let lead_level = w[f.members[0]].0.level;
+        assert!(chosen.iter().all(|&b| {
+            let i = w.iter().position(|x| x.0.bot == b).unwrap();
+            w[i].0.level <= lead_level
+        }));
+        // four bots do not fill it: they wait the relax time, then go four
+        let four = &w[..4];
+        assert!(plan(four, &sites, RELAX_AFTER_SECS).is_none(), "not yet");
+        let mut patient = four.to_vec();
+        patient[0].1 = RELAX_AFTER_SECS - 1;
+        assert!(plan(&patient, &sites, RELAX_AFTER_SECS).is_none());
+        patient[0].1 = RELAX_AFTER_SECS;
+        assert_eq!(
+            plan(&patient, &sites, RELAX_AFTER_SECS)
+                .expect("a party of four after the wait")
+                .members
+                .len(),
+            4
+        );
+    }
+
+    #[test]
     fn two_bots_wait_for_a_third_and_then_go_alone() {
         let sites = [site(0, 50, 18, 55, 3, (0.0, 0.0))];
         let mut w = vec![
             at_secs(wish(1, (0.0, 0.0), 20), 0),
             at_secs(wish(2, (10.0, 0.0), 21), 0),
         ];
-        assert!(plan(&w, &sites).is_none(), "not yet");
+        assert!(plan(&w, &sites, RELAX_AFTER_SECS).is_none(), "not yet");
         w[0].1 = RELAX_AFTER_SECS;
-        let f = plan(&w, &sites).expect("a party of two after the wait");
+        let f = plan(&w, &sites, RELAX_AFTER_SECS).expect("a party of two after the wait");
         assert_eq!(f.members.len(), 2);
         // a lone bot never makes a party
-        assert!(plan(&w[..1], &sites).is_none());
+        assert!(plan(&w[..1], &sites, RELAX_AFTER_SECS).is_none());
     }
 
     #[test]
@@ -1304,30 +1362,36 @@ mod tests {
             at_secs(wish(2, (5.0, 0.0), 20), 0),
             at_secs(low, 0),
         ];
-        assert!(plan(&w, &sites).is_none());
+        assert!(plan(&w, &sites, RELAX_AFTER_SECS).is_none());
         let mut raise = low;
         raise.raise = true;
         let w2 = [w[0], w[1], at_secs(raise, 0)];
-        assert_eq!(plan(&w2, &sites).unwrap().members.len(), 3);
+        assert_eq!(
+            plan(&w2, &sites, RELAX_AFTER_SECS).unwrap().members.len(),
+            3
+        );
         // another alliance does not mix
         let mut other = wish(3, (0.0, 0.0), 20);
         other.alliance = 149;
         let w3 = [w[0], w[1], at_secs(other, 0)];
-        assert!(plan(&w3, &sites).is_none());
+        assert!(plan(&w3, &sites, RELAX_AFTER_SECS).is_none());
         // a bot that cannot enter the dungeon (entry limit) is left out
         let mut skip = wish(3, (0.0, 0.0), 20);
         skip.skip = 1;
         let w4 = [w[0], w[1], at_secs(skip, 0)];
-        assert!(plan(&w4, &sites).is_none());
+        assert!(plan(&w4, &sites, RELAX_AFTER_SECS).is_none());
         // too high a level
         let w5 = [w[0], w[1], at_secs(wish(3, (0.0, 0.0), 56), 0)];
-        assert!(plan(&w5, &sites).is_none());
+        assert!(plan(&w5, &sites, RELAX_AFTER_SECS).is_none());
         // bots far apart wait until the limit grows
         let far = wish(3, (PARTY_NEAR_M + 500.0, 0.0), 20);
         let mut w6 = [w[0], w[1], at_secs(far, 0)];
-        assert!(plan(&w6, &sites).is_none());
+        assert!(plan(&w6, &sites, RELAX_AFTER_SECS).is_none());
         w6[0].1 = 30;
-        assert_eq!(plan(&w6, &sites).unwrap().members.len(), 3);
+        assert_eq!(
+            plan(&w6, &sites, RELAX_AFTER_SECS).unwrap().members.len(),
+            3
+        );
     }
 
     #[test]
@@ -1339,19 +1403,31 @@ mod tests {
             at_secs(wish(2, (10.0, 0.0), 20), 0),
             at_secs(wish(3, (20.0, 0.0), 20), 0),
         ];
-        let f = plan(&w, &[far, near]).unwrap();
+        let f = plan(&w, &[far, near], RELAX_AFTER_SECS).unwrap();
         assert_eq!(f.site.zone_group, 47);
         // only a far dungeon: walkers cannot, bots that jump can
-        assert!(plan(&w, &[far]).is_none());
+        assert!(plan(&w, &[far], RELAX_AFTER_SECS).is_none());
         let mut jumpers = w;
         for x in jumpers.iter_mut() {
             x.0.jump = true;
         }
-        assert_eq!(plan(&jumpers, &[far]).unwrap().site.zone_group, 50);
+        assert_eq!(
+            plan(&jumpers, &[far], RELAX_AFTER_SECS)
+                .unwrap()
+                .site
+                .zone_group,
+            50
+        );
         // and the walkers' range grows with the wait
         let mut patient = w;
         patient[0].1 = 70;
-        assert_eq!(plan(&patient, &[far]).unwrap().site.zone_group, 50);
+        assert_eq!(
+            plan(&patient, &[far], RELAX_AFTER_SECS)
+                .unwrap()
+                .site
+                .zone_group,
+            50
+        );
     }
 
     #[test]
@@ -1362,7 +1438,7 @@ mod tests {
             at_secs(wish(2, (0.0, 0.0), 20), 0),
             at_secs(wish(3, (0.0, 0.0), 20), 0),
         ];
-        assert_eq!(plan(&w, &sites).unwrap().members.len(), 2);
+        assert_eq!(plan(&w, &sites, RELAX_AFTER_SECS).unwrap().members.len(), 2);
     }
 
     #[test]
@@ -1383,7 +1459,7 @@ mod tests {
             at_secs(a2, 30),
             at_secs(a3, 30),
         ];
-        let f = plan(&w, &sites).unwrap();
+        let f = plan(&w, &sites, RELAX_AFTER_SECS).unwrap();
         let chosen = bots(&f, &w);
         assert!(chosen.iter().all(|b| (1..=3).contains(b)), "{chosen:?}");
     }

@@ -166,6 +166,22 @@ pub struct Baked {
     pub navs: NavSet,
 }
 
+/// Loads the height grid. A missing file warns (the bots use the flat fallback); an unusable one
+/// is an error with the file path, so an old bake that must be re-run does not go unnoticed.
+fn load_terrain(path: &Path) -> Option<Terrain> {
+    if !path.is_file() {
+        tracing::warn!("baked height grid not found: {}", path.display());
+        return None;
+    }
+    match Terrain::open(path) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::error!("baked height grid unusable: {e:#}");
+            None
+        }
+    }
+}
+
 /// Runs `load` on `path` if the file exists; a missing file warns, a malformed one warns with the
 /// error and yields `None`.
 fn load_optional<T>(
@@ -196,11 +212,7 @@ impl Baked {
     /// `quest_spheres.json` and `zones_<world>.bin`, each optional.
     pub fn load(dir: &Path, world: &str) -> Baked {
         Baked {
-            terrain: load_optional(
-                &dir.join(format!("heights_{world}.bin")),
-                "height grid",
-                Terrain::open,
-            ),
+            terrain: load_terrain(&dir.join(format!("heights_{world}.bin"))),
             map: load_optional(
                 &dir.join(format!("map_{world}.json")),
                 "map calibration",

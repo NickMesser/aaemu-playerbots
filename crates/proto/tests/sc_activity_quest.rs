@@ -228,6 +228,72 @@ fn quest_failed() {
 }
 
 #[test]
+fn quest_unit_req_failed_reads_only_the_flags_that_are_set() {
+    // SCQuestUnitReqFailedPacket: u32 quest, bc unit, flags, then kind (0x01), message id
+    // (0x02) and value (0x04) in that order (packets.rs:177-206).
+    let mut s = PacketStream::new();
+    s.write_u32(1137).write_bc(0x0A_0B0C).write_u8(0);
+    assert_eq!(
+        event(sc::SCQuestUnitReqFailedPacket, &s),
+        ActivityEvent::QuestUnitReqFailed {
+            quest_id: 1137,
+            unit_obj: 0x0A_0B0C,
+            kind: 0,
+            message_id: 0,
+            value: 0,
+        }
+    );
+
+    let mut s = PacketStream::new();
+    s.write_u32(1137).write_bc(0x0A_0B0C).write_u8(0x05);
+    s.write_u8(0x25) // precomplete quest context
+        .write_u32(1136);
+    assert_eq!(
+        event(sc::SCQuestUnitReqFailedPacket, &s),
+        ActivityEvent::QuestUnitReqFailed {
+            quest_id: 1137,
+            unit_obj: 0x0A_0B0C,
+            kind: 0x25,
+            message_id: 0,
+            value: 1136,
+        }
+    );
+
+    let mut s = PacketStream::new();
+    s.write_u32(7).write_bc(9).write_u8(0x07);
+    s.write_u8(3).write_u16(0x1234).write_u32(0x5678_9ABC);
+    assert_eq!(
+        event(sc::SCQuestUnitReqFailedPacket, &s),
+        ActivityEvent::QuestUnitReqFailed {
+            quest_id: 7,
+            unit_obj: 9,
+            kind: 3,
+            message_id: 0x1234,
+            value: 0x5678_9ABC,
+        }
+    );
+
+    // Only the message id.
+    let mut s = PacketStream::new();
+    s.write_u32(7).write_bc(9).write_u8(0x02).write_u16(42);
+    assert_eq!(
+        event(sc::SCQuestUnitReqFailedPacket, &s),
+        ActivityEvent::QuestUnitReqFailed {
+            quest_id: 7,
+            unit_obj: 9,
+            kind: 0,
+            message_id: 42,
+            value: 0,
+        }
+    );
+
+    // A part the flags promise but the body does not have is refused.
+    let mut s = PacketStream::new();
+    s.write_u32(7).write_bc(9).write_u8(0x04).write_u16(1);
+    assert!(parse(1, sc::SCQuestUnitReqFailedPacket, s.as_bytes()).is_err());
+}
+
+#[test]
 fn quest_rewarded_by_mail() {
     // SCQuestRewardedByMailPacket: u8 n, u32 x n (packets.rs:161).
     let mut s = PacketStream::new();

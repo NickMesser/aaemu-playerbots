@@ -340,6 +340,23 @@ pub enum ActivityEvent {
         /// Reason byte.
         err: u8,
     },
+    /// `SCQuestUnitReqFailed`: a quest start component's unit requirement refused the request.
+    /// `u32 quest`, 3-byte `bc` unit object id, a flag byte, then the set parts in order:
+    /// `u8 kind` (bit 0x01), `u16 message id` (bit 0x02), `u32 value` (bit 0x04). A zero part is
+    /// not written. G/systems/quests/packets.rs:151-206 (the 1.2 client reader `FUN_397b5d00`).
+    QuestUnitReqFailed {
+        /// Quest template id.
+        quest_id: u32,
+        /// Object id of the unit the requirement names (the local player for a start request).
+        unit_obj: u32,
+        /// `unit_reqs.kind_id` (0 when not sent).
+        kind: u8,
+        /// System message id (0 when not sent).
+        message_id: u16,
+        /// Requirement value (0 when not sent); for `kind` 0x25 it is the quest that must be in
+        /// progress.
+        value: u32,
+    },
     /// `SCQuestRewardedByMail`: the rewards of these quests came by mail (inventory full).
     /// `u8 n`, `n x u32`. G/systems/quests/packets.rs:151-168.
     QuestRewardedByMail {
@@ -890,6 +907,21 @@ pub fn parse(level: u8, opcode: u16, body: &[u8]) -> Result<Option<ActivityEvent
             Ok(E::QuestFailed {
                 quest_id: s.read_u32()?,
                 err: s.read_u8()?,
+            })
+        },
+        sc::SCQuestUnitReqFailedPacket => |s| {
+            let quest_id = s.read_u32()?;
+            let unit_obj = s.read_bc()?;
+            let flags = s.read_u8()?;
+            let kind = if flags & 0x01 != 0 { s.read_u8()? } else { 0 };
+            let message_id = if flags & 0x02 != 0 { s.read_u16()? } else { 0 };
+            let value = if flags & 0x04 != 0 { s.read_u32()? } else { 0 };
+            Ok(E::QuestUnitReqFailed {
+                quest_id,
+                unit_obj,
+                kind,
+                message_id,
+                value,
             })
         },
         sc::SCQuestRewardedByMailPacket => |s| {

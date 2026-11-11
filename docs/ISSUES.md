@@ -26,9 +26,13 @@ pure function with tests in `watch/classify.rs`):
   login flow's refusals are not issues), a stall (no packet for 8 s or a ping that took more than
   5 s, key = phase; blamed on the bot when its own loop was starved). One report per outage.
 * **Quests:** a kill or a cast the server confirmed whose counter never moved (key = quest and
-  component); a quest start the bot's own gates let through that the server refuses (key = quest and
-  the server's code); a quest giver, turn-in NPC or quest doodad that is not at any spawn point the
-  world data has for it.
+  component; a kill of a monster another character tagged is not one: the server credits the tag,
+  and the bots read the first hit from `SCUnitDamaged`); a quest start the bot's own gates let
+  through that the server refuses (key = quest and the server's code; `SCQuestUnitReqFailed` keeps
+  its unit-requirement kind and value); a quest giver, turn-in NPC or quest doodad that is not at
+  any spawn point the world data has for it; an NPC or doodad in view that is on another floor
+  (a house storey, a cave under the terrain) with no walkable way within the server's 15 m
+  (key = template and role).
 * **Combat:** a monster that takes no damage from eight confirmed casts (or says it is immune); a
   skill refused for a reason the bot's own checks rule out (range, mana, cooldown, line of sight and
   moving are the bot's fault and stay local).

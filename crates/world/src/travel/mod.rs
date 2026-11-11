@@ -19,6 +19,7 @@ pub mod boat;
 pub mod dungeon;
 pub mod instance;
 pub mod mirage;
+pub mod mount;
 pub mod portal;
 pub mod zonegroup;
 
@@ -38,6 +39,7 @@ pub use instance::{
     InstanceDoodad, InstanceExit, InstanceNpc, InstanceSpawn, InstanceWorld, InstanceWorlds,
 };
 pub use mirage::Mirage;
+pub use mount::{GliderItem, MountItem, Mounts};
 pub use portal::{
     MemoryTome, PortalKit, PortalReagent, Portals, RecallPoint, RespawnPoint, WorldGate,
 };
@@ -110,6 +112,8 @@ pub struct Travel {
     pub dungeons: Dungeons,
     /// Boat scrolls and slave templates.
     pub boats: Boats,
+    /// Mount summon items and gliders.
+    pub mounts: Mounts,
     /// Mirage Isle, the market island (`None` when the data has no such portal).
     pub mirage: Option<Mirage>,
     /// Zone key to zone group: who hears the trade chat.
@@ -124,11 +128,13 @@ impl Travel {
         let worlds = InstanceWorlds::load(inp, &funcs)?;
         let dungeons = Dungeons::load(inp, &funcs, worlds)?;
         let boats = Boats::load(inp)?;
+        let mounts = Mounts::load(inp.conn)?;
         let mirage = Mirage::load(inp, &funcs, dungeons.worlds());
         let travel = Travel {
             portals,
             dungeons,
             boats,
+            mounts,
             mirage,
             zone_groups: ZoneGroups::load(inp.conn),
         };
@@ -140,6 +146,8 @@ impl Travel {
             dungeons = travel.dungeons.dungeons().len(),
             instance_worlds = travel.dungeons.worlds().all().len(),
             boat_scrolls = travel.boats.scrolls().len(),
+            mounts = travel.mounts.mount_count(),
+            gliders = travel.mounts.glider_count(),
             memory_kib = travel.bytes() / 1024,
             "travel data loaded"
         );
@@ -151,16 +159,18 @@ impl Travel {
         self.portals.bytes()
             + self.dungeons.bytes()
             + self.boats.bytes()
+            + self.mounts.bytes()
             + self.mirage.as_ref().map_or(0, Mirage::bytes)
             + self.zone_groups.bytes()
     }
 
     /// Heap bytes per part, for the memory report.
-    pub fn memory_breakdown(&self) -> [(&'static str, usize); 5] {
+    pub fn memory_breakdown(&self) -> [(&'static str, usize); 6] {
         [
             ("travel: portals", self.portals.bytes()),
             ("travel: dungeons + instance worlds", self.dungeons.bytes()),
             ("travel: boats", self.boats.bytes()),
+            ("travel: mounts + gliders", self.mounts.bytes()),
             (
                 "travel: Mirage Isle",
                 self.mirage.as_ref().map_or(0, Mirage::bytes),
@@ -268,6 +278,11 @@ impl World {
     /// The boat a scroll item summons.
     pub fn boat_for_scroll(&self, item: u32) -> Option<&SlaveTemplate> {
         self.travel().boats.boat_for_scroll(item)
+    }
+
+    /// Mount summon items and gliders.
+    pub fn mounts(&self) -> &Mounts {
+        &self.travel().mounts
     }
 }
 

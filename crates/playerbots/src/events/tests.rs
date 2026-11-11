@@ -188,6 +188,25 @@ fn the_list_carries_the_wave_and_the_target() {
 }
 
 #[test]
+fn a_running_event_names_the_kill_targets_of_its_waves() {
+    let b = board();
+    assert!(!b.runs_kill_target(ARCHER), "no event runs");
+    start(&b, RIFT);
+    assert!(b.runs_kill_target(ARCHER));
+    assert!(b.runs_kill_target(8826));
+    assert!(b.runs_kill_target(SOLDIER));
+    assert!(!b.runs_kill_target(9999), "not a wave target");
+    b.on_event(
+        &WorldEvent::TowerDefEnd {
+            id: RIFT,
+            zone_key: 257,
+        },
+        true,
+    );
+    assert!(!b.runs_kill_target(ARCHER), "the event ended");
+}
+
+#[test]
 fn the_end_packet_removes_the_event_and_a_late_repeat_changes_nothing() {
     let b = board();
     start(&b, RIFT);

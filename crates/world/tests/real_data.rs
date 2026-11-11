@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use aa_world::{ObjKind, QuestReport, QuestStart, Relation, Vec3, World, WorldPaths};
+use aa_world::{ObjKind, QuestAtlas, QuestReport, QuestStart, Relation, Vec3, World, WorldPaths};
 
 fn paths() -> Option<WorldPaths> {
     let compact = PathBuf::from(std::env::var_os("AA_COMPACT")?);
@@ -41,6 +41,59 @@ fn main_world_facts() {
     let t = Instant::now();
     let w = World::load(&paths).expect("load main_world");
     let load = t.elapsed();
+
+    // The closed zone keys of the data (Aubre Cradle, Airain Rock, Rainbow Field 1, ...) and the
+    // quest atlas that must not send a bot there.
+    assert!(w.zone_closed(150), "w_cradle_of_genesis (Aubre Cradle)");
+    assert!(w.zone_closed(154), "w_bronze_rock_1 (Airain Rock)");
+    assert!(w.zone_closed(146), "e_rainbow_field_1");
+    assert!(!w.zone_closed(129), "w_gweonid_forest_1 is open");
+    let atlas = QuestAtlas::build(&w, &|_| true);
+    let in_closed: Vec<(u32, u16)> = atlas
+        .points()
+        .iter()
+        .filter(|p| w.zone_closed(p.zone))
+        .map(|p| (p.quest, p.zone))
+        .collect();
+    assert!(
+        in_closed.is_empty(),
+        "quests are planned in closed zones: {in_closed:?}"
+    );
+
+    // The 13 quests whose item-use skill has a target NPC group (unit_reqs 0x22); the bot must
+    // have a group member to cast at (2394 negates the group: any other NPC).
+    let group_quests = [
+        2261u32, 2394, 2565, 134, 1769, 1790, 3381, 955, 3828, 4212, 4251, 614, 261,
+    ];
+    for quest in group_quests {
+        let q = w.quest(quest).unwrap_or_else(|| panic!("quest {quest}"));
+        let mut found = false;
+        for step in q.progress.iter() {
+            for obj in step.objectives.iter() {
+                let ObjKind::UseItem { item, .. } = &obj.kind else {
+                    continue;
+                };
+                let skill = w.item_use_skill(*item);
+                let needs = w.skill_needs(skill);
+                let Some((group, negate)) = needs.iter().find_map(|n| match n {
+                    aa_world::SkillNeed::NpcGroup(group, negate) => Some((*group, *negate)),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let members = w.quest_monster_group(group);
+                assert!(!members.is_empty(), "quest {quest}: group {group} is empty");
+                if !negate {
+                    assert!(
+                        members.iter().any(|m| w.npc_spawns_anywhere(*m)),
+                        "quest {quest}: no member of group {group} spawns"
+                    );
+                }
+                found = true;
+            }
+        }
+        assert!(found, "quest {quest} uses no target-group item skill");
+    }
 
     // ---- report -------------------------------------------------------------------------
     let ns = w.npc_spawn_stats();

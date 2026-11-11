@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use aa_world::{World, WorldPaths};
 use playerbots::bot::goals::trade_run::plan::{candidates, carry_only, Plan, Query};
+use playerbots::bot::goals::trade_run::route_risky;
 
 fn world() -> Option<Arc<World>> {
     static WORLD: OnceLock<Option<Arc<World>>> = OnceLock::new();
@@ -146,4 +147,36 @@ fn survey_of_the_specialty_workbenches() {
             nearest
         );
     }
+}
+
+#[test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA"]
+fn safe_routes_remain_near_the_nuian_start() {
+    let Some(w) = world() else {
+        eprintln!("AA_COMPACT / AA_SERVER_DATA not set");
+        return;
+    };
+    let faction = w.race_faction(1).expect("the Nuian faction");
+    let q = Query {
+        from: NUIAN_START,
+        max_route_m: 8_000.0,
+        radius_m: 8_000.0,
+        craft_ok: &|_| true,
+        bench_ok: &|_, _| true,
+        buyer_ok: &|_| true,
+    };
+    let cands = candidates(&*w, &q);
+    let safe: Vec<&Plan> = cands
+        .iter()
+        .filter(|p| !route_risky(&w, faction, 10, NUIAN_START, p))
+        .collect();
+    println!(
+        "{} of {} routes are safe for a level-10 Nuian",
+        safe.len(),
+        cands.len()
+    );
+    for p in &safe {
+        println!("  {}", describe(&w, p));
+    }
+    assert!(!safe.is_empty(), "every route near the start is risky");
 }

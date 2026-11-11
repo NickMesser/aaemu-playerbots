@@ -794,3 +794,31 @@ fn mirage_isle_portals_arrival_and_exit() {
 fn near_xy(p: Vec3, x: f32, y: f32, tol: f32) -> bool {
     (p.x - x).abs() <= tol && (p.y - y).abs() <= tol
 }
+
+#[test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+fn mounts_and_gliders_of_the_real_data() {
+    let Some(w) = load() else {
+        eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
+        return;
+    };
+    let m = w.mounts();
+    println!(
+        "mounts: {} rideable summon items, {} gliders",
+        m.mount_count(),
+        m.glider_count()
+    );
+    // The 1.2 default of `[mounts] item = 0`: the Lilyut horse.
+    let horse = m.mount(4177).expect("item 4177 summons the Lilyut horse");
+    assert_eq!(horse.npc, 3599);
+    assert_eq!(horse.use_skill, 10602);
+    assert_eq!(m.default_mount(0), Some(4177));
+    // The 1.2 default of `[mounts] glider_item = 0`: the old glider.
+    let glider = m.glider(16385).expect("item 16385 is Tooloop's old glider");
+    assert_eq!(glider.use_skill, 19230);
+    assert_eq!(m.default_glider(0), Some(16385));
+    // Every loaded mount has a summon skill and a driver seat (the loader drops the rest).
+    for (item, row) in m.iter_mounts().take(20) {
+        assert_ne!(row.use_skill, 0, "mount {item} has no use skill");
+    }
+}

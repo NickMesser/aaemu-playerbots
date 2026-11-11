@@ -126,6 +126,27 @@ fn d2(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+/// How often a route is sampled for a hostile zone (metres).
+const ZONE_STEP_M: f32 = 300.0;
+
+/// Whether the straight line from `from` to `to` passes through a zone `hostile_at` names. The
+/// sample is coarse (every [`ZONE_STEP_M`]), like the danger check of the quest planner: a route
+/// that only clips a hostile zone is still a route through its guards.
+pub fn crosses_hostile_zone(
+    from: [f32; 2],
+    to: [f32; 2],
+    hostile_at: &mut dyn FnMut(f32, f32) -> bool,
+) -> bool {
+    let d = d2(from, to);
+    let n = ((d / ZONE_STEP_M).ceil() as usize).max(1);
+    (0..=n).any(|i| {
+        let k = i as f32 / n as f32;
+        let x = from[0] + (to[0] - from[0]) * k;
+        let y = from[1] + (to[1] - from[1]) * k;
+        hostile_at(x, y)
+    })
+}
+
 /// What carrying a pack `dist` metres to a buyer that pays `price` costs, in metres.
 fn buyer_cost(dist: f32, price: u32) -> f32 {
     CARRY_WEIGHT * dist - price as f32 / COPPER_PER_METRE
@@ -508,6 +529,26 @@ pub(crate) mod tests {
         w.prices.insert((11, 500), 40_000);
         let p = carry_only(&w, 11, [1400.0, 0.0], &|_| true).unwrap();
         assert_eq!((p.buyer_tpl, p.price), (502, 140_000));
+    }
+
+    #[test]
+    fn a_route_through_a_hostile_zone_is_found() {
+        // a hostile strip between x 500 and 700: the straight line crosses it (the zone grid is
+        // sampled along the line)
+        let mut strip = |x: f32, _y: f32| (500.0..=700.0).contains(&x);
+        assert!(crosses_hostile_zone([0.0, 0.0], [1_000.0, 0.0], &mut strip));
+        let mut none = |_x: f32, _y: f32| false;
+        assert!(!crosses_hostile_zone([0.0, 0.0], [1_000.0, 0.0], &mut none));
+        // the endpoint counts too
+        let mut at_end = |x: f32, _y: f32| x >= 990.0;
+        assert!(crosses_hostile_zone(
+            [0.0, 0.0],
+            [1_000.0, 0.0],
+            &mut at_end
+        ));
+        // a zero-length route still asks about the spot
+        let mut here = |_x: f32, _y: f32| true;
+        assert!(crosses_hostile_zone([5.0, 5.0], [5.0, 5.0], &mut here));
     }
 
     #[test]

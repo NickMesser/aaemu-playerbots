@@ -276,7 +276,13 @@ impl QuestAtlas {
                     world.npc_spawns(template)
                 };
                 for p in spawns.iter().take(MAX_SPOTS) {
-                    spots.push((p.x, p.y, zone_of(world, q, *p), template, doodad));
+                    let zone = zone_of(world, q, *p);
+                    // A closed zone (Aubre Cradle, Airain Rock, ...) is no destination for a
+                    // bot: no ordinary player may be there.
+                    if world.zone_closed(zone) {
+                        continue;
+                    }
+                    spots.push((p.x, p.y, zone, template, doodad));
                 }
             }
             if !spots.is_empty() {
@@ -321,6 +327,7 @@ fn race_chains(world: &World) -> Vec<Chain> {
                         gender,
                         mother_faction: mother,
                         done: &all,
+                        in_journal: &all,
                         owns: &all,
                     },
                 )

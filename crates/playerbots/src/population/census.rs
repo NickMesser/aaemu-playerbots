@@ -248,6 +248,7 @@ mod tests {
             faction,
             level: 33,
             flags: 0,
+            target: 0,
             name: name.map(Into::into),
         }
     }

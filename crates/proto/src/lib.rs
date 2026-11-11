@@ -13,11 +13,13 @@
 //! - [`sc_travel`]: the payload types and readers of the travel packets: the teleport book and
 //!   recall districts (`SCCharacterPortals`, `SCCharacterReturnDistricts`, `SCPortalInfoSaved`,
 //!   `SCPortalDeleted`, `SCUnitPortalUsed`), instance dungeons (`SCProcessingInstance`,
-//!   `SCLoadInstance`) and boats (`SCSlaveCreated`, `SCMySlave`, `SCSlaveBound`,
-//!   `SCUnitAttached`/`Detached`, `SCSlaveDespawn`/`Removed`, ship `SCOneUnitMovement`). The
+//!   `SCLoadInstance`), boats (`SCSlaveCreated`, `SCMySlave`, `SCSlaveBound`,
+//!   `SCUnitAttached`/`Detached`, `SCSlaveDespawn`/`Removed`, ship `SCOneUnitMovement`) and
+//!   mates (`SCMateSpawned`). The
 //!   matching client packets are `cs::use_portal`, `cs::delete_portal`, `cs::notify_sub_zone`,
 //!   `cs::bind_slave`, `cs::discard_slave`, `cs::despawn_slave`, `cs::destroy_slave`,
-//!   `cs::ship_request`, and the skill casts with a skill object
+//!   `cs::mount_mate`, `cs::unmount_mate`, `cs::remove_mate`, `cs::ship_request`, and the skill
+//!   casts with a skill object
 //!   (`cs::record_portal`, `cs::rename_portal`, `cs::open_portal`, `cs::start_skill_*_with`).
 
 pub mod auction;

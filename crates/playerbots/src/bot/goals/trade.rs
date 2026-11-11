@@ -1928,6 +1928,7 @@ mod tests {
             faction: 0,
             level: 1,
             flags: 0,
+            target: 0,
             name: Some(name.into()),
         };
         assert!(is_partner(&unit(20, "x", UnitKind::Character), &o));

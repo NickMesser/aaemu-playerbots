@@ -81,7 +81,7 @@ instead (see [LLM control and the agent API](#llm-control-and-the-agent-api)).
 | Grind | Kill level-appropriate hostile NPCs near the bot (fallback when no quest is eligible). |
 | Duel | Coordinator pairs two idle bots; they meet, challenge/accept, fight with their PvP rotation, end on the server's `SCDuelEnded`. |
 | Trade | Coordinator pairs two bots; they meet, open a trade window, put up an item and/or money, lock, confirm. |
-| Trade run | Walk to a specialty workbench, craft a trade pack (`CSExecuteCraft`), carry it to a specialty NPC that buys it, sell (`CSSellBackpackGoods`), collect the payment mail. |
+| Trade run | Walk to a specialty workbench, craft a trade pack (`CSExecuteCraft`), carry it to a specialty NPC that buys it, sell (`CSSellBackpackGoods`), collect the payment mail. A run starts only at 80 % hit points and skips routes through areas far above the bot's level or zones of the hostile alliance. While the pack is carried the run is the only goal (no event, quest, duel, dungeon or other fight, and no portal the pack buff blocks); a bot that dies with the pack goes back to the death spot for the dropped doodad and only writes the pack off when it is gone (logged, and counted in `Ledger::packs_lost`). |
 | Housing | Get a design (and tax certificates), walk to a free spot inside a housing area, quote (`CSConstructHouseTax`) and place (`CSCreateHouse`); later "go home" when resting. |
 | Farm | Buy seeds, plant them on own land or a public farm, remember the plots, come back when they are ripe, harvest and replant; grows what the population director wishes for or the economy board calls scarce (see [Farming](#farming-botfarm-goal-farm)). |
 | Rest | Stand still out of combat until HP/MP recover. |
@@ -112,6 +112,14 @@ Bots also decline trade requests from real players unless `behavior.trade_with_p
 never when they can mint goods).
 
 ## Quest progression (`goals/quest/progress.rs`, `aa-world::quest_atlas`)
+
+Kills and NPC reach follow the server. The server credits a kill to the player that tagged the
+monster first (its party instead once the party did more than half of its health), so the bots
+read the first hit from the broadcast `SCUnitDamaged` packets and prefer monsters nobody else
+tagged; a killing blow on somebody else's tag no longer expects (or reports) quest credit. A
+quest request is measured in 3D by the server (15 m at an NPC, 20 m at a doodad): the goals walk
+to the target's own floor through the navigation mesh (the search is asked for the NPC's z) and
+report a target on an unreachable floor instead of stopping below it.
 
 The quest picker looks for a giver within 300 m, then within 1500 m. A bot that has done everything
 in that circle used to stay there (grinding and wandering filled in), so the Harani and Firran
@@ -835,7 +843,8 @@ told to `stay`, `publish` fills `BotSnapshot.party`.
 * A character that logs in again is still a member of its team (the server keeps the offline
   member), and gets the join packet again: a restarted bot follows its party at once.
 * A team member that casts the entrance of a dungeon its team has opened joins the team's
-  instance; the entry limit (`enter_count` per four hours and character) still counts.
+  instance; the entry limit (`enter_count` per four hours and character) still counts when
+  `[dungeons] entry_limit` is on (off by default: the 1.2 server has no dungeon entry limit).
 * The `0xe4` record carries the zone *key* (the instance's key inside a dungeon), not `zones.id`.
 * The server announces a target change only: a fight that began before a bot joined, or that goes
   on for minutes, is invisible to an event-driven assist, so the goal looks at the leader's last
@@ -1185,6 +1194,36 @@ after 15 s) instead of casting into a refusal; with `bots.long_travel_teleport_m
 `TravelState` is one pointer (the data is a lazily created `Box<Inner>`); `size_of::<Bot>()` grew by 8
 bytes. The server events it needs are routed by `state::route` (the portal events and the answers to
 skills 11215, 11216, 10594 and 16841); `apply_unit_state` tells it about gate NPCs (with their owner).
+
+## Mounts and gliders (`bot/mount/`)
+
+A bot rides a mount on long trips and glides down cliffs. The pieces:
+
+| Piece | Where | What |
+| --- | --- | --- |
+| [`plan`](../crates/playerbots/src/bot/mount/plan.rs) | pure | `Facts` -> at most two `Act`s: summon / board / leave / dismiss the mate, equip / deploy the glider, and the ledge rule. Every wait has a deadline and a refusal back-off. |
+| `duty` | `bot/mount/mod.rs` | The glue the brain calls every tick: reads the bag, the equipment and (with a worn glider) the terrain ahead, applies the acts, keeps the motion speeds and the movement object in sync. |
+| `Mem` | `bot/travel/mod.rs` (`Inner::mount`) | One per bot behind the travel pointer, so `size_of::<Bot>()` does not grow. The phase, the mate (`tl` / object id / position), the glider and the clocks. |
+| Motion | `bot/motion.rs` | `set_speeds` (mount pace), `set_move_obj` (movement packets name the mate while riding) and the glide (`TripMode::Glide`): a fixed heading, a descent, a landing and a navmesh replan. |
+| `Mounts` | `aa-world` `travel/mount.rs` | The server data: rideable `item_summon_mates` items (a driver seat in `model_bindings`), glider items (`item_backpacks.backpack_type_id = 2` with a use skill) and the lowest-id defaults. |
+
+**Server facts.** A mount is the summon item's `SpawnPet` skill (special effect type 24;
+`item_summon_mates` names the mate NPC), `CSMountMatePacket` 0x0a7 with the driver point, and
+`SCUnitAttached` back. A riding player's own `CSMoveUnit` is ignored (`world/session.rs:1191`), so
+the bot sends its movement updates with the mate's object id (the server accepts an owned mate as
+the moved target and guards its speed) and the character follows the attachment. `SCUnMountMate`
+0x0a8 and `CSRemoveMate` 0x0a4 end the ride. A glider is a back-slot item whose use skill the
+server accepts only with that item as caster (`systems/skills/glider.rs`); the flight itself is
+client physics, so the bot integrates it and sends the glide stance (4, `skills/glider.rs:71`) in
+its updates. The 1.2 client's exact mount speed and glider descent are not captured: `[mounts]
+speed`, `glide_speed` and `glide_descent` are operator settings, defaults conservative.
+
+**Tests.** The plan (summon threshold, combat/stop/blocked dismounts, refusals and timeouts, the
+far-mate dismissal, the idle despawn, the ledge rule, the glider grant) and the motion (glide
+descent, landing, stance packet, speed change, mate object id) are unit-tested in
+`bot/mount/tests.rs`; the packets have byte-exact tests in `crates/proto/tests/` (mount, unmount
+and remove builders; the `SCMateSpawned` reader); `travel_real_data.rs` checks the 1.2 defaults
+(4177 / 16385) against `compact.sqlite3`.
 
 ## Sailing (goal `sail`)
 

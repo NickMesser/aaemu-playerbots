@@ -552,6 +552,7 @@ pub(crate) mod tests {
             faction: 108,
             level: 30,
             flags: U_PACK,
+            target: 0,
             name: Some("Foe".into()),
         };
         let t = Target::of(&u, false, 28_091);

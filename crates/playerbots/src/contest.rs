@@ -118,6 +118,12 @@ impl Contest {
         self.others_at(key, bot, self.now_ms())
     }
 
+    /// The lowest bot id holding `key` now: the one that goes first when several want the same
+    /// single target (the others wait in id order rather than all casting at it).
+    pub fn first_holder(&self, key: u64) -> Option<u32> {
+        self.first_holder_at(key, self.now_ms())
+    }
+
     /// Keys held at all (expired claims not yet swept are counted).
     pub fn len(&self) -> usize {
         self.claims.lock().len()
@@ -150,6 +156,13 @@ impl Contest {
         self.claims.lock().get(&key).map_or(0, |h| {
             h.iter().filter(|e| e.0 != bot && e.1 > now_ms).count()
         })
+    }
+
+    fn first_holder_at(&self, key: u64, now_ms: u64) -> Option<u32> {
+        self.claims
+            .lock()
+            .get(&key)
+            .and_then(|h| h.iter().filter(|e| e.1 > now_ms).map(|e| e.0).min())
     }
 
     /// Sweeps the expired claims; when the table is still full, the key that expires first goes.
@@ -185,6 +198,19 @@ mod tests {
         c.claim_at(k, 3, 20);
         assert_eq!(c.others_at(k, 2, 30), 2);
         assert_eq!(c.others_at(unit_key(43), 2, 30), 0, "another key");
+    }
+
+    #[test]
+    fn the_lowest_holder_goes_first() {
+        let c = Contest::new();
+        let k = unit_key(9);
+        assert_eq!(c.first_holder_at(k, 0), None);
+        c.claim_at(k, 7, 0);
+        c.claim_at(k, 3, 0);
+        assert_eq!(c.first_holder_at(k, 10), Some(3));
+        c.release(k, 3);
+        assert_eq!(c.first_holder_at(k, 10), Some(7));
+        assert_eq!(c.first_holder_at(k, CLAIM_MS), None, "expired");
     }
 
     #[test]

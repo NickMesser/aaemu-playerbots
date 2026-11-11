@@ -38,7 +38,7 @@ you touch the code they cover:
 | `AA_COMPACT` | the AAEmu server's `compact.sqlite3` (`<AAEmu>/rust/crates/aaemu-game/app/Data/compact.sqlite3`) |
 | `AA_SERVER_DATA` | the AAEmu server's `app/Data` directory (worlds, spawns, `CharTemplates.json`) |
 | `AA_BAKED` | the output directory of `playerbots bake` |
-| `AA_PAK` | the client's `game_pak` (only for the navigation-mesh bake test in `crates/bake`) |
+| `AA_PAK` | the client's `game_pak` (the `nav_real` and `heights_real` tests in `crates/bake`) |
 
 ```sh
 AA_COMPACT=<...>/compact.sqlite3 AA_SERVER_DATA=<...>/Data AA_BAKED=<data dir> \

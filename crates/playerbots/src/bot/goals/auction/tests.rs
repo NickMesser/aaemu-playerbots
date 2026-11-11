@@ -260,6 +260,7 @@ impl Fake {
                 faction: 0,
                 level: 1,
                 flags: 0,
+                target: 0,
                 name: None,
             },
         );

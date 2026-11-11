@@ -50,6 +50,18 @@ pub struct PlanIn<'a> {
     pub can_open: bool,
     /// The bot may top up missing stones (GM allowed).
     pub can_topup: bool,
+    /// No buff on the bot blocks the open-gate skill (a carried trade pack blocks it too, see
+    /// [`portal_allowed`]).
+    pub gate_ok: bool,
+    /// No buff on the bot blocks the recall skill.
+    pub recall_ok: bool,
+}
+
+/// Whether a portal may be planned at all: a carried trade pack makes the server refuse every
+/// gate (`SCErrorMsg` 610), and a buff on the bot blocks the skill it names. The trip is walked
+/// from the start instead of failing at a gate.
+pub fn portal_allowed(laden: bool, gate_ok: bool, recall_ok: bool) -> bool {
+    !laden && (gate_ok || recall_ok)
 }
 
 /// The way to travel.
@@ -76,7 +88,7 @@ pub fn choose(p: &PlanIn<'_>) -> Route {
         return Route::Walk;
     }
     let walk = walk_secs(trip);
-    let gate = if p.can_open {
+    let gate = if p.can_open && p.gate_ok {
         p.cands
             .iter()
             .filter(|c| c.afford || p.can_topup)
@@ -87,11 +99,14 @@ pub fn choose(p: &PlanIn<'_>) -> Route {
     } else {
         None
     };
-    let recall = p
-        .recall_at
-        .map(|r| dist(r, p.dest))
-        .filter(|d| *d <= NEAR_ENTRY_M)
-        .map(|d| RECALL_OVERHEAD_S + walk_secs(d));
+    let recall = if p.recall_ok {
+        p.recall_at
+            .map(|r| dist(r, p.dest))
+            .filter(|d| *d <= NEAR_ENTRY_M)
+            .map(|d| RECALL_OVERHEAD_S + walk_secs(d))
+    } else {
+        None
+    };
     let best = match (gate, recall) {
         (Some((g, _)), Some(r)) if r <= g + RECALL_BIAS_S => Some((r, Route::Recall)),
         (Some((g, c)), _) => Some((g, Route::Gate(c))),
@@ -129,6 +144,8 @@ mod tests {
             recall_at: None,
             can_open: true,
             can_topup: false,
+            gate_ok: true,
+            recall_ok: true,
         }
     }
 
@@ -184,6 +201,27 @@ mod tests {
         p.recall_at = Some([3000.0, 60.0]);
         p.cands = &[];
         assert_eq!(choose(&p), Route::Recall);
+    }
+
+    #[test]
+    fn a_carried_pack_or_a_blocking_buff_keeps_the_trip_on_foot() {
+        let c = [cand(1, [3000.0, 0.0], true)];
+        // a pack blocks every gate; nothing is planned even with a perfect book
+        assert!(!portal_allowed(true, true, true));
+        assert!(portal_allowed(false, true, true));
+        assert!(!portal_allowed(false, false, false));
+        let mut p = input([3000.0, 0.0], &c);
+        p.gate_ok = false;
+        p.recall_ok = false;
+        assert_eq!(choose(&p), Route::Walk);
+        // the recall is still there when only the gate is blocked ...
+        p.recall_at = Some([3000.0, 0.0]);
+        p.recall_ok = true;
+        assert_eq!(choose(&p), Route::Recall);
+        // ... and the gate when only the recall is blocked
+        p.recall_ok = false;
+        p.gate_ok = true;
+        assert_eq!(choose(&p), Route::Gate(c[0]));
     }
 
     #[test]

@@ -25,8 +25,9 @@
 //!
 //! Refusals of the entry are typed ([`entry`]) and answered by kind; a dungeon the server turned
 //! away is left alone for a while (per zone group, see
-//! [`PartyMem`](crate::bot::party::PartyMem)); three entries per zone group and four hours are
-//! tracked like the server counts them. What the server does that the data and the protocol
+//! [`PartyMem`](crate::bot::party::PartyMem)). With `[dungeons] entry_limit` on, three entries per
+//! zone group and four hours are tracked like the server counts them; it is off by default
+//! because the 1.2 server has no entry limit. What the server does that the data and the protocol
 //! contradict is filed as an issue ([`report`]).
 //!
 //! The pieces: [`machine`] (the phases, pure), [`clear`] (the walk through the dungeon, pure),
@@ -221,12 +222,15 @@ fn gate(ctx: &Ctx<'_>) -> Gate {
     let level = st.me.level;
     let now = ctx.now_ms;
     let enabled = ctx.cfg.behavior.dungeons;
+    let entry_limit = ctx.cfg.dungeons.entry_limit;
     // (the search is the expensive part: only when everything else allows the goal)
     let fits = enabled
         && ctx.world.dungeons().iter().any(|d| {
             level_fits(level, d.level_min, d.level_max, raise)
                 && party::usable(ctx.world, d)
-                && !mem.is_some_and(|m| m.blocked(d.zone_group, d.enter_count, now))
+                && !mem.is_some_and(|m| {
+                    m.blocked(d.zone_group, entry_limit.then_some(d.enter_count), now)
+                })
         });
     Gate {
         enabled,

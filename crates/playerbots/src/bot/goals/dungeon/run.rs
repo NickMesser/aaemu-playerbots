@@ -638,6 +638,7 @@ impl Run {
     fn post_wish(&mut self, ctx: &mut Ctx<'_>) {
         let now = ctx.now_ms;
         let me = &ctx.state.me;
+        let entry_limit = ctx.cfg.dungeons.entry_limit;
         let mut skip = 0u32;
         if let Some(mem) = ctx.state.party.as_deref() {
             for s in party::sites(ctx.world) {
@@ -646,7 +647,7 @@ impl Run {
                     .dungeons()
                     .get(usize::from(s.idx))
                     .map_or(3, |d| d.enter_count);
-                if mem.blocked(s.zone_group, count, now) {
+                if mem.blocked(s.zone_group, entry_limit.then_some(count), now) {
                     skip |= 1 << s.idx;
                 }
             }

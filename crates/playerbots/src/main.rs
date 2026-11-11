@@ -319,7 +319,9 @@ async fn run(
     let (coord_handle, coordinator) = coordinator::channel(hub.clone() as Arc<dyn Dispatch>);
     // (without sites the coordinator never answers a wish for a dungeon)
     let coordinator = if cfg.behavior.dungeons {
-        coordinator.with_sites(playerbots::bot::party::sites(&world))
+        coordinator
+            .with_sites(playerbots::bot::party::sites(&world))
+            .with_party_relax(cfg.dungeons.relax_after_secs)
     } else {
         coordinator
     };

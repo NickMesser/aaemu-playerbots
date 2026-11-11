@@ -81,7 +81,8 @@ impl Req {
         match (self, ev) {
             (Req::QuestAccept, ServerEvent::Activity(a)) => match a {
                 ActivityEvent::QuestStarted { quest, .. } => quest.template == id,
-                ActivityEvent::QuestFailed { quest_id, .. } => *quest_id == id,
+                ActivityEvent::QuestFailed { quest_id, .. }
+                | ActivityEvent::QuestUnitReqFailed { quest_id, .. } => *quest_id == id,
                 ActivityEvent::Quests { list } => list.iter().any(|q| q.template == id),
                 _ => false,
             },

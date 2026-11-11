@@ -10,12 +10,16 @@
 //! only asks the [`Facts`] it is given, so it is tested with a fake world.
 
 use aa_proto::sc_activity::QuestRow;
-use aa_world::{ObjKind, Objective, Quest, QuestReport, World};
+use aa_world::{ObjKind, Objective, Quest, QuestReport, Vec3, World};
 
 use super::memory::Failure;
 
 /// Objectives this far above the bot are not attempted (the bot would die).
 pub const MAX_LEVEL_GAP: u8 = 6;
+/// `npcs.npc_grade_id` from which a kill target is a boss or elite; the bots have no boss logic.
+pub const BOSS_GRADE: u8 = 5;
+/// A boss/elite this many levels above the bot is not attempted (it would die).
+pub const BOSS_LEVEL_SLACK: u8 = 1;
 /// Most objective counters a quest row carries.
 pub const MAX_SLOTS: usize = 5;
 
@@ -27,6 +31,10 @@ pub trait Facts {
     fn doodad_spawns(&self, template: u32) -> bool;
     /// The level of an NPC template.
     fn npc_level(&self, template: u32) -> Option<u8>;
+    /// `npcs.npc_grade_id` of an NPC template (1 normal, higher grades elites and bosses).
+    fn npc_grade(&self, template: u32) -> u8;
+    /// Whether a spawn of the template can be walked to from the place the bot checks at.
+    fn npc_reachable(&self, template: u32) -> bool;
     /// Doodad templates (that spawn) which yield `item` when used.
     fn gather_doodads(&self, item: u32) -> &[u32];
     /// Centre and radius of the sign sphere of a quest component.
@@ -42,6 +50,11 @@ pub trait Facts {
 pub struct Env<'a> {
     /// The static world.
     pub world: &'a World,
+    /// Where the bot stands when it judges a quest; `None` skips the navigation check (the
+    /// atlas is built without a bot position).
+    pub from: Option<Vec3>,
+    /// Whether the bot walks on the navigation mesh; without it every spawn is reachable.
+    pub navmesh: bool,
 }
 
 impl Facts for Env<'_> {
@@ -55,6 +68,15 @@ impl Facts for Env<'_> {
 
     fn npc_level(&self, template: u32) -> Option<u8> {
         self.world.npc(template).map(|t| t.level)
+    }
+
+    fn npc_grade(&self, template: u32) -> u8 {
+        self.world.npc(template).map_or(1, |t| t.grade)
+    }
+
+    fn npc_reachable(&self, template: u32) -> bool {
+        self.from
+            .is_none_or(|from| !self.navmesh || self.world.npc_reachable(template, from))
     }
 
     fn gather_doodads(&self, item: u32) -> &[u32] {
@@ -270,13 +292,28 @@ fn kill_plan<'w>(
     own_level: u8,
 ) -> Result<&'w [u32], Failure> {
     let mut lowest: Option<u8> = None;
+    let (mut spawned, mut reachable, mut bosses) = (0u32, 0u32, 0u32);
     for t in templates {
-        if facts.npc_spawns(*t) {
-            let level = facts.npc_level(*t).unwrap_or(0);
-            lowest = Some(lowest.map_or(level, |l| l.min(level)));
+        if !facts.npc_spawns(*t) {
+            continue;
         }
+        spawned += 1;
+        let level = facts.npc_level(*t).unwrap_or(0);
+        // A boss or elite the bot cannot fight at its level: skip it, like the combat rules do.
+        if facts.npc_grade(*t) >= BOSS_GRADE && level > own_level.saturating_add(BOSS_LEVEL_SLACK) {
+            bosses += 1;
+            continue;
+        }
+        if !facts.npc_reachable(*t) {
+            continue;
+        }
+        reachable += 1;
+        lowest = Some(lowest.map_or(level, |l| l.min(level)));
     }
     match lowest {
+        None if bosses > 0 => Err(Failure::TooStrong),
+        None if spawned > 0 && reachable == 0 => Err(Failure::Unreachable),
+        None if reachable > 0 => Err(Failure::TooStrong),
         None => Err(Failure::Unsupported("monsters do not spawn")),
         Some(l) if l > own_level.saturating_add(MAX_LEVEL_GAP) => Err(Failure::TooStrong),
         Some(_) => Ok(templates),
@@ -323,6 +360,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub struct Fake {
         pub npcs: FxHashMap<u32, u8>,
+        pub grades: FxHashMap<u32, u8>,
+        pub unreachable: FxHashSet<u32>,
         pub doodads: FxHashSet<u32>,
         pub gather: FxHashMap<u32, Vec<u32>>,
         pub spheres: FxHashMap<(u32, u32), (f32, f32, f32)>,
@@ -339,6 +378,12 @@ pub(crate) mod tests {
         }
         fn npc_level(&self, t: u32) -> Option<u8> {
             self.npcs.get(&t).copied()
+        }
+        fn npc_grade(&self, t: u32) -> u8 {
+            self.grades.get(&t).copied().unwrap_or(1)
+        }
+        fn npc_reachable(&self, t: u32) -> bool {
+            !self.unreachable.contains(&t)
         }
         fn gather_doodads(&self, item: u32) -> &[u32] {
             self.gather.get(&item).map_or(&[], |v| &v[..])
@@ -493,6 +538,34 @@ pub(crate) mod tests {
         assert_eq!(plan(&f, &q, &kill, 1), Err(Failure::TooStrong));
         assert_eq!(plan(&f, &q, &kill, 14), Ok(Plan::Kill { templates: &[5] }));
         assert_eq!(plan(&f, &q, &kill, 13), Err(Failure::TooStrong));
+    }
+
+    #[test]
+    fn a_boss_far_above_the_bot_is_skipped() {
+        let mut f = Fake::default();
+        f.npcs.insert(4227, 10);
+        f.grades.insert(4227, 7);
+        let q = quest(1, vec![]);
+        let kill = obj(1, 2, hunt(&[4227], 1));
+        // Quest 2328: a grade-7 boss two levels above a level-8 bot.
+        assert_eq!(plan(&f, &q, &kill, 8), Err(Failure::TooStrong));
+        // The same boss is not "far above" a level-20 bot.
+        assert!(matches!(
+            plan(&f, &q, &kill, 20),
+            Ok(Plan::Kill { templates }) if templates == [4227]
+        ));
+    }
+
+    #[test]
+    fn monsters_off_the_navigation_mesh_are_unreachable() {
+        let mut f = Fake::default();
+        f.npcs.insert(5, 3);
+        f.unreachable.insert(5);
+        let q = quest(1, vec![]);
+        let kill = obj(1, 2, hunt(&[5], 1));
+        assert_eq!(plan(&f, &q, &kill, 5), Err(Failure::Unreachable));
+        f.unreachable.clear();
+        assert!(matches!(plan(&f, &q, &kill, 5), Ok(Plan::Kill { .. })));
     }
 
     #[test]
@@ -696,7 +769,11 @@ pub(crate) mod tests {
             world: "main_world".into(),
         })
         .unwrap();
-        let facts = Env { world: &world };
+        let facts = Env {
+            world: &world,
+            from: None,
+            navmesh: false,
+        };
         let mut by_band: BTreeMap<u8, (u32, u32)> = BTreeMap::new();
         let mut reasons: BTreeMap<String, u32> = BTreeMap::new();
         for q in world.quests() {
@@ -723,6 +800,70 @@ pub(crate) mod tests {
         r.sort_by_key(|x| std::cmp::Reverse(x.1));
         for (why, n) in r.iter().take(12) {
             println!("{n:5} {why}");
+        }
+    }
+
+    /// The audit's accept-time failures on the real data: bosses and spawns off the mesh.
+    #[test]
+    #[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+    fn real_boss_and_off_mesh_quests_are_refused() {
+        use aa_world::WorldPaths;
+        use std::path::PathBuf;
+        let (Some(compact), Some(server_data)) = (
+            std::env::var_os("AA_COMPACT"),
+            std::env::var_os("AA_SERVER_DATA"),
+        ) else {
+            eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
+            return;
+        };
+        let world = World::load(&WorldPaths {
+            compact: PathBuf::from(compact),
+            server_data: PathBuf::from(server_data),
+            baked: std::env::var_os("AA_BAKED").map(PathBuf::from),
+            world: "main_world".into(),
+        })
+        .unwrap();
+        let first_giver = |q: u32| {
+            let quest = world.quest(q).expect("quest in the data");
+            quest.starts.iter().find_map(|s| match s {
+                QuestStart::Npc(t) => world.npc_spawns(*t).first().copied(),
+                QuestStart::Doodad(t) => world.doodad_spawns(*t).first().copied(),
+                _ => None,
+            })
+        };
+        // 2328 "Into the Deep": a grade-7 boss in Aubre Cradle.
+        let q = world.quest(2328).unwrap();
+        let facts = Env {
+            world: &world,
+            from: Some(first_giver(2328).unwrap()),
+            navmesh: false,
+        };
+        assert_eq!(supported(&facts, q, q.level), Err(Failure::TooStrong));
+        // 1098 / 1593: the audit called their spawns unreachable; the shipped navigation mesh
+        // routes to them from the giver, so they are not skipped on this data (the reachability
+        // check refuses a quest only when the mesh says so). The unit test above proves the
+        // rule; a live check of the two quests is still pending.
+        if world.nav().is_some() {
+            for quest in [1098u32, 1593] {
+                let from = first_giver(quest).expect("a giver");
+                let target = world
+                    .quest(quest)
+                    .unwrap()
+                    .progress
+                    .iter()
+                    .flat_map(|s| s.objectives.iter())
+                    .find_map(|o| match &o.kind {
+                        ObjKind::Hunt { npcs, .. } => npcs.first().copied(),
+                        _ => None,
+                    })
+                    .expect("a hunt target");
+                assert!(
+                    world.npc_reachable(target, from),
+                    "quest {quest}: the shipped mesh says the target is reachable"
+                );
+            }
+        } else {
+            eprintln!("AA_BAKED not set: skipping the navigation check");
         }
     }
 

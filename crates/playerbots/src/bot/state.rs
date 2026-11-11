@@ -52,6 +52,27 @@ pub const U_OWNED: u8 = 4;
 /// Unit flag: the backpack slot of the character is occupied (a carried trade pack, a glider);
 /// the template is in [`PvpMem`] (`BotState::pack_of`).
 pub const U_PACK: u8 = 8;
+/// Unit flag: the first hit on this NPC was the bot's (the server's tag, and the quest credit,
+/// belongs to it and its party in looting range).
+pub const U_TAG_ME: u8 = 16;
+/// Unit flag: the first hit on this NPC was a party member's.
+pub const U_TAG_PARTY: u8 = 32;
+/// Unit flag: the first hit on this NPC was another character's: the server credits that tag,
+/// not the bot that lands the killing blow.
+pub const U_TAG_OTHER: u8 = 64;
+/// Mask of the three tag flags.
+pub const U_TAG_MASK: u8 = U_TAG_ME | U_TAG_PARTY | U_TAG_OTHER;
+
+/// Who the bot saw hit an NPC first (the server's tag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagOwner {
+    /// The bot's own hit.
+    Me,
+    /// A member of the bot's party.
+    Party,
+    /// Another character.
+    Other,
+}
 
 /// What kind of unit the server shows. Houses, transfers, mates and shipyards are not tracked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +112,11 @@ pub struct Unit {
     pub faction: u32,
     /// Level.
     pub level: u8,
-    /// `U_DEAD | U_LOOT | U_OWNED | U_PACK`.
+    /// `U_DEAD | U_LOOT | U_OWNED | U_PACK | U_TAG_*`.
     pub flags: u8,
+    /// Object id of the unit's current target (`SCTargetChangedPacket`), 0 when none/unknown.
+    /// For an NPC this is who it is fighting.
+    pub target: u32,
     /// Name, characters only.
     pub name: Option<Box<str>>,
 }
@@ -116,6 +140,21 @@ impl Unit {
     /// Whether the character's backpack slot is occupied (see [`U_PACK`]).
     pub fn carries_pack(&self) -> bool {
         self.flags & U_PACK != 0
+    }
+
+    /// Who the bot saw hit this NPC first, `None` while it has seen no hit.
+    pub fn tag(&self) -> Option<TagOwner> {
+        match self.flags & U_TAG_MASK {
+            U_TAG_ME => Some(TagOwner::Me),
+            U_TAG_PARTY => Some(TagOwner::Party),
+            U_TAG_OTHER => Some(TagOwner::Other),
+            _ => None,
+        }
+    }
+
+    /// Whether another character (not the bot, not its party) holds the tag.
+    pub fn tagged_by_other(&self) -> bool {
+        self.tag() == Some(TagOwner::Other)
     }
 
     /// Horizontal distance to `p`.
@@ -375,6 +414,8 @@ pub struct Reactions {
     pub resurrected: Option<[f32; 3]>,
     /// The bot died, with what the server and the view said about it.
     pub died: bool,
+    /// The bot died with a trade pack in the back slot: it is a doodad at the death spot now.
+    pub pack_dropped: bool,
     /// The killer and the aggro list of the death, when there was one.
     pub death: Option<DeathNote>,
     /// `SCKicked` with its reason and message.
@@ -493,15 +534,10 @@ pub fn route(ev: &WorldEvent) -> Route {
         | WorldEvent::PortalSaved(_)
         | WorldEvent::PortalDeleted { .. }
         | WorldEvent::PortalUsed { .. } => Route::Travel,
-        // (the answers to the four portal skills: record, rename, open a gate, recall)
-        WorldEvent::SkillStarted {
-            skill:
-                aa_world::travel::portal::RECORD_PORTAL_SKILL
-                | aa_world::travel::portal::RENAME_PORTAL_SKILL
-                | aa_world::travel::portal::OPEN_PORTAL_SKILL
-                | aa_world::travel::portal::RECALL_SKILL,
-            ..
-        } => Route::Travel,
+        // (the travel state keeps the last skill answer of the bot: the portal skills and the
+        // mount / glider casts the mount feature checks)
+        WorldEvent::SkillStarted { .. } => Route::Travel,
+        WorldEvent::MateSpawned(_) => Route::Travel,
         WorldEvent::SlaveCreated { .. }
         | WorldEvent::MySlave(_)
         | WorldEvent::SlaveBound { .. }
@@ -533,9 +569,15 @@ impl BotState {
             g.after_reset();
             g
         });
+        // (a pack dropped at a death spot is a doodad in the world, not a connection fact: the
+        // bot still has to go back for it after a reconnect)
+        let lost_pack = self.econ.lost_pack();
         *self = BotState::default();
         self.vehicle.restore_trip_log(trips);
         self.gear = gear;
+        if let Some(lost) = lost_pack {
+            self.econ.restore_lost_pack(lost);
+        }
     }
 
     /// The gear memory, allocated on first use.
@@ -561,6 +603,30 @@ impl BotState {
     /// The unit with object id `obj`.
     pub fn unit(&self, obj: u32) -> Option<&Unit> {
         self.units.get(&obj)
+    }
+
+    /// Whether `char_id` is a member of the bot's party.
+    pub fn is_party_char(&self, char_id: u32) -> bool {
+        self.party
+            .as_ref()
+            .is_some_and(|p| p.team.in_team() && p.team.has(char_id))
+    }
+
+    /// Whether `obj` is a character of the bot's party (in view).
+    pub fn is_party_obj(&self, obj: u32) -> bool {
+        self.units
+            .get(&obj)
+            .is_some_and(|u| u.kind == UnitKind::Character && self.is_party_char(u.id))
+    }
+
+    /// Whether another character (not the bot, not its party) holds the tag of `obj`, or the
+    /// NPC is fighting one: a monster the bot should not expect quest credit for.
+    pub fn taken_by_other(&self, obj: u32) -> bool {
+        let Some(u) = self.units.get(&obj) else {
+            return false;
+        };
+        u.tagged_by_other()
+            || (u.target != 0 && u.target != self.me.obj && !self.is_party_obj(u.target))
     }
 
     /// The template of the item in the backpack slot of character `obj` (a carried trade pack);
@@ -694,7 +760,11 @@ impl BotState {
     fn apply_world(&mut self, ev: &WorldEvent) {
         match route(ev) {
             Route::Travel => return self.travel.on_event(ev, self.me.obj, self.now_ms),
-            Route::Vehicle => return self.vehicle.on_event(ev, self.me.obj),
+            Route::Vehicle => {
+                self.vehicle.on_event(ev, self.me.obj);
+                self.travel.on_vehicle_event(ev, self.me.obj, self.now_ms);
+                return;
+            }
             Route::Place | Route::Other => {}
         }
         match ev {
@@ -763,6 +833,7 @@ impl BotState {
                 }
             }
             WorldEvent::UnitMoved { obj, pos, .. } => {
+                self.travel.note_mate_moved(*obj, [pos.0, pos.1, pos.2]);
                 if let Some(u) = self.units.get_mut(obj) {
                     u.pos = [pos.0, pos.1, pos.2];
                 }
@@ -803,12 +874,33 @@ impl BotState {
                     if *hp <= 0 && !self.me.dead {
                         // (the server says SCUnitDeath right after; if it does not, that is a finding)
                         self.watch.death.points_zero(self.now_ms);
+                        // The server sends the zero points BEFORE the death packet, and
+                        // `check_alive` marks the bot dead on them: the death packet then finds
+                        // it dead already, so the dropped pack is noted here, once per death.
+                        self.note_pack_drop();
                     }
                     self.check_alive();
                 } else if let Some(u) = self.units.get_mut(obj) {
                     u.hp = *hp;
                     if *hp <= 0 {
                         u.flags |= U_DEAD;
+                    }
+                }
+            }
+            WorldEvent::UnitDamaged { caster, target } => {
+                // The first hit the bot sees is the server's tag: the tag decides quest credit,
+                // so a killing blow on a monster somebody else tagged is not counted as one.
+                let bit = if *caster == self.me.obj && self.me.obj != 0 {
+                    U_TAG_ME
+                } else if self.is_party_obj(*caster) {
+                    U_TAG_PARTY
+                } else {
+                    // (a character the bot cannot classify, or one out of view: not its tag)
+                    U_TAG_OTHER
+                };
+                if let Some(u) = self.units.get_mut(target) {
+                    if u.kind == UnitKind::Npc && u.tag().is_none() {
+                        u.flags |= bit;
                     }
                 }
             }
@@ -835,6 +927,9 @@ impl BotState {
                 }
             }
             WorldEvent::TargetChanged { obj, target } => {
+                if let Some(u) = self.units.get_mut(obj) {
+                    u.target = *target;
+                }
                 if let Some(mem) = self.party.as_mut() {
                     mem.team
                         .on_target(*obj, *target, self.me.obj, &self.units, self.now_ms);
@@ -1113,6 +1208,15 @@ impl BotState {
             }
             return;
         }
+        if info.unit_type == unit_type::MATE {
+            self.travel.note_mate_state(
+                info.obj,
+                info.tl_id,
+                info.owner_id,
+                self.me.char_id,
+                [info.pos.0, info.pos.1, info.pos.2],
+            );
+        }
         let Some(kind) = UnitKind::from_wire(info.unit_type) else {
             return;
         };
@@ -1153,6 +1257,7 @@ impl BotState {
                 faction: info.faction_id,
                 level: info.level,
                 flags,
+                target: 0,
                 name: (kind == UnitKind::Character).then(|| info.name.clone()),
             },
         );
@@ -1201,8 +1306,30 @@ impl BotState {
         self.watch.tracker.clear();
     }
 
+    /// The server drops the equipped trade pack as a doodad at the death spot right after the
+    /// death packet (`Character.DropTradePackToFloor`), before the item task removes it from the
+    /// back slot: remember where to look for it after the resurrection. Called once per death by
+    /// whichever packet shows the death first.
+    fn note_pack_drop(&mut self) {
+        let backpack = self
+            .equipment
+            .iter()
+            .find(|e| e.slot == aa_proto::sc_world::BACKPACK_SLOT)
+            .map_or(0, |e| e.template);
+        if backpack != 0 {
+            self.econ.note_death_with_pack(
+                backpack,
+                self.me.pos,
+                self.place.instance_id(),
+                self.now_ms,
+            );
+            self.reactions.pack_dropped = true;
+        }
+    }
+
     fn apply_death(&mut self, obj: u32, killer: u32, respawn_wait_ms: i32, reason: u8) {
         if obj == self.me.obj && self.me.obj != 0 {
+            let was_dead = self.me.dead;
             self.me.dead = true;
             self.me.hp = 0;
             let wait = u64::try_from(respawn_wait_ms).unwrap_or(0).max(1000);
@@ -1222,6 +1349,10 @@ impl BotState {
             self.threats.clear();
             self.watch.death.death_packet();
             self.watch.tracker.clear();
+            // (a death the zero points did not announce first; otherwise the pack is noted there)
+            if !was_dead {
+                self.note_pack_drop();
+            }
             if self
                 .units
                 .get(&killer)
@@ -1539,6 +1670,18 @@ impl BotState {
                 quest: *quest_id,
                 err: *err,
             }),
+            ActivityEvent::QuestUnitReqFailed {
+                quest_id,
+                kind,
+                value,
+                ..
+            } => {
+                // (kept in the quest memory, not the error ring: the ring is inline per bot and
+                // a wider error entry would cost it 64 bytes)
+                let now = self.now_ms;
+                self.quest_mem.get_or_insert_with(Default::default).unit_req =
+                    Some((*quest_id, *kind, *value, now));
+            }
             ActivityEvent::MyHouse(h) => self.upsert_house(h),
             ActivityEvent::LoginCharInfoHouse { owner_id, house } => {
                 if *owner_id == self.me.char_id && self.me.char_id != 0 {
@@ -1700,6 +1843,54 @@ mod tests {
             500,
         )))));
         s
+    }
+
+    #[test]
+    fn the_first_hit_seen_decides_the_tag_and_a_target_marks_a_taken_monster() {
+        let mut s = in_world();
+        s.apply(&world(WorldEvent::UnitState(Box::new(unit_info(
+            0x700,
+            unit_type::NPC,
+            731,
+        )))));
+        // the bot hits first: its tag
+        s.apply(&world(WorldEvent::UnitDamaged {
+            caster: 0x400,
+            target: 0x700,
+        }));
+        assert_eq!(s.unit(0x700).unwrap().tag(), Some(TagOwner::Me));
+        assert!(!s.taken_by_other(0x700));
+        // a later hit by somebody else does not take it back
+        s.apply(&world(WorldEvent::UnitDamaged {
+            caster: 0x999,
+            target: 0x700,
+        }));
+        assert_eq!(s.unit(0x700).unwrap().tag(), Some(TagOwner::Me));
+
+        // another monster is hit by a stranger first: no credit for the bot
+        s.apply(&world(WorldEvent::UnitState(Box::new(unit_info(
+            0x701,
+            unit_type::NPC,
+            732,
+        )))));
+        s.apply(&world(WorldEvent::UnitDamaged {
+            caster: 0x999,
+            target: 0x701,
+        }));
+        assert_eq!(s.unit(0x701).unwrap().tag(), Some(TagOwner::Other));
+        assert!(s.taken_by_other(0x701));
+
+        // a monster that fights another character is taken too, one that fights the bot is not
+        s.apply(&world(WorldEvent::TargetChanged {
+            obj: 0x701,
+            target: 0x999,
+        }));
+        assert_eq!(s.unit(0x701).unwrap().target, 0x999);
+        s.apply(&world(WorldEvent::TargetChanged {
+            obj: 0x700,
+            target: 0x400,
+        }));
+        assert!(!s.taken_by_other(0x700));
     }
 
     #[test]
@@ -1910,6 +2101,115 @@ mod tests {
     }
 
     #[test]
+    fn dying_with_a_pack_remembers_the_spot_to_look_for_it() {
+        let mut s = in_world();
+        s.now_ms = 5_000;
+        s.me.pos = [100.0, 200.0, 300.0];
+        s.equipment.push(EquipSlot {
+            slot: aa_proto::sc_world::BACKPACK_SLOT,
+            template: 31_855,
+            id: 77,
+            grade: 0,
+        });
+        s.apply(&world(WorldEvent::UnitDeath {
+            obj: 0x400,
+            killer: 0,
+            respawn_wait_ms: 5_000,
+            lost_exp: 0,
+            reason: 0,
+        }));
+        let lost = s.econ.lost_pack().expect("the dropped pack is noted");
+        assert_eq!(
+            (lost.item, lost.pos, lost.inst),
+            (31_855, [100.0, 200.0, 300.0], 0)
+        );
+        assert!(std::mem::take(&mut s.reactions.pack_dropped));
+        // a second death packet does not move the spot or reset the timer
+        s.now_ms = 9_000;
+        s.apply(&world(WorldEvent::UnitDeath {
+            obj: 0x400,
+            killer: 0,
+            respawn_wait_ms: 5_000,
+            lost_exp: 0,
+            reason: 0,
+        }));
+        assert_eq!(s.econ.lost_pack(), Some(lost));
+        assert!(!std::mem::take(&mut s.reactions.pack_dropped));
+        // a reconnect keeps the note: the doodad is still in the world
+        s.reset();
+        assert_eq!(s.econ.lost_pack(), Some(lost));
+        // a death without a pack leaves no note
+        let mut s = in_world();
+        s.apply(&world(WorldEvent::UnitDeath {
+            obj: 0x400,
+            killer: 0,
+            respawn_wait_ms: 5_000,
+            lost_exp: 0,
+            reason: 0,
+        }));
+        assert!(s.econ.lost_pack().is_none());
+        assert!(!std::mem::take(&mut s.reactions.pack_dropped));
+    }
+
+    #[test]
+    fn zero_points_before_the_death_packet_still_note_the_dropped_pack() {
+        // The server's order on a lethal hit: `SCUnitPoints` with 0 hit points, then
+        // `SCUnitDeath` (`reduce_current_hp` broadcasts the points, then runs `do_die`). The
+        // points mark the bot dead, so the death packet finds it dead already.
+        let mut s = in_world();
+        s.now_ms = 5_000;
+        s.me.pos = [100.0, 200.0, 300.0];
+        s.equipment.push(EquipSlot {
+            slot: aa_proto::sc_world::BACKPACK_SLOT,
+            template: 31_855,
+            id: 77,
+            grade: 0,
+        });
+        s.apply(&world(WorldEvent::UnitPoints {
+            obj: 0x400,
+            hp: 0,
+            mp: 0,
+        }));
+        assert!(s.me.dead);
+        let lost = s.econ.lost_pack().expect("the dropped pack is noted");
+        assert_eq!(
+            (lost.item, lost.pos, lost.inst, lost.at_ms),
+            (31_855, [100.0, 200.0, 300.0], 0, 5_000)
+        );
+        assert!(std::mem::take(&mut s.reactions.pack_dropped));
+        // the death packet that follows neither moves the note nor reports the drop again
+        s.now_ms = 5_020;
+        s.apply(&world(WorldEvent::UnitDeath {
+            obj: 0x400,
+            killer: 0,
+            respawn_wait_ms: 5_000,
+            lost_exp: 0,
+            reason: 0,
+        }));
+        assert_eq!(s.econ.lost_pack(), Some(lost));
+        assert!(!std::mem::take(&mut s.reactions.pack_dropped));
+        // a bot that logs in dead (hit points 0 before any other word) drops nothing
+        let mut s = in_world();
+        s.equipment.push(EquipSlot {
+            slot: aa_proto::sc_world::BACKPACK_SLOT,
+            template: 31_855,
+            id: 77,
+            grade: 0,
+        });
+        s.me.hp = 0;
+        s.check_alive();
+        assert!(s.me.dead);
+        assert!(s.econ.lost_pack().is_none());
+        // and the points of a bot that is dead already are not a second death
+        s.apply(&world(WorldEvent::UnitPoints {
+            obj: 0x400,
+            hp: 0,
+            mp: 0,
+        }));
+        assert!(s.econ.lost_pack().is_none());
+    }
+
+    #[test]
     fn a_character_saved_dead_is_dead_at_login() {
         // the server sends no death event for it: only hp 0 in CharacterState and UnitState
         let mut s = BotState::new();
@@ -1995,7 +2295,7 @@ mod tests {
     }
 
     fn travel_events() -> Vec<WorldEvent> {
-        use aa_proto::sc_travel::PortalEntry;
+        use aa_proto::sc_travel::{MateInfo, PortalEntry};
         let entry = PortalEntry {
             id: 4,
             name: "Home".into(),
@@ -2014,6 +2314,23 @@ mod tests {
             WorldEvent::PortalSaved(Box::new(entry)),
             WorldEvent::PortalDeleted { kind: 0, id: 4 },
             WorldEvent::PortalUsed { gate: 0x500 },
+            WorldEvent::MateSpawned(Box::new(MateInfo {
+                tl: 5,
+                id: 9,
+                item_id: 77,
+                user_state: 1,
+                experience: 0,
+                mileage: 0,
+                spawn_delay_ms: 0,
+                skills: Box::default(),
+            })),
+            WorldEvent::SkillStarted {
+                caster_obj: 0x400,
+                skill: 10602,
+                tl: 1,
+                target_obj: 0x400,
+                result: 0,
+            },
         ]
     }
 

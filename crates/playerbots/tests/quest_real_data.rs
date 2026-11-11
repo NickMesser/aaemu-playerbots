@@ -87,6 +87,8 @@ struct Sim {
     started: Vec<u32>,
     /// Casts of an item, by item template.
     item_casts: HashMap<u32, u32>,
+    /// `(item template, target NPC template)` of every item cast (0: not an NPC).
+    item_targets: Vec<(u32, u32)>,
     /// The server takes item casts and does nothing with them: no credit, the item stays.
     deaf_items: bool,
     /// The server credits an item cast this long after it (0 = at once), like its quest engine.
@@ -332,6 +334,7 @@ impl Rig {
                 faction: 0,
                 level: world.npc(t).map_or(1, |n| n.level),
                 flags: 0,
+                target: 0,
                 name: None,
             });
         }
@@ -650,6 +653,14 @@ impl Rig {
         let target = s.read_bc().unwrap();
         if caster_type == 2 {
             *self.sim.item_casts.entry(item_template).or_default() += 1;
+            let target_template = self.state.units.get(&target).map_or(0, |u| u.id);
+            self.sim.item_targets.push((item_template, target_template));
+            if !self.item_target_ok(skill, target_template) {
+                self.sim.refused.push(format!(
+                    "item {item_template}: target {target_template} breaks the skill requirements"
+                ));
+                return;
+            }
             if self.sim.deaf_items {
                 return;
             }
@@ -698,6 +709,17 @@ impl Rig {
             0 => self.on_attack(target),
             _ => {}
         }
+    }
+
+    /// The server's placement rules of an item skill (`unit_reqs` 0x1B and 0x22).
+    fn item_target_ok(&self, skill: u32, target: u32) -> bool {
+        self.world.skill_needs(skill).iter().all(|need| match need {
+            aa_world::SkillNeed::Npc(t) => target == *t,
+            aa_world::SkillNeed::NpcGroup(group, negate) => {
+                self.world.quest_monster_group(*group).contains(&target) == !*negate
+            }
+            _ => true,
+        })
     }
 
     fn on_attack(&mut self, mob: u32) {
@@ -904,6 +926,137 @@ fn a_quest_item_is_cast_once_when_the_server_is_slow_to_credit_it() {
     for (item, casts) in &rig.sim.item_casts {
         assert_eq!(*casts, 1, "item {item} was cast {casts} times for one use");
     }
+}
+
+#[test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+fn a_group_target_item_is_cast_at_a_member_of_its_group() {
+    let Some(world) = world() else {
+        eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
+        return;
+    };
+    // Quest 2261 "Truth Extraction": the hypnosis wand (item 16293, skill 13886) only works on
+    // an NPC of quest monster group 154, and the bot used to cast it at itself.
+    let giver = *world
+        .npc_spawns(10583)
+        .first()
+        .expect("the giver of quest 2261 spawns");
+    let mut rig = Rig::new(world.clone(), 1, 11);
+    rig.resume_at(giver.x, giver.y, 10, &[]);
+    rig.refresh_view();
+    let giver_obj = rig
+        .state
+        .units
+        .iter()
+        .find(|(_, u)| u.id == 10583)
+        .map(|(&obj, _)| obj)
+        .expect("the giver is in view");
+    rig.on_start_quest(2261, giver_obj, 0);
+    assert!(
+        rig.state.quests.row(2261).is_some(),
+        "the fake server started the quest"
+    );
+    rig.force(GoalKind::Quest);
+    run_for(&mut rig, 3);
+    let targets: Vec<u32> = rig
+        .sim
+        .item_targets
+        .iter()
+        .filter(|(item, _)| *item == 16293)
+        .map(|(_, target)| *target)
+        .collect();
+    println!("wand casts at: {targets:?}; refused: {:?}", rig.sim.refused);
+    let members = world.quest_monster_group(154);
+    assert!(!members.is_empty(), "group 154 has members");
+    assert!(!targets.is_empty(), "the wand was never cast");
+    assert!(
+        targets.iter().all(|t| members.contains(t)),
+        "the wand was cast at {targets:?}, not at a member of {members:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+fn a_shared_item_target_is_queued_not_crowded() {
+    use playerbots::contest::unit_key;
+    let Some(world) = world() else {
+        eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");
+        return;
+    };
+    // Quest 2396 "A Worthy Opponent": the tournament sword works on the single knight 7818.
+    let giver = *world
+        .npc_spawns(7817)
+        .first()
+        .expect("the giver of quest 2396 spawns");
+    let mut rig = Rig::new(world.clone(), 1, 11);
+    rig.resume_at(giver.x, giver.y, 10, &[]);
+    rig.refresh_view();
+    let giver_obj = rig
+        .state
+        .units
+        .iter()
+        .find(|(_, u)| u.id == 7817)
+        .map(|(&obj, _)| obj)
+        .expect("the giver is in view");
+    rig.give_item(17470, 1);
+    rig.on_start_quest(2396, giver_obj, 0);
+    assert!(rig.state.quests.row(2396).is_some());
+    // Move to a real spawn of the shared knight (the giver is 99 m from it) so the target is in
+    // view, then have another bot claim it.
+    let target_spawn = *world
+        .npc_spawns(7818)
+        .iter()
+        .min_by(|a, b| {
+            let da = (a.x - giver.x).powi(2) + (a.y - giver.y).powi(2);
+            let db = (b.x - giver.x).powi(2) + (b.y - giver.y).powi(2);
+            da.total_cmp(&db)
+        })
+        .expect("a spawn of the knight");
+    rig.resume_at(target_spawn.x, target_spawn.y, 10, &[]);
+    rig.refresh_view();
+    let target_objs: Vec<u32> = rig
+        .state
+        .units
+        .iter()
+        .filter(|(_, u)| u.id == 7818)
+        .map(|(&obj, _)| obj)
+        .collect();
+    assert!(!target_objs.is_empty(), "a knight is in view");
+    for &obj in &target_objs {
+        rig.hub.contest.claim(unit_key(obj), 2);
+    }
+    rig.force(GoalKind::Quest);
+    // Shorter than CROWD_WAIT_MS, so the bot is still queueing, not resting the quest.
+    for _ in 0..80 {
+        rig.tick(250);
+    }
+    assert_eq!(
+        rig.sim.item_casts.get(&17470).copied().unwrap_or(0),
+        0,
+        "the bot cast at a target another bot holds"
+    );
+    assert_eq!(
+        rig.sim
+            .item_targets
+            .iter()
+            .filter(|(i, _)| *i == 17470)
+            .count(),
+        0
+    );
+    // The other bot is done: the queued bot takes its turn.
+    for &obj in &target_objs {
+        rig.hub.contest.release(unit_key(obj), 2);
+    }
+    run_for(&mut rig, 1);
+    let targets: Vec<u32> = rig
+        .sim
+        .item_targets
+        .iter()
+        .filter(|(item, _)| *item == 17470)
+        .map(|(_, target)| *target)
+        .collect();
+    println!("sword casts at: {targets:?}");
+    assert_eq!(targets, vec![7818], "the bot cast at the shared NPC");
 }
 
 // ---- progression: bots that have nothing near go where the quests are -------------------------
