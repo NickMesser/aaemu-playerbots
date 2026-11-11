@@ -24,7 +24,7 @@ use aa_world::World;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use super::state::{BotState, Unit, UnitKind};
+use super::state::{dist2d, BotState, Unit, UnitKind};
 
 mod remote;
 
@@ -197,6 +197,39 @@ impl TeamLog {
     /// Number of members (the bot included).
     pub fn size(&self) -> usize {
         self.members.len()
+    }
+
+    /// The party's strength for a pull: the members in range of the bot (the bot included) and
+    /// the highest level among them. A member counts when it is online, its position was told,
+    /// it is in the same zone and instance and within `range` metres. A bot in no team, or with
+    /// nobody else in range, is a party of one.
+    pub fn strength_near(
+        &self,
+        me_char: u32,
+        me_pos: [f32; 3],
+        me_zone: u32,
+        me_instance: u32,
+        range: f32,
+    ) -> (u8, u8) {
+        if !self.in_team() {
+            return (1, 0);
+        }
+        let mut members = 1u8;
+        let mut level = 0u8;
+        for r in &self.remote {
+            if r.char_id == me_char || !r.online || !r.located() {
+                continue;
+            }
+            if r.zone_id != me_zone || r.instance_id != me_instance {
+                continue;
+            }
+            if dist2d(r.pos, me_pos) > range {
+                continue;
+            }
+            members = members.saturating_add(1);
+            level = level.max(r.level);
+        }
+        (members, level)
     }
 
     /// Applies one activity event. Returns whether anything about the team changed.
@@ -1429,5 +1462,50 @@ mod tests {
         let f = plan(&w, &sites, RELAX_AFTER_SECS).unwrap();
         let chosen = bots(&f, &w);
         assert!(chosen.iter().all(|b| (1..=3).contains(b)), "{chosen:?}");
+    }
+
+    #[test]
+    fn party_strength_counts_only_members_in_range_of_the_same_world() {
+        fn remote(id: u32, level: u8, at: [f32; 3], zone: u32, instance: u32, seen: u64) -> Remote {
+            Remote {
+                char_id: id,
+                name: format!("C{id}").into(),
+                role: 0,
+                online: true,
+                level,
+                obj_id: 0x100 + id,
+                zone_id: zone,
+                instance_id: instance,
+                hp: 100,
+                hp_max: 100,
+                mp: 100,
+                mp_max: 100,
+                pos: at,
+                seen_ms: seen,
+            }
+        }
+        let mut t = TeamLog {
+            team_id: 1,
+            owner: 1,
+            remote: smallvec::smallvec![
+                remote(1, 20, [0.0, 0.0, 0.0], 7, 0, 1),
+                remote(2, 22, [10.0, 0.0, 0.0], 7, 0, 1),
+                remote(3, 40, [PARTY_NEAR_M, 0.0, 0.0], 7, 0, 1),
+                remote(4, 30, [5.0, 0.0, 0.0], 8, 0, 1),
+                remote(5, 50, [5.0, 0.0, 0.0], 7, 9, 1),
+                remote(6, 60, [5.0, 0.0, 0.0], 7, 0, 0),
+            ],
+            ..Default::default()
+        };
+        // the bot (level 20) counts itself; #2 is near, #3 beyond 40 m, #4 another zone,
+        // #5 another instance, #6 was never located
+        let (members, level) = t.strength_near(1, [0.0; 3], 7, 0, 40.0);
+        assert_eq!((members, level), (2, 22));
+        // a member that walks into range raises the level used by the pull gate
+        t.remote[2].pos = [30.0, 0.0, 0.0];
+        assert_eq!(t.strength_near(1, [0.0; 3], 7, 0, 40.0), (3, 40));
+        // a bot in no team is a party of one
+        t.team_id = 0;
+        assert_eq!(t.strength_near(1, [0.0; 3], 7, 0, 40.0), (1, 0));
     }
 }

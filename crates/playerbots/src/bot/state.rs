@@ -388,6 +388,18 @@ pub struct ChatIn {
     pub at_ms: u64,
 }
 
+/// What the server said about the death the bot just took, kept for the death line
+/// ([`super::death`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeathNote {
+    /// Killer object id from `SCUnitDeathPacket` (0 = none).
+    pub killer: u32,
+    /// Hostile units that targeted the bot when it died (the aggro list at that moment).
+    pub attackers: u8,
+    /// `KillReason` byte of the death packet.
+    pub reason: u8,
+}
+
 /// Things [`BotState::apply`] noticed that the bot task must answer on the wire.
 #[derive(Debug, Clone, Default)]
 pub struct Reactions {
@@ -400,10 +412,12 @@ pub struct Reactions {
     pub world_changed: bool,
     /// The bot was resurrected here.
     pub resurrected: Option<[f32; 3]>,
-    /// The bot died.
+    /// The bot died, with what the server and the view said about it.
     pub died: bool,
     /// The bot died with a trade pack in the back slot: it is a doodad at the death spot now.
     pub pack_dropped: bool,
+    /// The killer and the aggro list of the death, when there was one.
+    pub death: Option<DeathNote>,
     /// `SCKicked` with its reason and message.
     pub kicked: Option<(u8, Box<str>)>,
     /// `SCLeaveWorldGranted`: the server lets the bot log out.
@@ -439,6 +453,12 @@ pub struct BotState {
     pub kills: SmallVec<[(u32, u64); 4]>,
     /// Bot clock (ms) of the last hit point loss.
     pub last_damage_ms: u64,
+    /// Bot clock (ms) of the last resurrection (0 = none this session).
+    pub last_resurrect_ms: u64,
+    /// The last hit points and mana seen while alive, in percent (for the death line).
+    pub last_live_hp_pct: u8,
+    /// See [`BotState::last_live_hp_pct`].
+    pub last_live_mp_pct: u8,
     /// Recent errors, newest last (at most 8).
     pub errors: SmallVec<[(u64, StateError); 8]>,
     /// Chat the bot heard, newest last (at most [`INBOX_MAX`]).
@@ -767,6 +787,10 @@ impl BotState {
                 me.exp = own.exp;
                 me.labor = own.labor;
                 me.money = own.money;
+                if own.hp > 0 {
+                    self.last_live_hp_pct = me.hp_pct();
+                    self.last_live_mp_pct = me.mp_pct();
+                }
                 self.guild.on_own_guild(own.expedition_id, self.now_ms);
                 self.equipment = own.equipment.to_vec();
                 self.gear_mut().on_login(own);
@@ -843,6 +867,10 @@ impl BotState {
                     self.me.mp = *mp;
                     self.me.hp_max = self.me.hp_max.max(*hp);
                     self.me.mp_max = self.me.mp_max.max(*mp);
+                    if *hp > 0 {
+                        self.last_live_hp_pct = self.me.hp_pct();
+                        self.last_live_mp_pct = self.me.mp_pct();
+                    }
                     if *hp <= 0 && !self.me.dead {
                         // (the server says SCUnitDeath right after; if it does not, that is a finding)
                         self.watch.death.points_zero(self.now_ms);
@@ -880,8 +908,9 @@ impl BotState {
                 obj,
                 killer,
                 respawn_wait_ms,
+                reason,
                 ..
-            } => self.apply_death(*obj, *killer, *respawn_wait_ms),
+            } => self.apply_death(*obj, *killer, *respawn_wait_ms, *reason),
             WorldEvent::Resurrected { obj, pos, yaw } => {
                 if *obj == self.me.obj && self.me.obj != 0 {
                     self.watch.death.alive();
@@ -889,6 +918,8 @@ impl BotState {
                     self.me.pos = [pos.0, pos.1, pos.2];
                     self.me.yaw = *yaw;
                     self.me.hp = self.me.hp.max(1);
+                    self.last_resurrect_ms = self.now_ms.max(1);
+                    self.last_live_hp_pct = self.me.hp_pct();
                     self.reactions.resurrected = Some(self.me.pos);
                 } else if let Some(u) = self.units.get_mut(obj) {
                     u.flags &= !U_DEAD;
@@ -1149,6 +1180,10 @@ impl BotState {
             me.mp = info.mp;
             me.hp_max = me.hp_max.max(info.hp);
             me.mp_max = me.mp_max.max(info.mp);
+            if info.hp > 0 {
+                self.last_live_hp_pct = me.hp_pct();
+                self.last_live_mp_pct = me.mp_pct();
+            }
             if info.complete {
                 me.faction = info.faction_id;
             }
@@ -1242,6 +1277,9 @@ impl BotState {
         } else if self.me.dead {
             self.watch.death.alive();
             self.me.dead = false;
+            self.last_resurrect_ms = self.now_ms.max(1);
+            self.last_live_hp_pct = self.me.hp_pct();
+            self.last_live_mp_pct = self.me.mp_pct();
             self.reactions.resurrected = Some(self.me.pos);
         }
     }
@@ -1256,6 +1294,13 @@ impl BotState {
         self.me.hp = 0;
         self.me.respawn_at_ms = self.now_ms + wait_ms.max(1000);
         self.reactions.died = true;
+        if self.reactions.death.is_none() {
+            self.reactions.death = Some(DeathNote {
+                killer: 0,
+                attackers: u8::try_from(self.threats.len()).unwrap_or(u8::MAX),
+                reason: 0,
+            });
+        }
         self.threats.clear();
         // the requests of a dead bot are moot
         self.watch.tracker.clear();
@@ -1282,7 +1327,7 @@ impl BotState {
         }
     }
 
-    fn apply_death(&mut self, obj: u32, killer: u32, respawn_wait_ms: i32) {
+    fn apply_death(&mut self, obj: u32, killer: u32, respawn_wait_ms: i32, reason: u8) {
         if obj == self.me.obj && self.me.obj != 0 {
             let was_dead = self.me.dead;
             self.me.dead = true;
@@ -1290,6 +1335,17 @@ impl BotState {
             let wait = u64::try_from(respawn_wait_ms).unwrap_or(0).max(1000);
             self.me.respawn_at_ms = self.now_ms + wait;
             self.reactions.died = true;
+            let attackers = u8::try_from(self.threats.len()).unwrap_or(u8::MAX);
+            self.reactions.death = Some(DeathNote {
+                killer,
+                // (the hit points may have reached zero a packet earlier, which cleared the
+                // aggro list already: keep the count of that moment)
+                attackers: self
+                    .reactions
+                    .death
+                    .map_or(attackers, |d| d.attackers.max(attackers)),
+                reason,
+            });
             self.threats.clear();
             self.watch.death.death_packet();
             self.watch.tracker.clear();
@@ -1996,6 +2052,15 @@ mod tests {
     fn own_death_and_resurrection_leave_reactions() {
         let mut s = in_world();
         s.now_ms = 1000;
+        // two monsters on the bot: the death note counts the aggro list of the moment
+        s.apply(&world(WorldEvent::TargetChanged {
+            obj: 0x401,
+            target: 0x400,
+        }));
+        s.apply(&world(WorldEvent::TargetChanged {
+            obj: 0x402,
+            target: 0x400,
+        }));
         s.apply(&world(WorldEvent::UnitDeath {
             obj: 0x400,
             killer: 0x401,
@@ -2006,6 +2071,14 @@ mod tests {
         assert!(s.me.dead);
         assert_eq!(s.me.respawn_at_ms, 6000);
         assert!(std::mem::take(&mut s.reactions.died));
+        assert_eq!(
+            s.reactions.death,
+            Some(DeathNote {
+                killer: 0x401,
+                attackers: 2,
+                reason: 1,
+            })
+        );
         s.apply(&world(WorldEvent::Resurrected {
             obj: 0x400,
             pos: (1.0, 2.0, 3.0),
@@ -2014,6 +2087,7 @@ mod tests {
         assert!(!s.me.dead);
         assert_eq!(s.reactions.resurrected, Some([1.0, 2.0, 3.0]));
         assert_eq!(s.me.pos, [1.0, 2.0, 3.0]);
+        assert_eq!(s.last_resurrect_ms, 1000);
         assert!(s.me.hp >= 1);
         // a death without a wait still waits a second
         s.apply(&world(WorldEvent::UnitDeath {

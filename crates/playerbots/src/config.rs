@@ -32,6 +32,9 @@ pub struct Config {
     pub behavior: BehaviorCfg,
     /// Instance dungeons: the party size aim and the server's entry limit.
     pub dungeons: DungeonsCfg,
+    /// Survival rules: when a bot may start a fight, when it runs and how it rests after a
+    /// resurrection.
+    pub survival: SurvivalCfg,
     /// Sailing: which boat the bots sail.
     pub sail: SailCfg,
     /// Mounts and gliders: summon a ride and glide down ledges.
@@ -285,6 +288,109 @@ impl Default for BehaviorCfg {
             lifelike: true,
             jump_rate: 1.0,
             emotes: true,
+        }
+    }
+}
+
+/// The strongest NPC grade a bot pulls (`[survival] max_grade`), by `NpcGradeType`:
+/// 1 Normal, 2 Elite, 3 BossA, 4 BossB, 5 BossC, 6 Weak, 7 Strong, 8 BossS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GradeLimit {
+    /// Normal and weak monsters only.
+    Normal,
+    /// Also elites and strong monsters (the default; 1.2 quest elites are routine).
+    #[default]
+    Elite,
+    /// Everything, bosses included.
+    Boss,
+}
+
+/// `[survival]`: when a bot may pull, when it runs, and how it rests after a death.
+///
+/// The defaults come from the 2026-11-11 death journal (1,407 deaths in 9.6 h, about three per
+/// bot-hour): bots kept pulling at low hit points, pulled packs and bosses, walked into
+/// higher-level aggressive spawns while travelling, fought on below 40 % and went back to work
+/// right after a resurrection instead of resting first.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SurvivalCfg {
+    /// Master switch of the survival rules. Off: the old engagement, resting and travel
+    /// behaviour, with only the death line still logged.
+    pub enabled: bool,
+    /// A bot does not start a new fight below this many percent of its hit points.
+    pub pull_min_hp_pct: u8,
+    /// ... or below this many percent of its mana.
+    pub pull_min_mp_pct: u8,
+    /// A goal ends and the brain rests below this many percent of hit points.
+    pub rest_hp_pct: u8,
+    /// Monsters this many levels above the bot are not pulled (quest kills included). 1.2 quests
+    /// routinely send a player at monsters 2-3 levels above it.
+    pub max_level_gap: u8,
+    /// The strongest monster grade a bot pulls: `normal` (Normal, Weak), `elite` (also Elite and
+    /// Strong) or `boss` (everything). Bosses (BossA/B/C/S) are refused solo and allowed from
+    /// [`SurvivalCfg::party_boss_min`] members in range on.
+    pub max_grade: GradeLimit,
+    /// Most hostile monsters near a target (the target included) a bot pulls into; a party may
+    /// pull this many per member in range.
+    pub max_pack: u8,
+    /// Monsters within this many metres of a target count as its pack, when they would aggro
+    /// themselves (aggressive or linked by `npc_aggro_links`) or already target the bot. Passive
+    /// bystanders do not count.
+    pub pack_radius_m: f32,
+    /// How far a party member counts as part of the party's strength (metres).
+    pub party_range_m: f32,
+    /// A party of at least this many members in range may pull bosses (0 = never).
+    pub party_boss_min: u8,
+    /// A monster fight is given up and the bot runs below this many percent of hit points
+    /// (0 = never run from a monster).
+    pub flee_hp_pct: u8,
+    /// ... or with at least this many attackers (0 = the hit point line alone decides).
+    pub flee_adds: u8,
+    /// ... while below this many percent of hit points.
+    pub flee_adds_hp_pct: u8,
+    /// After a resurrection the bot rests until this many percent of hit points (at least).
+    pub post_rez_hp_pct: u8,
+    /// ... and for at most this long.
+    pub post_rez_rest_ms: u64,
+    /// A resting bot walks this far from a hostile within [`SurvivalCfg::rest_hostile_m`].
+    pub rest_safe_spot_m: f32,
+    /// ... that is this close.
+    pub rest_hostile_m: f32,
+    /// While resting, a heal the rotation has is cast below this many percent of hit points.
+    pub heal_hp_pct: u8,
+    /// While travelling, a monster this many levels above the bot makes the bot detour.
+    pub travel_danger_gap: u8,
+    /// The aggro radius kept clear of such monsters (metres).
+    pub travel_aggro_m: f32,
+    /// Nothing farther ahead than this is looked at (metres).
+    pub travel_lookahead_m: f32,
+}
+
+impl Default for SurvivalCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pull_min_hp_pct: 60,
+            pull_min_mp_pct: 20,
+            rest_hp_pct: 50,
+            max_level_gap: 3,
+            max_grade: GradeLimit::Elite,
+            max_pack: 2,
+            pack_radius_m: 8.0,
+            party_range_m: 40.0,
+            party_boss_min: 2,
+            flee_hp_pct: 40,
+            flee_adds: 3,
+            flee_adds_hp_pct: 60,
+            post_rez_hp_pct: 75,
+            post_rez_rest_ms: 120_000,
+            rest_safe_spot_m: 40.0,
+            rest_hostile_m: 20.0,
+            heal_hp_pct: 60,
+            travel_danger_gap: 4,
+            travel_aggro_m: 15.0,
+            travel_lookahead_m: 60.0,
         }
     }
 }

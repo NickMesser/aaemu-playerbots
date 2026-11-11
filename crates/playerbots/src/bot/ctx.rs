@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use aa_proto::cs::{self, Out};
-use aa_world::World;
+use aa_world::{Relation, Vec3, World};
+use smallvec::SmallVec;
 use tokio::time::Instant;
 
 use super::combat::Combat;
@@ -195,6 +196,11 @@ impl Ctx<'_> {
         if super::travel::far_trip(self, x, y) {
             return;
         }
+        // a higher-level monster's aggro radius on the way is walked around (one waypoint)
+        let (x, y) = match self.route_detour(x, y) {
+            Some((dx, dy)) => (dx, dy),
+            None => (x, y),
+        };
         let teleport = if self.cfg.bots.gm_bootstrap {
             self.cfg.bots.long_travel_teleport_m
         } else {
@@ -216,6 +222,73 @@ impl Ctx<'_> {
                 self.motion.begin_teleport(self.now_ms);
             }
         }
+    }
+
+    /// One waypoint beside a monster more than `[survival] travel_danger_gap` levels above the
+    /// bot whose aggro radius the straight line to `(x, y)` crosses (see
+    /// [`super::avoid::Avoid::route_detour`]); `None` when the way is clear.
+    fn route_detour(&mut self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let cfg = &self.cfg.survival;
+        if !cfg.enabled || cfg.travel_danger_gap == 0 || cfg.travel_aggro_m <= 0.0 {
+            return None;
+        }
+        if self.motion.is_moving() || self.state.place.in_instance() {
+            return None;
+        }
+        let me = self.state.me.pos;
+        let from = (me[0], me[1]);
+        let dest = (x, y);
+        let straight = ((me[0] - x).powi(2) + (me[1] - y).powi(2)).sqrt();
+        if straight < 40.0 {
+            return None;
+        }
+        let world = self.world;
+        let faction = self.state.me.faction;
+        let level = self.state.me.level;
+        let scan = cfg.travel_lookahead_m.max(cfg.travel_aggro_m).min(straight);
+        let mut dangers: SmallVec<[super::avoid::Danger; 16]> = SmallVec::new();
+        world.npc_spawns_within(Vec3::new(me[0], me[1], me[2]), scan, |template, p| {
+            if dangers.len() >= 16 {
+                return;
+            }
+            let Some(t) = world.npc(template) else {
+                return;
+            };
+            if !t.aggressive
+                || t.level <= level.saturating_add(cfg.travel_danger_gap)
+                || world.relation(faction, t.faction_id) != Relation::Hostile
+            {
+                return;
+            }
+            dangers.push(super::avoid::Danger {
+                x: p.x,
+                y: p.y,
+                level: t.level,
+            });
+        });
+        if dangers.is_empty() {
+            return None;
+        }
+        let via = self.state.avoid_mut().route_detour(
+            self.now_ms,
+            from,
+            dest,
+            &dangers,
+            level,
+            super::avoid::RouteLimits {
+                gap: cfg.travel_danger_gap,
+                aggro_m: cfg.travel_aggro_m,
+                lookahead_m: cfg.travel_lookahead_m,
+            },
+        )?;
+        if !super::goals::walkable(world, via.0, via.1) {
+            return None;
+        }
+        self.log.debug(format!(
+            "travel: stepping around higher-level monsters via {:.0}, {:.0}",
+            via.0, via.1
+        ));
+        Some(via)
     }
 
     /// Starts a trip to (x, y, z), stopping `radius` metres short in three dimensions: the

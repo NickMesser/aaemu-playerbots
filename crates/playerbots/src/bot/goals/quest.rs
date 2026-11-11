@@ -43,7 +43,7 @@ use aa_world::{
 use smallvec::SmallVec;
 
 use crate::bot::avoid::UNREACHABLE_MS;
-use crate::bot::combat::{CombatStatus, Loss};
+use crate::bot::combat::{pull_blocked_quest, CombatStatus, Loss};
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, MoveFailure, Pace};
 use crate::bot::state::{dist2d, dist3d, BotState, StateError, TagOwner, UnitKind};
@@ -669,7 +669,12 @@ impl Inner {
         }
         // (a trip is not cut short by the end of the run: it has a time limit of its own)
         let travelling = self.mode == Mode::Travel;
-        if (now >= self.end_ms && !travelling) || ctx.state.me.hp_pct() < LOW_HP_PCT {
+        let hurt_line = if ctx.cfg.survival.enabled {
+            ctx.cfg.survival.rest_hp_pct
+        } else {
+            LOW_HP_PCT
+        };
+        if (now >= self.end_ms && !travelling) || ctx.state.me.hp_pct() < hurt_line {
             return GoalStatus::Done;
         }
         let status = match self.mode {
@@ -1498,6 +1503,14 @@ impl Inner {
 
     fn do_kill(&mut self, ctx: &mut Ctx<'_>, templates: &[u32]) -> GoalStatus {
         if let Some(obj) = self.pick_mob(ctx, templates) {
+            if let Some(block) = pull_blocked_quest(ctx, obj) {
+                let reason = crate::bot::survival::pull_reason(
+                    &ctx.cfg.survival,
+                    &block.facts,
+                    block.reason,
+                );
+                return self.fail_with(ctx, Failure::TooStrong, Some(&reason));
+            }
             if ctx.motion.is_moving() && self.spot.is_some() {
                 ctx.motion.stop();
             }
@@ -1910,14 +1923,24 @@ impl Inner {
 
     /// Records a failure of the current quest and goes back to choosing.
     fn fail(&mut self, ctx: &mut Ctx<'_>, why: Failure) -> GoalStatus {
+        self.fail_with(ctx, why, None)
+    }
+
+    /// Like [`Inner::fail`], with the concrete facts (a monster's level, grade or pack) in the
+    /// log line instead of the generic reason.
+    fn fail_with(&mut self, ctx: &mut Ctx<'_>, why: Failure, detail: Option<&str>) -> GoalStatus {
         ctx.motion.stop();
         ctx.combat.disengage();
-        self.record_failure(ctx, why);
+        self.record_failure_with(ctx, why, detail);
         self.back_to_pick(ctx);
         GoalStatus::Running
     }
 
     fn record_failure(&mut self, ctx: &mut Ctx<'_>, why: Failure) {
+        self.record_failure_with(ctx, why, None);
+    }
+
+    fn record_failure_with(&mut self, ctx: &mut Ctx<'_>, why: Failure, detail: Option<&str>) {
         let (q, now) = (self.quest, ctx.now_ms);
         let (story, name) = ctx
             .world
@@ -1925,13 +1948,14 @@ impl Inner {
             .map_or((false, ""), |x| (x.story, &*x.name));
         let verdict = mem(ctx.state).fail(q, why, story, now);
         let until = (verdict.until().saturating_sub(now)) / 1000;
+        let shown = detail.map_or_else(|| why.to_string(), str::to_owned);
         ctx.log.say(match verdict {
-            Verdict::Backoff(_) => format!("quest {q} {name}: {why}; backing off {until} s"),
+            Verdict::Backoff(_) => format!("quest {q} {name}: {shown}; backing off {until} s"),
             Verdict::Quarantine(_) if verdict.until() == u64::MAX => {
-                format!("quest {q} {name}: {why}; quarantined for the session")
+                format!("quest {q} {name}: {shown}; quarantined for the session")
             }
             Verdict::Quarantine(_) => {
-                format!("quest {q} {name}: {why}; quarantined for {until} s")
+                format!("quest {q} {name}: {shown}; quarantined for {until} s")
             }
         });
         // A side quest that cannot be done leaves the journal.

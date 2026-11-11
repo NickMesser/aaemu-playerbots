@@ -26,6 +26,7 @@ pub mod combat;
 pub mod companion;
 pub mod coordinator;
 pub mod ctx;
+pub mod death;
 pub mod director;
 pub mod farm;
 pub mod gear;
@@ -42,6 +43,7 @@ pub mod pvp;
 pub mod rotation;
 pub mod session;
 pub mod state;
+pub mod survival;
 pub mod travel;
 pub mod vehicle;
 pub mod war;
@@ -77,6 +79,7 @@ use cmd::{BotCmd, GoalKind, PairKind, PairOrder, PairRole};
 use combat::Combat;
 use coordinator::CoordHandle;
 use ctx::{Ctx, Persona};
+use death::{Cause as DeathCause, DeathCounters, DeathFacts, Killer};
 use motion::{Motion, MotionCfg, MotionEnv};
 use session::{Decoded, SessionError, Wish};
 use state::{BotState, UnitKind};
@@ -213,6 +216,8 @@ struct Bot {
     detail: String,
     secs: u32,
     sessions: u32,
+    /// The deaths of this session, by cause.
+    deaths: DeathCounters,
     /// A connection problem was reported and the bot has not been healthy since: the failed
     /// reconnects of one outage are one episode, one report.
     outage_reported: bool,
@@ -285,6 +290,7 @@ impl Bot {
             detail: String::new(),
             secs: 0,
             sessions: 0,
+            deaths: DeathCounters::default(),
             outage_reported: false,
             shared,
         }
@@ -576,6 +582,7 @@ impl Bot {
             .update(self.entry.id, |j| j.sessions.login(unix));
         self.paused = false;
         self.secs = 0;
+        self.deaths = DeathCounters::default();
         self.next_brain_ms = 0;
         self.publish(conn);
         let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
@@ -1105,10 +1112,68 @@ impl Bot {
             self.mount_gone();
         }
         if r.died {
+            let note = r.death.unwrap_or_default();
+            let line = {
+                let unit = self.state.units.get(&note.killer);
+                let kind = unit.map(|u| u.kind);
+                let (template, character) = match kind {
+                    Some(UnitKind::Npc) => (unit.map(|u| u.id), None),
+                    Some(UnitKind::Character) => (None, unit.map(|u| u.id)),
+                    _ => (None, None),
+                };
+                let level = unit.map(|u| u.level).filter(|l| *l != 0).or_else(|| {
+                    template
+                        .and_then(|t| self.shared.world.npc(t))
+                        .map(|t| t.level)
+                });
+                let name: Option<&str> = match kind {
+                    Some(UnitKind::Npc) => unit
+                        .and_then(|u| self.shared.world.npc(u.id))
+                        .map(|t| &*t.name),
+                    Some(UnitKind::Character) => unit.and_then(|u| u.name.as_deref()),
+                    _ => None,
+                };
+                let (hp_pct, mp_pct, at_engage) = match self.combat.fight_start() {
+                    Some((hp, mp)) => (hp, mp, true),
+                    None => (
+                        self.state.last_live_hp_pct,
+                        self.state.last_live_mp_pct,
+                        false,
+                    ),
+                };
+                let pos = self.state.me.pos;
+                let zone = self
+                    .shared
+                    .world
+                    .zone_key_at(pos[0], pos[1])
+                    .and_then(|k| self.shared.world.zone_name(k));
+                death::death_line(&DeathFacts {
+                    own_level: self.state.me.level,
+                    killer: Killer {
+                        obj: note.killer,
+                        template,
+                        character,
+                        name,
+                        level,
+                        kind,
+                    },
+                    attackers: note.attackers,
+                    hp_pct,
+                    mp_pct,
+                    at_engage,
+                    goal: self.brain.goal_name(),
+                    zone,
+                    pos,
+                    fleeing: self.combat.fleeing(),
+                })
+            };
+            self.deaths.add(DeathCause::of(
+                self.state.units.get(&note.killer).map(|u| u.kind),
+            ));
             self.motion.stop();
             self.combat.reset();
             self.mount_gone();
-            self.log.say("died");
+            self.log.say(line);
             // (the back slot also holds a glider, which is no loss)
             if r.pack_dropped
                 && self
@@ -1364,6 +1429,7 @@ impl Bot {
                     .push(("persona".into(), self.persona.temper.dominant().into()));
                 g.extra
                     .push(("kills".into(), self.combat.kills().to_string()));
+                g.extra.push(("deaths".into(), self.deaths.summary()));
                 g.extra.push(("sessions".into(), self.sessions.to_string()));
                 g.extra
                     .push(("quests".into(), goals::quest::summary(world, &self.state)));
@@ -1492,8 +1558,10 @@ mod tests {
             println!("size_of {name}: {n} bytes");
         }
         // 3 KB plus the fight watch, the death/duel/gate notes and the unreachable-monster
-        // pointer the behaviour fixes added (about 100 bytes).
-        assert!(size_of::<Bot>() < 3200, "Bot is {} bytes", size_of::<Bot>());
+        // pointer the behaviour fixes added (about 100 bytes); the merge with origin/main added
+        // 40 more: the trade-pack field in the reactions (the death note was already counted by
+        // the survival branch).
+        assert!(size_of::<Bot>() < 3250, "Bot is {} bytes", size_of::<Bot>());
         assert!(size_of::<goals::Goal>() <= 160);
         // the command channel slot: boxed orders keep it at the size it had before the travel
         // commands (a `PartyOrder` unboxed would add 8 bytes)

@@ -36,7 +36,7 @@ use pb_web::Activity;
 use smallvec::SmallVec;
 
 use crate::bot::cmd::GoalKind;
-use crate::bot::combat::{attackable, CombatStatus};
+use crate::bot::combat::{attackable, pull_blocked, CombatStatus, PULL_RETRY_MS};
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, MoveFailure, Pace};
 use crate::bot::state::dist2d;
@@ -275,6 +275,18 @@ impl Event {
             }
             Phase::Hold => {
                 if let Some(obj) = pick_target(run, ctx, def, &view) {
+                    if let Some(block) = pull_blocked(ctx, obj) {
+                        ctx.log.debug(format!(
+                            "event: not pulling unit {obj}: {}",
+                            crate::bot::survival::pull_reason(
+                                &ctx.cfg.survival,
+                                &block.facts,
+                                block.reason
+                            )
+                        ));
+                        run.ignore_for(obj, now + PULL_RETRY_MS);
+                        return GoalStatus::Running;
+                    }
                     if ctx.motion.is_moving() {
                         ctx.motion.stop();
                     }

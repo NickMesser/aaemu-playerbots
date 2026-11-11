@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use rusqlite::Connection;
+use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::geom::IdMap;
 use crate::sql::{each_row, RowExt};
@@ -189,6 +191,58 @@ pub fn bytes(map: &IdMap<NpcTemplate>) -> usize {
     map.shallow_bytes() + map.values().iter().map(|n| n.name.len()).sum::<usize>()
 }
 
+/// Which NPCs join a fight together (`npc_aggro_links`): NPCs sharing an `aggro_link_id` aggro
+/// as one pack, so a bot that pulls one gets all of them. Only the linked templates are kept
+/// (572 of 13,382 in the 1.2 data).
+#[derive(Debug, Default)]
+pub struct AggroLinks {
+    by_npc: FxHashMap<u32, SmallVec<[u32; 2]>>,
+}
+
+impl AggroLinks {
+    /// Reads `npc_aggro_links`; a database without the table has no linked monsters.
+    pub fn load(conn: &Connection) -> Result<AggroLinks> {
+        let has: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'npc_aggro_links'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            return Ok(AggroLinks::default());
+        }
+        let mut by_npc: FxHashMap<u32, SmallVec<[u32; 2]>> = FxHashMap::default();
+        each_row(
+            conn,
+            "SELECT npc_id, aggro_link_id FROM npc_aggro_links ORDER BY id",
+            |r| {
+                let npc = r.u32(0);
+                let link = r.u32(1);
+                if npc != 0 && link != 0 {
+                    by_npc.entry(npc).or_default().push(link);
+                }
+            },
+        )?;
+        Ok(AggroLinks { by_npc })
+    }
+
+    /// Whether pulling NPC `a` brings NPC `b` along: they share an `aggro_link_id`.
+    pub fn linked(&self, a: u32, b: u32) -> bool {
+        if a == b {
+            return true;
+        }
+        let (Some(la), Some(lb)) = (self.by_npc.get(&a), self.by_npc.get(&b)) else {
+            return false;
+        };
+        la.iter().any(|l| lb.contains(l))
+    }
+
+    /// Heap bytes held.
+    pub fn bytes(&self) -> usize {
+        self.by_npc.capacity() * (std::mem::size_of::<(u32, SmallVec<[u32; 2]>)>() + 8)
+            + self.by_npc.values().map(|v| v.len() * 4).sum::<usize>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +270,21 @@ mod tests {
         assert_eq!(&*boar.name, "멧돼지");
         assert!(boar.aggressive && boar.roles.is_none());
         assert_eq!(format!("{:?}", f.roles), "NpcRoles[specialty]");
+    }
+
+    #[test]
+    fn aggro_links_follow_shared_link_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE npc_aggro_links (id INT, npc_id INT, aggro_link_id INT);
+             INSERT INTO npc_aggro_links VALUES (1, 10, 7), (2, 11, 7), (3, 12, 8), (4, 10, 9), (5, 13, 9);",
+        )
+        .unwrap();
+        let links = AggroLinks::load(&conn).unwrap();
+        assert!(links.linked(10, 11), "same link 7");
+        assert!(!links.linked(11, 12), "different links");
+        assert!(links.linked(10, 10), "a monster always comes with itself");
+        assert!(links.linked(10, 13), "10 also carries link 9");
+        assert!(!links.linked(12, 13), "unlinked templates");
     }
 }

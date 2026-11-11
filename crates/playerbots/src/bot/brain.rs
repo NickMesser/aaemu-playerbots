@@ -507,7 +507,12 @@ impl Brain {
 
     /// A badly hurt bot that is not fighting and not resting yet.
     fn hurt_and_idle(&self, ctx: &Ctx<'_>) -> bool {
-        ctx.state.me.hp_pct() < HURT_PCT
+        let line = if ctx.cfg.survival.enabled {
+            ctx.cfg.survival.rest_hp_pct
+        } else {
+            HURT_PCT
+        };
+        ctx.state.me.hp_pct() < line
             && !ctx.combat.busy()
             && !matches!(self.choice, GoalChoice::Forced(_))
             && self.goal.as_ref().is_some_and(|g| {
