@@ -103,9 +103,15 @@ impl Grind {
             return GoalStatus::Done;
         }
         if let Some(obj) = self.pick_target(ctx) {
-            if let Some(why) = pull_blocked(ctx, obj) {
-                ctx.log
-                    .debug(format!("grind: not pulling unit {obj}: {}", why.word()));
+            if let Some(block) = pull_blocked(ctx, obj) {
+                ctx.log.debug(format!(
+                    "grind: not pulling unit {obj}: {}",
+                    crate::bot::survival::pull_reason(
+                        &ctx.cfg.survival,
+                        &block.facts,
+                        block.reason
+                    )
+                ));
                 self.ignore_for(obj, now + PULL_RETRY_MS);
                 return GoalStatus::Running;
             }

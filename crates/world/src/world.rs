@@ -143,6 +143,8 @@ pub struct World {
     chars: Chars,
     skills: Skills,
     npcs: IdMap<NpcTemplate>,
+    /// Which NPC templates aggro together (`npc_aggro_links`).
+    aggro_links: crate::npc::AggroLinks,
     doodads: DoodadData,
     npc_spawns: SpawnIndex,
     doodad_spawns: SpawnIndex,
@@ -211,6 +213,7 @@ impl World {
         let chars = Chars::load(&conn, &paths.server_data).context("load character templates")?;
         let skills = Skills::load(&conn, &texts).context("load skills")?;
         let mut npcs = npc::load(&conn, &texts).context("load npcs")?;
+        let aggro_links = npc::AggroLinks::load(&conn).context("load npc aggro links")?;
         let doodads = crate::doodad::load(&conn, &texts).context("load doodads")?;
         let items = load_items(&conn, &texts).context("load items")?;
         let item_uses = ItemUses::load(&conn).context("load item use skills")?;
@@ -293,6 +296,7 @@ impl World {
             chars,
             skills,
             npcs,
+            aggro_links,
             doodads,
             npc_spawns,
             doodad_spawns,
@@ -381,6 +385,7 @@ impl World {
             ("npc spawns + grid", self.npc_spawns.bytes()),
             ("doodad spawns + grid", self.doodad_spawns.bytes()),
             ("npc templates", npc::bytes(&self.npcs)),
+            ("npc aggro links", self.aggro_links.bytes()),
             ("doodad templates", self.doodads.bytes()),
             ("quests", self.quests.bytes()),
             ("skills", self.skills.bytes()),
@@ -512,6 +517,11 @@ impl World {
     /// All NPC templates in id order.
     pub fn npc_templates(&self) -> &[NpcTemplate] {
         self.npcs.values()
+    }
+
+    /// Whether pulling NPC `a` brings NPC `b` along (`npc_aggro_links`).
+    pub fn aggro_linked(&self, a: u32, b: u32) -> bool {
+        self.aggro_links.linked(a, b)
     }
 
     /// Static spawn positions of an NPC template.

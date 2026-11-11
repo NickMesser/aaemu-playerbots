@@ -115,13 +115,19 @@ pull_min_hp_pct = 60
 pull_min_mp_pct = 20
 # Below this many percent of hit points a goal ends and the bot rests.
 rest_hp_pct = 50
-# Monsters this many levels above the bot and above grade 1 (elites, bosses) are not pulled;
-# neither is a target with more than max_pack hostile monsters within pack_radius_m of it (the
-# target included). Quest kill objectives obey the same rules.
-max_level_gap = 1
-max_grade = 1
+# Monsters this many levels above the bot are not pulled (1.2 quests routinely send a player at
+# monsters 2-3 levels above it). max_grade is the strongest NpcGradeType pulled: "normal" (Normal
+# and Weak), "elite" (also Elite and Strong) or "boss" (everything, bosses included). Bosses are
+# refused solo and allowed from party_boss_min members in range on. A target with more than
+# max_pack monsters within pack_radius_m that would aggro with it (aggressive, linked by
+# npc_aggro_links or already on the bot; passive bystanders do not count) is not pulled; a party
+# may pull max_pack per member in range. Quest kill objectives obey the same rules.
+max_level_gap = 3
+max_grade = "elite"
 max_pack = 2
 pack_radius_m = 8.0
+party_range_m = 40.0
+party_boss_min = 2
 # A monster fight is given up and the bot runs below this many percent of hit points, or with at
 # least flee_adds attackers while below flee_adds_hp_pct (0 = never run).
 flee_hp_pct = 40

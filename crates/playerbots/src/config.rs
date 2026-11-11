@@ -288,10 +288,24 @@ impl Default for BehaviorCfg {
     }
 }
 
+/// The strongest NPC grade a bot pulls (`[survival] max_grade`), by `NpcGradeType`:
+/// 1 Normal, 2 Elite, 3 BossA, 4 BossB, 5 BossC, 6 Weak, 7 Strong, 8 BossS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GradeLimit {
+    /// Normal and weak monsters only.
+    Normal,
+    /// Also elites and strong monsters (the default; 1.2 quest elites are routine).
+    #[default]
+    Elite,
+    /// Everything, bosses included.
+    Boss,
+}
+
 /// `[survival]`: when a bot may pull, when it runs, and how it rests after a death.
 ///
 /// The defaults come from the 2026-11-11 death journal (1,407 deaths in 9.6 h, about three per
-/// bot-hour): bots kept pulling at low hit points, pulled packs and elites, walked into
+/// bot-hour): bots kept pulling at low hit points, pulled packs and bosses, walked into
 /// higher-level aggressive spawns while travelling, fought on below 40 % and went back to work
 /// right after a resurrection instead of resting first.
 #[derive(Debug, Clone, Deserialize)]
@@ -306,14 +320,24 @@ pub struct SurvivalCfg {
     pub pull_min_mp_pct: u8,
     /// A goal ends and the brain rests below this many percent of hit points.
     pub rest_hp_pct: u8,
-    /// Monsters this many levels above the bot are not pulled (quest kills included).
+    /// Monsters this many levels above the bot are not pulled (quest kills included). 1.2 quests
+    /// routinely send a player at monsters 2-3 levels above it.
     pub max_level_gap: u8,
-    /// Monsters above grade 1 (elites, bosses) are not pulled.
-    pub max_grade: u8,
-    /// Most hostile monsters near a target (the target included) a bot pulls into.
+    /// The strongest monster grade a bot pulls: `normal` (Normal, Weak), `elite` (also Elite and
+    /// Strong) or `boss` (everything). Bosses (BossA/B/C/S) are refused solo and allowed from
+    /// [`SurvivalCfg::party_boss_min`] members in range on.
+    pub max_grade: GradeLimit,
+    /// Most hostile monsters near a target (the target included) a bot pulls into; a party may
+    /// pull this many per member in range.
     pub max_pack: u8,
-    /// Monsters within this many metres of a target count as its pack.
+    /// Monsters within this many metres of a target count as its pack, when they would aggro
+    /// themselves (aggressive or linked by `npc_aggro_links`) or already target the bot. Passive
+    /// bystanders do not count.
     pub pack_radius_m: f32,
+    /// How far a party member counts as part of the party's strength (metres).
+    pub party_range_m: f32,
+    /// A party of at least this many members in range may pull bosses (0 = never).
+    pub party_boss_min: u8,
     /// A monster fight is given up and the bot runs below this many percent of hit points
     /// (0 = never run from a monster).
     pub flee_hp_pct: u8,
@@ -346,10 +370,12 @@ impl Default for SurvivalCfg {
             pull_min_hp_pct: 60,
             pull_min_mp_pct: 20,
             rest_hp_pct: 50,
-            max_level_gap: 1,
-            max_grade: 1,
+            max_level_gap: 3,
+            max_grade: GradeLimit::Elite,
             max_pack: 2,
             pack_radius_m: 8.0,
+            party_range_m: 40.0,
+            party_boss_min: 2,
             flee_hp_pct: 40,
             flee_adds: 3,
             flee_adds_hp_pct: 60,

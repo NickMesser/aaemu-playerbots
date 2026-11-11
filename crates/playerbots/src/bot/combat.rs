@@ -33,7 +33,7 @@ use super::rotation::{
     self, CastKind, Decision, Inputs, LearnCtx, Learner, RotState, Rotation, SkillBook, TargetView,
 };
 use super::state::{dist2d, Unit, UnitKind};
-use super::survival::{self, PullBlocker, PullFacts};
+use super::survival::{self, PullBlock, PullFacts};
 use super::watch::classify::{self, Refusal};
 use super::watch::Finding;
 
@@ -1703,9 +1703,21 @@ fn monster_name(ctx: &Ctx<'_>, obj: u32) -> String {
 }
 
 /// Whether the bot must not start a fight with monster `obj` (`[survival]`), and why. Counts the
-/// hostile monsters around the target (the target included) as its pack; a character target is
-/// never gated here (PvP has its own rules).
-pub fn pull_blocked(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlocker> {
+/// monsters around the target that would aggro with it (aggressive, linked by `npc_aggro_links`
+/// or already on the bot), the target included; passive bystanders do not count. A character
+/// target is never gated here (PvP has its own rules).
+pub fn pull_blocked(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlock> {
+    pull_blocked_with(ctx, obj, false)
+}
+
+/// Like [`pull_blocked`] for a quest objective: a bot in a party is weighed with the party
+/// members in range (their highest level, one more pack per member, bosses from
+/// `[survival] party_boss_min` on) instead of alone.
+pub fn pull_blocked_quest(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlock> {
+    pull_blocked_with(ctx, obj, true)
+}
+
+fn pull_blocked_with(ctx: &Ctx<'_>, obj: u32, party: bool) -> Option<PullBlock> {
     let cfg = &ctx.cfg.survival;
     if !cfg.enabled {
         return None;
@@ -1713,27 +1725,54 @@ pub fn pull_blocked(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlocker> {
     let me = &ctx.state.me;
     let u = ctx.state.units.get(&obj)?;
     let template = attackable(ctx.world, me.faction, u)?;
-    let level = if u.level != 0 {
+    let target_level = if u.level != 0 {
         u.level
     } else {
         template.level
     };
-    let mut hostiles = 0u8;
+    let (party_members, level) = if party {
+        let (members, party_level) = ctx.state.team().map_or((1, 0), |t| {
+            t.strength_near(
+                me.char_id,
+                me.pos,
+                me.zone_id,
+                ctx.state.place.instance_id(),
+                cfg.party_range_m,
+            )
+        });
+        (members.max(1), party_level.max(me.level))
+    } else {
+        (1, me.level)
+    };
+    // the target, plus every monster near it that the pull would bring along
+    let mut hostiles = 1u8;
     let radius = cfg.pack_radius_m.max(0.0);
-    for other in ctx.state.units.values() {
-        if other.dist2d(u.pos) <= radius && attackable(ctx.world, me.faction, other).is_some() {
+    for (&other_obj, other) in &ctx.state.units {
+        if other_obj == obj || other.dist2d(u.pos) > radius {
+            continue;
+        }
+        let Some(other_template) = attackable(ctx.world, me.faction, other) else {
+            continue;
+        };
+        let targets_bot = ctx.state.threats.iter().any(|(o, _)| *o == other_obj);
+        if survival::joins_pull(
+            other_template.aggressive,
+            ctx.world.aggro_linked(template.id, other.id),
+            targets_bot,
+        ) {
             hostiles = hostiles.saturating_add(1);
         }
     }
-    survival::pull_blocker(
+    survival::pull_block(
         cfg,
         &PullFacts {
             hp_pct: me.hp_pct(),
             mp_pct: me.mp_pct(),
-            level: me.level,
-            target_level: level,
+            level,
+            target_level,
             target_grade: template.grade,
             hostiles,
+            party_members,
         },
     )
 }
