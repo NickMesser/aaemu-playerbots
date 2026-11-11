@@ -97,7 +97,7 @@ impl SkillBook for aa_world::World {
 /// What a skill is aimed at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aim {
-    /// The bot itself (self buffs, heals; there is no party tracking).
+    /// The bot itself (self buffs, self heals).
     SelfOnly,
     /// A unit target.
     Unit,
@@ -151,6 +151,21 @@ pub struct TargetView {
     pub casting: bool,
 }
 
+/// A party member as the rotation sees it (the bot itself is one of them).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PartyView {
+    /// Object id.
+    pub obj: u32,
+    /// Position.
+    pub pos: [f32; 3],
+    /// Horizontal distance from the bot.
+    pub dist: f32,
+    /// Hit points in percent.
+    pub hp_pct: u8,
+    /// The member is dead (or its hit points are not known to be above zero).
+    pub dead: bool,
+}
+
 /// Everything [`decide`] looks at.
 pub struct Inputs<'a> {
     /// The bot clock in ms.
@@ -179,6 +194,8 @@ pub struct Inputs<'a> {
     pub labor: i16,
     /// The target, if any (alive).
     pub target: Option<TargetView>,
+    /// The party members the bot can see, the bot itself included (empty without a party).
+    pub party: &'a [PartyView],
     /// Distances to the hostile units around the bot (the target included), at least up to
     /// [`Rotation::max_enemy_radius`].
     pub enemies: &'a [f32],
@@ -195,6 +212,9 @@ pub enum CastKind {
     SelfCast,
     /// On a unit.
     Unit(u32),
+    /// On a party member: the combat controller switches its target to the member for the cast
+    /// and back to the enemy after it.
+    Ally(u32),
     /// At a ground position.
     Position([f32; 3]),
 }
@@ -567,21 +587,8 @@ pub fn gate(inp: &Inputs<'_>, st: &RotState, skill: u32, while_controlled: bool)
     let Some(f) = inp.book.facts(skill) else {
         return Gate::Unknown;
     };
-    if !is_known(inp, &f, skill) {
-        return Gate::Unlearned;
-    }
-    let now = inp.now_ms;
-    if inp.backoffs.blocked(skill, now) {
-        return Gate::Backoff;
-    }
-    if inp.cooldowns.iter().any(|c| c.0 == skill && now < c.1) {
-        return Gate::Cooldown;
-    }
-    if i64::from(f.mana) > i64::from(inp.mp) || st.mana_short(skill, inp.mp) {
-        return Gate::Mana;
-    }
-    if !while_controlled && st.controlled(now) {
-        return Gate::Controlled;
+    if let Some(g) = base_gate(inp, st, &f, skill, while_controlled) {
+        return g;
     }
     let aim = aim_of(&f);
     let in_reach =
@@ -632,8 +639,13 @@ fn cond(c: &Cond, inp: &Inputs<'_>, st: &mut RotState, rng: &mut fastrand::Rng) 
             Some(t) => !st.target_debuff(*skill, t.obj, now, *min_life_ms),
             None => false,
         },
-        Cond::HealthBand { min, max } | Cond::PartyLowest { min, max } => {
+        Cond::HealthBand { min, max } => {
             let p = f32::from(inp.hp_pct);
+            p >= *min && p <= *max
+        }
+        Cond::PartyLowest { min, max } => {
+            // (the lowest living member the bot can see; the bot itself without a party)
+            let p = f32::from(lowest_party_hp(inp));
             p >= *min && p <= *max
         }
         Cond::HasTarget => inp.target.is_some(),
@@ -671,8 +683,104 @@ fn cond(c: &Cond, inp: &Inputs<'_>, st: &mut RotState, rng: &mut fastrand::Rng) 
     }
 }
 
+/// The hit points (percent) of the lowest living member the bot can see, the bot included.
+fn lowest_party_hp(inp: &Inputs<'_>) -> u8 {
+    inp.party
+        .iter()
+        .filter(|p| !p.dead)
+        .map(|p| p.hp_pct)
+        .fold(inp.hp_pct, u8::min)
+}
+
+/// The gate checks of a cast that do not depend on the target's range and relation.
+fn base_gate(
+    inp: &Inputs<'_>,
+    st: &RotState,
+    f: &SkillFacts,
+    skill: u32,
+    while_controlled: bool,
+) -> Option<Gate> {
+    if !is_known(inp, f, skill) {
+        return Some(Gate::Unlearned);
+    }
+    let now = inp.now_ms;
+    if inp.backoffs.blocked(skill, now) {
+        return Some(Gate::Backoff);
+    }
+    if inp.cooldowns.iter().any(|c| c.0 == skill && now < c.1) {
+        return Some(Gate::Cooldown);
+    }
+    if i64::from(f.mana) > i64::from(inp.mp) || st.mana_short(skill, inp.mp) {
+        return Some(Gate::Mana);
+    }
+    if !while_controlled && st.controlled(now) {
+        return Some(Gate::Controlled);
+    }
+    None
+}
+
+/// Builds a heal on the lowest living member in the skill's reach. The bot itself is the target
+/// without a party, and is used when its own hit points are the lowest.
+fn try_heal(e: &Entry, inp: &Inputs<'_>, st: &RotState) -> Result<Cast, Gate> {
+    let Some(f) = inp.book.facts(e.skill) else {
+        return Err(Gate::Unknown);
+    };
+    if let Some(g) = base_gate(inp, st, &f, e.skill, e.while_controlled) {
+        return Err(g);
+    }
+    let aim = aim_of(&f);
+    if !matches!(aim, Aim::SelfOnly | Aim::Unit) {
+        return Err(Gate::Unsupported);
+    }
+    // a skill that can only heal the caster is not spent while somebody else is lower
+    if aim == Aim::SelfOnly && inp.hp_pct > lowest_party_hp(inp) {
+        return Err(Gate::NoTarget);
+    }
+    let reach = reach_of(&f) + RANGE_SLACK;
+    let low = f32::from(f.min_range);
+    let mut best: Option<(u8, f32, u32, bool)> = None;
+    let mut me_listed = false;
+    for p in inp.party {
+        if p.dead {
+            continue;
+        }
+        let is_me = p.obj == inp.me_obj;
+        me_listed |= is_me;
+        if aim == Aim::SelfOnly && !is_me {
+            continue;
+        }
+        if p.dist < low || p.dist > reach {
+            continue;
+        }
+        let cand = (p.hp_pct, p.dist, p.obj, is_me);
+        if best.is_none_or(|b| (cand.0, cand.1) < (b.0, b.1)) {
+            best = Some(cand);
+        }
+    }
+    if !me_listed && low == 0.0 {
+        let cand = (inp.hp_pct, 0.0, inp.me_obj, true);
+        if best.is_none_or(|b| (cand.0, cand.1) < (b.0, b.1)) {
+            best = Some(cand);
+        }
+    }
+    let Some((_, _, obj, is_me)) = best else {
+        return Err(Gate::Range);
+    };
+    Ok(Cast {
+        skill: e.skill,
+        kind: if is_me {
+            CastKind::SelfCast
+        } else {
+            CastKind::Ally(obj)
+        },
+    })
+}
+
 /// Builds the cast for `e` if its gate is open.
 fn try_cast(e: &Entry, inp: &Inputs<'_>, st: &RotState) -> Result<Cast, Gate> {
+    if e.action == Action::CastHeal {
+        return try_heal(e, inp, st);
+    }
     let g = gate(inp, st, e.skill, e.while_controlled);
     let Gate::Open(aim) = g else { return Err(g) };
     let kind = match (aim, inp.target) {
@@ -887,6 +995,7 @@ mod tests {
         backoffs: Backoffs,
         enemies: Vec<f32>,
         target: Option<TargetView>,
+        party: Vec<PartyView>,
         now: u64,
         mp: i32,
         hp_pct: u8,
@@ -902,6 +1011,7 @@ mod tests {
                 backoffs: Backoffs::default(),
                 enemies: Vec::new(),
                 target: target(3.0),
+                party: Vec::new(),
                 now: 10_000,
                 mp: 100,
                 hp_pct: 100,
@@ -924,6 +1034,7 @@ mod tests {
                 mp: self.mp,
                 labor: 50,
                 target: self.target,
+                party: &self.party,
                 enemies: &self.enemies,
                 gcd_until_ms: self.gcd_until,
                 casting_until_ms: 0,
@@ -1463,5 +1574,139 @@ mod tests {
             "{}",
             std::mem::size_of::<RotState>()
         );
+    }
+
+    fn heal(max_range: u16) -> SkillFacts {
+        SkillFacts {
+            max_range,
+            target_type: 5,
+            relation: 0,
+            ..SkillFacts::default()
+        }
+    }
+
+    fn member(obj: u32, dist: f32, hp_pct: u8) -> PartyView {
+        PartyView {
+            obj,
+            pos: [dist, 0.0, 0.0],
+            dist,
+            hp_pct,
+            dead: false,
+        }
+    }
+
+    const HEAL: &str = r#"{
+      "id": "t", "skills": {"heal": 2},
+      "rules": [
+        {"when": {"kind": "partyLowest", "min": 0, "max": 50},
+         "then": [{"action": "castHeal", "skill": "heal", "rel": 35}]}
+      ]
+    }"#;
+
+    #[test]
+    fn party_lowest_reads_the_members_and_the_heal_goes_to_the_lowest_in_reach() {
+        let r = rot(HEAL);
+        let mut f = Fixture::new(&[(2, heal(25))]);
+        f.hp_pct = 100;
+        f.party = vec![member(5, 0.0, 100), member(9, 10.0, 40)];
+        let mut st = RotState::default();
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            Some(Cast {
+                skill: 2,
+                kind: CastKind::Ally(9)
+            })
+        );
+        // the lowest is out of the skill's reach: the lowest one in reach is healed
+        f.party = vec![
+            member(5, 0.0, 100),
+            member(9, 40.0, 10),
+            member(10, 8.0, 35),
+        ];
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            Some(Cast {
+                skill: 2,
+                kind: CastKind::Ally(10)
+            })
+        );
+        // the bot itself is the lowest: it heals itself
+        f.hp_pct = 20;
+        f.party = vec![member(5, 0.0, 20), member(9, 8.0, 80)];
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            Some(Cast {
+                skill: 2,
+                kind: CastKind::SelfCast
+            })
+        );
+        // without a party the condition reads the bot's own hit points
+        f.hp_pct = 100;
+        f.party.clear();
+        assert_eq!(decide_once(&r, &mut st, &f).cast, None);
+        f.hp_pct = 40;
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            Some(Cast {
+                skill: 2,
+                kind: CastKind::SelfCast
+            })
+        );
+    }
+
+    #[test]
+    fn a_self_only_heal_is_not_spent_while_a_member_is_lower() {
+        let r = rot(r#"{
+          "id": "t", "skills": {"heal": 2},
+          "rules": [
+            {"when": {"kind": "partyLowest", "min": 0, "max": 50},
+             "then": [{"action": "castHeal", "skill": "heal", "rel": 35}]}
+          ]
+        }"#);
+        let mut f = Fixture::new(&[(2, selfcast())]);
+        f.hp_pct = 90;
+        f.party = vec![member(5, 0.0, 90), member(9, 8.0, 20)];
+        let mut st = RotState::default();
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            None,
+            "the self heal cannot reach the hurt member"
+        );
+        // dead members are not heal targets and do not lower the band
+        f.hp_pct = 40;
+        f.party = vec![member(5, 0.0, 40)];
+        let mut dead = member(9, 8.0, 0);
+        dead.dead = true;
+        f.party.push(dead);
+        assert_eq!(
+            decide_once(&r, &mut st, &f).cast,
+            Some(Cast {
+                skill: 2,
+                kind: CastKind::SelfCast
+            }),
+            "the dead member is skipped, the bot itself is lowest"
+        );
+    }
+
+    #[test]
+    fn a_heal_waits_for_its_cooldown_and_mana_like_any_other_cast() {
+        let r = rot(HEAL);
+        let mut f = Fixture::new(&[(
+            2,
+            SkillFacts {
+                mana: 10,
+                ..heal(25)
+            },
+        )]);
+        f.hp_pct = 100;
+        f.party = vec![member(9, 8.0, 20)];
+        let mut st = RotState::default();
+        f.mp = 5;
+        assert_eq!(decide_once(&r, &mut st, &f).cast, None);
+        f.mp = 100;
+        f.cooldowns.push((2, f.now + 1_000));
+        assert_eq!(decide_once(&r, &mut st, &f).cast, None);
+        f.cooldowns.clear();
+        assert!(decide_once(&r, &mut st, &f).cast.is_some());
     }
 }

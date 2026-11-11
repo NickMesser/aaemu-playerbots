@@ -297,9 +297,10 @@ pub struct DungeonsCfg {
     /// skip a dungeon whose entries are used up. Off by default: the 1.2 server has no dungeon
     /// entry limit (`Dungeons.EntryLimit`). A refusal for the limit is answered either way.
     pub entry_limit: bool,
-    /// Seconds a bot waits for a full party (the dungeon's `max_players`, at most five) before it
-    /// goes with a smaller one. At most 140: the coordinator drops a wish after 150 s, so a longer
-    /// wait would never form the smaller party.
+    /// Seconds a wish waits for a full party (the dungeon's `max_players`, at most five) before
+    /// it goes with a smaller one. At most
+    /// [`MAX_RELAX_SECS`](crate::bot::coordinator::MAX_RELAX_SECS); the bot waits up to
+    /// [`GATHER_MS`](crate::bot::goals::dungeon::machine::GATHER_MS) for an order.
     pub relax_after_secs: u64,
 }
 
@@ -1346,9 +1347,10 @@ impl Config {
         ensure!(
             self.dungeons.relax_after_secs <= crate::bot::coordinator::MAX_RELAX_SECS,
             "dungeons.relax_after_secs {} is above {}: the coordinator drops a party wish after \
-             150 s, so a longer wait would never form the smaller party",
+             {} s, so a longer wait would never form the smaller party",
             self.dungeons.relax_after_secs,
-            crate::bot::coordinator::MAX_RELAX_SECS
+            crate::bot::coordinator::MAX_RELAX_SECS,
+            crate::bot::coordinator::WISH_TTL.as_secs()
         );
         ensure!(
             self.market.ad_interval_secs >= 60,
@@ -1798,14 +1800,14 @@ trade_with_players = true
         let d = Config::default().dungeons;
         assert!(!d.entry_limit, "the 1.2 server has no entry limit");
         assert_eq!(d.relax_after_secs, crate::bot::party::RELAX_AFTER_SECS);
-        assert_eq!(d.relax_after_secs, 120);
+        assert_eq!(d.relax_after_secs, 600);
         // the example file documents both keys with the defaults
         let ex = Config::parse(Config::example()).unwrap().dungeons;
         assert!(!ex.entry_limit);
-        assert_eq!(ex.relax_after_secs, 120);
+        assert_eq!(ex.relax_after_secs, 600);
         assert_documented(
             "dungeons",
-            &["entry_limit = false", "relax_after_secs = 120"],
+            &["entry_limit = false", "relax_after_secs = 600"],
         );
         // each key can be set on its own
         let cfg = Config::parse(
@@ -1817,10 +1819,11 @@ relax_after_secs = 45
         .unwrap();
         assert!(cfg.dungeons.entry_limit);
         assert_eq!(cfg.dungeons.relax_after_secs, 45);
-        // a wish is dropped after 150 s: the longest wait that can still form a party is 140 s
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 140\n").is_ok());
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 141\n").is_err());
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 150\n").is_err());
+        // the wish lifetime and the sweep period cap the wait below the gather window
+        let cap = crate::bot::coordinator::MAX_RELAX_SECS;
+        assert_eq!(cap, 600);
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {cap}\n")).is_ok());
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {}\n", cap + 1)).is_err());
         assert!(Config::parse("[dungeons]\nentry_limit = 1\n").is_err());
         assert!(Config::parse("[dungeons]\nentry_limits = true\n").is_err());
     }

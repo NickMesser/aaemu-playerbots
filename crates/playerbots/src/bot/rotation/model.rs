@@ -137,7 +137,7 @@ pub enum Cond {
         max: f32,
     },
     /// The party member with the fewest hit points is within `min..=max` percent (the bot itself
-    /// without a party).
+    /// without a party; dead members are skipped).
     PartyLowest {
         /// Lower bound.
         min: f32,

@@ -1158,6 +1158,7 @@ mod tests {
             party_id: 3,
             leader: 1,
             members: [1, 2].into_iter().collect(),
+            roles: Default::default(),
             purpose: PartyPurpose::Ambush { x: 10, y: 20 },
         };
         let g = Gank::with_order(Some(Box::new(order.clone())));

@@ -503,6 +503,7 @@ mod tests {
             party_id: 1,
             leader: 4,
             members: [4, 5].into_iter().collect(),
+            roles: Default::default(),
             purpose: crate::bot::party::PartyPurpose::Dungeon { zone_group: 2 },
         };
         match Goal::with_party(GoalKind::Dungeon, None, Some(Box::new(order.clone()))) {

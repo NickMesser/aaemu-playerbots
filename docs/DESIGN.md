@@ -851,8 +851,11 @@ told to `stay`, `publish` fills `BotSnapshot.party`.
   announced target itself.
 * Whispers between the factions are refused by the server (`CHAT_CANNOT_WHISPER_TO_HOSTILE`).
 
-**Not done.** Healing allies: the rotation's heals are `Aim::SelfOnly` and `rotation::Inputs` knows
-only the bot's own hit points; a healer fights like a damage dealer and heals itself.
+**Healing allies.** In a fight the rotation sees the party (the bot and the members the
+`SCTeamRemoteMembersEx` packets placed in the same world, with the hit points of the freshest party
+or unit packet): `partyLowest` reads the lowest living member, and a `castHeal` row aims at the
+lowest one in the skill's reach. The combat controller switches its target to that member for the
+cast and back to the enemy at once. Out of combat a healer still rests like the others.
 
 ## Guilds (`bot/guild/`, goal `guild`)
 

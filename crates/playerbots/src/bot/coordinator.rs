@@ -87,8 +87,9 @@ impl Dispatch for Hub {
 
 /// How long a request waits for a partner before it is dropped.
 pub const REQUEST_TTL: Duration = Duration::from_secs(120);
-/// How long a wish for a dungeon waits for a party before it is dropped.
-pub const WISH_TTL: Duration = Duration::from_secs(150);
+/// How long a wish for a dungeon waits for a party before it is dropped. It has to outlive the
+/// relax wait (600 s) plus a little, or a small party could never form after it.
+pub const WISH_TTL: Duration = Duration::from_secs(720);
 /// How long a formed party stays in the coordinator's list.
 pub const FORMED_TTL: Duration = Duration::from_secs(45 * 60);
 /// Most remembered parties.
@@ -109,7 +110,9 @@ const LEVEL_WEIGHT_M: f32 = 25.0;
 const SWEEP_SECS: u64 = 3;
 /// The longest `[dungeons] relax_after_secs` that can still form a smaller party: a wish is dropped
 /// at [`WISH_TTL`] before the sweep plans, so the wait has to end with a sweep or two to spare.
-pub const MAX_RELAX_SECS: u64 = 140;
+/// The 720 s wish lifetime and the 660 s gather window leave room for the 600 s the live runs
+/// needed for four askers to rally a fifth.
+pub const MAX_RELAX_SECS: u64 = 600;
 const _: () = assert!(MAX_RELAX_SECS + 2 * SWEEP_SECS < WISH_TTL.as_secs());
 /// Most remembered pairings.
 const RECENT_MAX: usize = 64;
@@ -394,6 +397,7 @@ impl Coordinator {
                     party_id: team.party_id,
                     leader: team.members[0],
                     members: team.members.iter().copied().collect(),
+                    roles: Default::default(),
                     purpose: PartyPurpose::Guild,
                 };
                 if let Err(e) = self.sink.send(bot, BotCmd::Party(Box::new(order))) {
@@ -434,6 +438,7 @@ impl Coordinator {
                     party_id,
                     leader: q.members[0],
                     members: q.members.clone(),
+                    roles: Default::default(),
                     purpose: PartyPurpose::Ambush {
                         x: q.post.0.round() as i32,
                         y: q.post.1.round() as i32,
@@ -473,11 +478,14 @@ impl Coordinator {
                 bots = ?bots,
                 "dungeon party formed"
             );
+            let roles: SmallVec<[party::PartyRole; party::MAX_PARTY]> =
+                f.members.iter().map(|&i| wishes[i].0.role).collect();
             for &bot in &bots {
                 let order = PartyOrder {
                     party_id,
                     leader: bots[0],
                     members: bots.clone(),
+                    roles: roles.clone(),
                     purpose: PartyPurpose::Dungeon {
                         zone_group: f.site.zone_group,
                     },
@@ -830,6 +838,7 @@ mod tests {
             at,
             level,
             alliance: 7,
+            role: party::PartyRole::Dps,
             skip: 0,
             raise: false,
             jump: false,
@@ -903,6 +912,33 @@ mod tests {
         assert!(parties(&rec).is_empty(), "not yet");
         c.expire(t0 + Duration::from_secs(31));
         assert_eq!(parties(&rec).len(), 4, "a party of four after the wait");
+    }
+
+    #[test]
+    fn two_early_askers_wait_for_the_later_ones_instead_of_forming_a_pair() {
+        let (rec, _h, c) = coordinator();
+        let mut c = c.with_sites(vec![site(0, 50, 18, 55, 5, (0.0, 0.0))]);
+        let t0 = Instant::now();
+        c.handle(CoordMsg::Party(wish(1, (0.0, 0.0), 20)), t0);
+        c.handle(
+            CoordMsg::Party(wish(2, (5.0, 0.0), 20)),
+            t0 + Duration::from_secs(1),
+        );
+        // the old 120 s relax made a two-bot party here
+        c.expire(t0 + Duration::from_secs(party::RELAX_AFTER_SECS / 2));
+        assert!(parties(&rec).is_empty(), "the pool can still grow");
+        c.handle(
+            CoordMsg::Party(wish(3, (10.0, 0.0), 20)),
+            t0 + Duration::from_secs(300),
+        );
+        c.handle(
+            CoordMsg::Party(wish(4, (15.0, 0.0), 20)),
+            t0 + Duration::from_secs(310),
+        );
+        c.expire(t0 + Duration::from_secs(400));
+        let sent = parties(&rec);
+        assert_eq!(sent.len(), 4, "four bots form a party after the rally");
+        assert!(sent.iter().all(|(_, o)| o.members.len() == 4));
     }
 
     #[test]
