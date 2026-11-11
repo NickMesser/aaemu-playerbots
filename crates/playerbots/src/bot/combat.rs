@@ -30,7 +30,8 @@ use super::goals::duel::{Answer, DuelPhase, DuelWatch};
 use super::motion::{MotionStatus, Pace};
 use super::pvp;
 use super::rotation::{
-    self, CastKind, Decision, Inputs, LearnCtx, Learner, RotState, Rotation, SkillBook, TargetView,
+    self, CastKind, Decision, Inputs, LearnCtx, Learner, PartyView, RotState, Rotation, SkillBook,
+    TargetView,
 };
 use super::state::{dist2d, Unit, UnitKind};
 use super::watch::classify::{self, Refusal};
@@ -1327,6 +1328,52 @@ impl Combat {
                 enemies.push(dist);
             }
         }
+        let me_state = &ctx.state.me;
+        // The party members the rotation may heal: the bot itself and the members the team
+        // packets placed in the same world (their hit points come from those packets).
+        let mut party: SmallVec<[PartyView; 6]> = SmallVec::new();
+        party.push(PartyView {
+            obj: me_state.obj,
+            pos: me,
+            dist: 0.0,
+            hp_pct: me_state.hp_pct(),
+            dead: me_state.dead,
+        });
+        if let Some(team) = ctx.state.team().filter(|t| t.in_team()) {
+            let instance = ctx.state.place.instance_id();
+            for r in &team.remote {
+                if r.char_id == me_state.char_id || !r.online || r.obj_id == 0 {
+                    continue;
+                }
+                if r.instance_id != instance {
+                    continue;
+                }
+                let (Some(remote_pct), true) = (r.hp_pct(), r.located()) else {
+                    continue;
+                };
+                let unit = ctx.state.units.get(&r.obj_id);
+                let pos = unit.map_or(r.pos, |u| u.pos);
+                if !pos[0].is_finite() || !pos[1].is_finite() {
+                    continue;
+                }
+                // (the unit packets of a member in view are fresher than the party snapshot)
+                let (hp_pct, dead) = match unit {
+                    Some(u) if u.dead() => (0, true),
+                    Some(u) if u.hp > 0 && r.hp_max > 0 => (
+                        (i64::from(u.hp) * 100 / i64::from(r.hp_max)).clamp(0, 100) as u8,
+                        false,
+                    ),
+                    _ => (remote_pct, r.hp <= 0),
+                };
+                party.push(PartyView {
+                    obj: r.obj_id,
+                    pos,
+                    dist: dist2d(me, pos),
+                    hp_pct,
+                    dead,
+                });
+            }
+        }
         let c = &mut *ctx.combat;
         let casting = c
             .target_cast
@@ -1337,7 +1384,6 @@ impl Combat {
                     .map_or(1500, |f| u64::from(f.cast_ms).max(500));
                 now.saturating_sub(at) < cast_ms
             });
-        let me_state = &ctx.state.me;
         let inp = Inputs {
             now_ms: now,
             book: world,
@@ -1358,6 +1404,7 @@ impl Combat {
                 character: is_char,
                 casting,
             }),
+            party: &party,
             enemies: &enemies,
             gcd_until_ms: c.gcd_until_ms,
             casting_until_ms: c.casting_until_ms,
@@ -1369,6 +1416,7 @@ impl Combat {
     fn send_rotation_cast(ctx: &mut Ctx<'_>, skill: u32, kind: CastKind) {
         let now = ctx.now_ms;
         let me_obj = ctx.state.me.obj;
+        let enemy = ctx.combat.target;
         let (cooldown, cast_time) = ctx.world.skill(skill).map_or((0, 0), |s| {
             (u64::from(s.cooldown_time), u64::from(s.casting_time))
         });
@@ -1382,13 +1430,29 @@ impl Combat {
             ctx.state
                 .set_cooldown(skill, now + cast_time + cooldown + COOLDOWN_SLACK_MS);
         }
-        ctx.out.push(match kind {
-            CastKind::SelfCast => cs::start_skill_unit(skill, me_obj, me_obj),
-            CastKind::Unit(t) => cs::start_skill_unit(skill, me_obj, t),
-            CastKind::Position(p) => {
-                cs::start_skill_position(skill, me_obj, (p[0], p[1], p[2]), ctx.state.me.yaw)
+        match kind {
+            CastKind::SelfCast => ctx.out.push(cs::start_skill_unit(skill, me_obj, me_obj)),
+            CastKind::Unit(t) => ctx.out.push(cs::start_skill_unit(skill, me_obj, t)),
+            CastKind::Ally(t) => {
+                // The server takes the cast on the ally we target for it; the bot's own target
+                // goes back to the enemy at once so the fight (and the next damage skill) keeps
+                // it.
+                ctx.out.push(cs::change_target(t));
+                ctx.out.push(cs::start_skill_unit(skill, me_obj, t));
+                if let Some(enemy) = enemy {
+                    ctx.out.push(cs::change_target(enemy));
+                    ctx.combat.announced = true;
+                }
             }
-        });
+            CastKind::Position(p) => {
+                ctx.out.push(cs::start_skill_position(
+                    skill,
+                    me_obj,
+                    (p[0], p[1], p[2]),
+                    ctx.state.me.yaw,
+                ));
+            }
+        }
         ctx.log.debug(format!(
             "cast {skill} ({}) {kind:?}",
             ctx.world.skill(skill).map_or("?", |s| &*s.name)

@@ -25,7 +25,7 @@ reads it (default `playerbots.toml`).
 | `[data]` | Paths of the server's `compact.sqlite3` and `app/Data` directory, the baked data directory (`baked`) and the world name. |
 | `[bots]` | How many bots, the login ramp, the roster file, the races for new characters, `gm_bootstrap`, tick and speed settings (`move_update_ms`: the movement updates of a walker a real player can see, 125 ms), reconnect back-off. |
 | `[behavior]` | The weights of the goals (0 switches a goal off), the personas' spread, the switches `trade_with_players`, `portals`, `dungeons`, `dungeon_level_up`, `sailing` and `navmesh`, and the life-like movement settings `lifelike`, `jump_rate` and `emotes`. |
-| `[dungeons]` | Dungeon parties: the wait for a full party (`relax_after_secs`, 120 s) and whether the server's entry limit is counted (`entry_limit`, off: the 1.2 server has none). |
+| `[dungeons]` | Dungeon parties: the wait for a smaller party (`relax_after_secs`, 600 s; four bots rally 90 s for a fifth) and whether the server's entry limit is counted (`entry_limit`, off: the 1.2 server has none). |
 | `[sail]` | The boat the sailing goal uses: `ship` = `rowboat` (default), `clipper`, `cutter`, `junk`, `yawl`, `schooner` or `auto` (see [Sailing](#sailing)). |
 | `[market]` | Selling: `enabled`, `auction`, `chat_ads`, `sell_to_players`, `meet_at`, `max_ads_per_hour` and `ad_interval_secs` (see [Selling](#selling-market)). |
 | `[guild]` | Guilds, off by default: `enabled`, `found`, `min_level`, `party_size`, `max_guilds`, `accept_player_invites` and `churn_per_hour` (see [Guilds](#guilds-guild)). |
@@ -78,7 +78,7 @@ for a minute. The bot defends itself whatever it is doing.
 | **Housing** | Picks a design and a free spot in a housing area, quotes the tax, places the house, builds it and later "goes home" to rest there. |
 | **Auction** | Walks to the nearest auctioneer, lists surplus goods, buys a bargain and goes home (see [Auction house](#auction-house)). Needs `[market] enabled` and `auction`. |
 | **Trade run** | Crafts a trade pack at a specialty workbench, carries it to a specialty NPC that buys it, sells it and collects the payment mail. |
-| **Dungeon** | Bots that like a fight ask the coordinator for a party of up to five (the dungeon's player limit, never more than five; same alliance, a level the dungeon accepts; with `dungeon_level_up` and GM rights a lower level is raised), waiting `[dungeons] relax_after_secs` for it to fill before going with a smaller one. The leader invites, the party walks to the entrance doodad, goes in one by one, clears the dungeon along a route of its hostile spawns (the leader picks targets, the members follow and assist, everybody rests when low), uses the exit doodad and disbands. The server's refusals are typed and answered (a dungeon it turned away is left alone; the entry limit is counted only with `[dungeons] entry_limit`); what the server does that the data contradicts is filed as an issue. |
+| **Dungeon** | Bots that like a fight ask the coordinator for a party of up to five (the dungeon's player limit, never more than five; same alliance, a level the dungeon accepts; with `dungeon_level_up` and GM rights a lower level is raised). The planner prefers a tank and a healer, and a tank leads: it pulls and holds aggro, the rest assist its target and the healer heals the lowest member from behind. A full party starts at once, four bots rally 90 s for a fifth, a smaller one waits `[dungeons] relax_after_secs` (600 s). The leader invites, the party walks to the entrance doodad and waits there a bounded time for a member that died on the way, goes in one by one, clears the dungeon along a route of its hostile spawns (everybody rests when low; deaths inside resume at the arrival point and the bot walks back; two wipes end the run), uses the exit doodad and disbands. The server's refusals are typed and answered (a dungeon it turned away is left alone; the entry limit is counted only with `[dungeons] entry_limit`); what the server does that the data contradicts is filed as an issue. |
 | **Sail** | Summons a boat from a scroll at a beach, sails it 1 to 3 km over the sea (twice as far in a 6 m/s hull; a crossing to another beach or a loop) with a heading controller that finds the wheel's direction itself, then leaves the boat, despawns it and swims ashore. A rowboat by default; `[sail] ship` picks a clipper, cutter, junk, yawl or schooner. Sea only (no lakes or rivers). Needs a boat scroll in the bag or `gm_bootstrap`. See [DESIGN.md](DESIGN.md#sailing-goal-sail). |
 | **Guild** | A bot with no guild that can pay the charter asks the coordinator for a founding team (a duty, whatever it is doing); five bots of one faction found a guild together. What a bot does in its guild afterwards (answer invitations, recruit, promote, talk, leave) is a duty that runs whatever the goal is. Needs `[guild] enabled`; see [Guilds](#guilds-guild). |
 | **Gank** | Off until `[pvp] enabled` and `gank`, and someone may be attacked (`attack_bots`, or `attack_players` without `gm_bootstrap`). Plans an ambush post on the route between a specialty workbench and the NPC that buys its pack (outside the victims' home zones, where the server protects them; conflict zones and wars score higher), waits there and attacks a carrier of the hostile alliance when the odds are fair. Bots that wait close together form a squad of up to `max_squad` through the coordinator, so a stronger carrier can be taken. When the carrier dies the dropped pack is picked up (within 3 m, skill 11361) and a trade run sells it. It gives up on stronger groups, at the retreat line, on a protected target and after a death. See [Player versus player](#player-versus-player-pvp). |
@@ -141,9 +141,9 @@ Safety of the GM lines:
 * `[behavior] dungeon_level_up = false` (default): with `bots.gm_bootstrap`, `true` lets a bot below a
   dungeon's level range raise its level to the range's minimum with the GM `/level` command
   (logged); `false` keeps dungeons to the bots whose level fits.
-* `[dungeons] relax_after_secs = 120` (default): how long a bot waits for the dungeon's full party
-  (its `max_players`, at most five) before it goes with a smaller one; at most 150, the longest a
-  bot waits for a party order.
+* `[dungeons] relax_after_secs = 600` (default): how long a wish waits for a smaller party
+  (the dungeon's `max_players`, at most five) before it starts; four bots start after 90 s of
+  rallying for a fifth, and the value is at most 600.
 * `[dungeons] entry_limit = false` (default): the bots do not count the server's entry limit (three
   entries per zone group and four hours) and never skip a dungeon for the count, as on the 1.2
   server (`Dungeons.EntryLimit` is off there). A refusal for the limit is still answered. `true`
@@ -457,8 +457,10 @@ conversation, not a command. The bot answers by whisper with a short natural lin
 team gets no party chat from the server, so nothing is said there).
 
 **Roles.** A bot announces its party role on joining (`CSSetTeamMemberRole`): tank for tanks, healer
-for healers, attacker for the rest. Healing allies is **not** done: the rotation heals are
-self-only (`Aim::SelfOnly`), a healer fights like a damage dealer and heals itself.
+for healers, attacker for the rest. In a dungeon party the role also decides who leads (a tank
+pulls), how close a member follows (a healer stays farther back) and whom a heal goes to: the
+lowest living party member in reach, with the target switched to it for the cast and back to the
+enemy after.
 
 **Web.** The snapshot of a bot in a party (`GET /api/bots/{id}`, `GET /api/bots`) carries
 `party`: `{id, leader, mode, members: [{name, role, level, leader, online, bot}]}` (`bot` is true for the

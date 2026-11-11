@@ -109,9 +109,10 @@ emotes = true
 # whose entries are used up. Off by default: the 1.2 server has no dungeon entry limit
 # (Dungeons.EntryLimit). A refusal for the limit is answered either way.
 entry_limit = false
-# A bot waits this many seconds for a full party (the dungeon's max_players, at most five) before
-# it goes with a smaller one. At most 150, the longest a bot waits for a party order.
-relax_after_secs = 120
+# A wish waits this many seconds for a full party (the dungeon's max_players, at most five) before
+# it goes with a smaller one (four bots start after 90 s of rallying, see the party planner). At
+# most 600.
+relax_after_secs = 600
 
 [sail]
 # The boat the sailing goal uses: "rowboat" (default), "clipper", "cutter", "junk", "yawl",

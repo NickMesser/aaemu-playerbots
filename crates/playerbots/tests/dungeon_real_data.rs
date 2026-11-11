@@ -94,11 +94,17 @@ fn sharpwind_mines_is_the_cheapest_dungeon_for_three_level_20_bots_at_its_door()
         at: (door.x + dx, door.y - 10.0),
         level: 20,
         alliance: 1,
+        role: party::PartyRole::Dps,
         skip: 0,
         raise: false,
         jump: false,
     };
-    let wishes = [(wish(1, 0.0), 0), (wish(2, 2.0), 0), (wish(3, 4.0), 0)];
+    // three bots are a smaller party: they wait out the relax time before they start
+    let wishes = [
+        (wish(1, 0.0), party::RELAX_AFTER_SECS),
+        (wish(2, 2.0), 0),
+        (wish(3, 4.0), 0),
+    ];
     let f = party::plan(&wishes, &sites, party::RELAX_AFTER_SECS).expect("a party forms");
     assert_eq!(f.site.zone_group, 50);
     assert_eq!(f.members.len(), 3);
@@ -121,6 +127,7 @@ fn a_level_1_bot_without_a_gm_raise_fits_no_dungeon_and_with_one_all_that_start_
         at: (0.0, 0.0),
         level: 1,
         alliance: 1,
+        role: party::PartyRole::Dps,
         skip: 0,
         raise: false,
         jump: false,

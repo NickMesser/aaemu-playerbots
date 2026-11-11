@@ -19,9 +19,10 @@
 //!    stops, bosses last) and engages what it meets; the members follow within about 15 m and
 //!    assist the leader's target (and the monsters that attack a member, see the combat
 //!    controller). Everybody rests when low, the leader waits for stragglers and hurt members.
-//! 5. **Leave / Out**: when the route is done, the time (25 min) is up, the party is gone or the
-//!    bot died three times, everybody walks to the nearest exit doodad and casts its skill; back
-//!    in the main world the members leave the team and the leader dismisses it.
+//! 5. **Leave / Out**: when the route is done, the time (25 min) is up, the party is gone, the
+//!    bot died three times or the party was wiped twice, everybody walks to the nearest exit
+//!    doodad and casts its skill; back in the main world the members leave the team and the
+//!    leader dismisses it.
 //!
 //! Refusals of the entry are typed ([`entry`]) and answered by kind; a dungeon the server turned
 //! away is left alone for a while (per zone group, see
@@ -99,6 +100,13 @@ impl Dungeon {
         let order = self.order.as_deref();
         match run.tick(ctx, order) {
             None => GoalStatus::Running,
+            Some(Outcome::Done) if run.wipes() >= machine::WIPE_LIMIT => {
+                // (the party left through the exit after the second wipe: a clean way out, but
+                // not a completed run)
+                let f = machine::Fail::Wiped;
+                run.finish(ctx, order, Some(Outcome::Failed(f)));
+                GoalStatus::Failed(FailReason::Other(f.word()))
+            }
             Some(Outcome::Done) => {
                 run.finish(ctx, order, Some(Outcome::Done));
                 GoalStatus::Done
@@ -299,6 +307,7 @@ mod tests {
             party_id: 1,
             leader: 2,
             members: [2, 3].into_iter().collect(),
+            roles: Default::default(),
             purpose: PartyPurpose::Dungeon { zone_group: 5 },
         };
         let g = Dungeon::new(Some(Box::new(order.clone())));

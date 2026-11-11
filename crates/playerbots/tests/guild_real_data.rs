@@ -578,6 +578,7 @@ async fn a_founder_gathers_the_team_creates_the_guild_and_dismisses_the_team() {
         party_id: 3,
         leader: 1,
         members: [1, 2, 3, 4, 5].into_iter().collect(),
+        roles: Default::default(),
         purpose: PartyPurpose::Guild,
     };
     // the coordinator reserved the place

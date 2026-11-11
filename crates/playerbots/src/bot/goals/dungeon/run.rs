@@ -81,6 +81,7 @@ struct Mate {
     online: bool,
     pos: [f32; 2],
     hp: u8,
+    dead: bool,
 }
 
 fn flat(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -114,6 +115,9 @@ pub struct Run {
     door: Option<Door>,
     deaths: u8,
     dead_noted: bool,
+    /// Party wipes (everybody dead at once) and whether the party is wiped right now.
+    wipes: u8,
+    wiped_now: bool,
     kills: u16,
     boss_kills: u8,
     accept_ms: u64,
@@ -153,6 +157,8 @@ impl Run {
             door,
             deaths: 0,
             dead_noted: false,
+            wipes: 0,
+            wiped_now: false,
             kills: 0,
             boss_kills: 0,
             accept_ms: 0,
@@ -226,6 +232,11 @@ impl Run {
         (self.kills, self.boss_kills, self.deaths)
     }
 
+    /// Party wipes in this run.
+    pub fn wipes(&self) -> u8 {
+        self.wipes
+    }
+
     fn dungeon_ref<'w>(&self, ctx: &Ctx<'w>) -> Option<&'w Dungeon> {
         ctx.world.dungeons().get(usize::from(self.dungeon?))
     }
@@ -269,6 +280,7 @@ impl Run {
                         online: true,
                         pos: [ctx.state.me.pos[0], ctx.state.me.pos[1]],
                         hp: ctx.state.me.hp_pct(),
+                        dead: ctx.state.me.dead,
                     };
                 }
                 match ctx.hub.slot(bot) {
@@ -283,6 +295,7 @@ impl Run {
                             online,
                             pos: [x, y],
                             hp,
+                            dead: online && hp == 0,
                         }
                     }
                     None => Mate {
@@ -292,6 +305,7 @@ impl Run {
                         online: false,
                         pos: [0.0; 2],
                         hp: 100,
+                        dead: false,
                     },
                 }
             })
@@ -322,6 +336,7 @@ impl Run {
         f.level_max = d.level_max;
         f.raise_ok = ctx.gm_allowed() && ctx.cfg.behavior.dungeon_level_up;
         f.deaths = self.deaths;
+        f.dead = ctx.state.me.dead;
         let place = &ctx.state.place;
         f.in_instance = place.in_instance();
         f.loading = place.loading();
@@ -347,27 +362,28 @@ impl Run {
                 .and_then(|t| t.invite.as_ref())
                 .is_some_and(|i| leader_char == 0 || i.from_char == leader_char),
         };
-        // the entrance
+        // the entrance: only the members still in the team are waited for (one that died before
+        // entering and left has its own run; one that is dead is waited for a bounded time)
         if let Some(door) = self.door {
             f.door_dist = flat(me, door.pos);
             f.at_door = f.door_dist <= DOOR_RANGE;
             f.door_in_view = find_doodad(ctx, door.template, door.pos).is_some();
-            let near = crew
-                .iter()
-                .filter(|m| m.online)
-                .filter(|m| {
-                    flat([m.pos[0], m.pos[1], 0.0], [door.pos[0], door.pos[1], 0.0]) <= MUSTER_M
-                })
-                .count();
-            f.muster_near = near.min(255) as u8;
-            f.muster_far = crew
-                .iter()
-                .filter(|m| m.online)
+            let waiting = |m: &&Mate| {
+                m.bot != myself
+                    && m.online
+                    && team.is_some_and(|t| m.char_id != 0 && t.has(m.char_id))
+            };
+            let near = |m: &Mate| {
+                flat([m.pos[0], m.pos[1], 0.0], [door.pos[0], door.pos[1], 0.0]) <= MUSTER_M
+            };
+            let members = crew.iter().filter(waiting);
+            f.muster_near = (1 + members.clone().filter(|m| near(m)).count()).min(255) as u8;
+            f.muster_far = members
+                .clone()
                 .map(|m| flat([m.pos[0], m.pos[1], 0.0], [door.pos[0], door.pos[1], 0.0]))
                 .fold(0.0, f32::max);
-            f.muster_ready = crew.iter().filter(|m| m.online).all(|m| {
-                flat([m.pos[0], m.pos[1], 0.0], [door.pos[0], door.pos[1], 0.0]) <= MUSTER_M
-            });
+            f.muster_ready = members.clone().all(near);
+            f.muster_dead = members.filter(|m| m.dead).count().min(255) as u8;
         }
         f.trip = match ctx.motion.status() {
             MotionStatus::Moving => Trip::Moving,
@@ -397,6 +413,26 @@ impl Run {
                 f.exit_in_view = false;
             }
         }
+        // a wipe: every member that is here lies dead at once (a run ends after two)
+        if matches!(self.machine.phase(), Phase::Load | Phase::Clear) {
+            let present: SmallVec<[bool; MAX_PARTY]> = crew
+                .iter()
+                .filter(|m| m.bot == myself || m.online)
+                .map(|m| m.dead)
+                .collect();
+            let wiped = !present.is_empty() && present.iter().all(|&d| d);
+            if wiped && !self.wiped_now {
+                self.wiped_now = true;
+                self.wipes = self.wipes.saturating_add(1);
+                ctx.log.say(format!(
+                    "dungeon: the party was wiped ({} so far)",
+                    self.wipes
+                ));
+            } else if !wiped {
+                self.wiped_now = false;
+            }
+        }
+        f.wipes = self.wipes;
         f
     }
 
@@ -658,6 +694,7 @@ impl Run {
             at: (me.pos[0], me.pos[1]),
             level: me.level,
             alliance: if mother != 0 { mother } else { me.faction },
+            role: party::PartyRole::of(&ctx.persona.archetype),
             skip,
             raise: ctx.gm_allowed() && ctx.cfg.behavior.dungeon_level_up,
             jump: ctx.gm_allowed() && ctx.cfg.bots.long_travel_teleport_m > 0.0,
@@ -841,6 +878,7 @@ impl Run {
                 .board
                 .target(order.party_id, Instant::now(), BOARD_FRESH)
         };
+        let role = order.role_of(ctx.persona.id);
         let sight = Sight {
             now_ms: ctx.now_ms,
             me,
@@ -852,6 +890,7 @@ impl Run {
             party_hp: if leader { party_hp } else { 100 },
             leader: leader_pos,
             board_target,
+            role,
         };
         let action = if leader {
             self.clearing.leader(&self.route, &sight)

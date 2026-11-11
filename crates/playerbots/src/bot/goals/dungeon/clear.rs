@@ -2,6 +2,7 @@
 //! the way. Pure functions and a small cursor; the goal feeds them facts from the tick.
 
 use super::route::Stop;
+use crate::bot::party::PartyRole;
 
 /// The leader engages monsters this close (metres).
 pub const ENGAGE_M: f32 = 40.0;
@@ -19,6 +20,10 @@ pub const BOSS_WAIT_MS: u64 = 10_000;
 pub const FOLLOW_M: f32 = 12.0;
 /// ... and stops this far from it.
 pub const FOLLOW_STOP_M: f32 = 5.0;
+/// A healer stays farther back from the leader (and so from the monsters it pulls) ...
+pub const HEALER_FOLLOW_M: f32 = 24.0;
+/// ... and stops this far from it.
+pub const HEALER_STOP_M: f32 = 16.0;
 /// The leader waits for members farther than this.
 pub const GATHER_M: f32 = 28.0;
 /// ... for at most this long.
@@ -219,6 +224,8 @@ pub struct Sight<'a> {
     pub leader: Option<[f32; 3]>,
     /// Member: the object the leader fights, when it did lately.
     pub board_target: Option<u32>,
+    /// The bot's role in the party.
+    pub role: PartyRole,
 }
 
 impl Default for Sight<'_> {
@@ -234,6 +241,7 @@ impl Default for Sight<'_> {
             party_hp: 100,
             leader: None,
             board_target: None,
+            role: PartyRole::Dps,
         }
     }
 }
@@ -378,11 +386,16 @@ impl Clearing {
                 return Action::Engage(t);
             }
         }
+        let (follow, stop) = if s.role == PartyRole::Healer {
+            (HEALER_FOLLOW_M, HEALER_STOP_M)
+        } else {
+            (FOLLOW_M, FOLLOW_STOP_M)
+        };
         match s.leader {
-            Some(l) if flat(l, s.me) > FOLLOW_M => Action::Walk {
+            Some(l) if flat(l, s.me) > follow => Action::Walk {
                 x: l[0],
                 y: l[1],
-                radius: FOLLOW_STOP_M,
+                radius: stop,
             },
             _ => Action::Hold,
         }
@@ -721,6 +734,34 @@ mod tests {
             ..Sight::default()
         };
         assert!(matches!(c.leader(&route, &near), Action::Walk { .. }));
+    }
+
+    #[test]
+    fn a_healer_follows_farther_back_than_the_damage_dealers() {
+        let at = |role, leader| Sight {
+            now_ms: 1_000,
+            leader: Some([leader, 0.0, 0.0]),
+            role,
+            ..Sight::default()
+        };
+        // 20 m behind: a damage dealer walks in, a healer is still inside its distance
+        assert!(matches!(
+            Clearing::default().member(&at(PartyRole::Dps, 20.0)),
+            Action::Walk { .. }
+        ));
+        assert_eq!(
+            Clearing::default().member(&at(PartyRole::Healer, 20.0)),
+            Action::Hold
+        );
+        // 30 m behind: the healer follows too, and stops farther out
+        assert_eq!(
+            Clearing::default().member(&at(PartyRole::Healer, 30.0)),
+            Action::Walk {
+                x: 30.0,
+                y: 0.0,
+                radius: HEALER_STOP_M
+            }
+        );
     }
 
     #[test]
