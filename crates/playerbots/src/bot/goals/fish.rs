@@ -22,8 +22,8 @@ const FIGHT_WAIT_MS: u64 = 600_000;
 // keep its checks in the same direction and avoid overlapping two plots.
 const REEL_CHANNEL_MS: u64 = 5_600;
 const REEL_CUE_MAX_AGE_MS: u64 = 1_500;
-const FOLLOW_FISH_M: f32 = 55.0;
-const KEEP_FISH_M: f32 = 38.0;
+const FOLLOW_FISH_M: f32 = 45.0;
+const KEEP_FISH_M: f32 = 30.0;
 const LOOT_REACH_M: f32 = 4.0;
 const ROD_CHANGE_BUFF: u32 = 5795;
 const ROD_CHANGE_MS: u64 = 40_000;

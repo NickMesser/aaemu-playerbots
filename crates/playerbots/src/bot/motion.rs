@@ -279,6 +279,8 @@ const MAX_GLIDE_MS: u64 = 30_000;
 const GLIDE_RUN_UP_MS: u64 = 2_000;
 /// Height above the ground from which the bot counts as airborne (metres).
 const GLIDE_AIRBORNE_M: f32 = 0.5;
+/// A hooked fish can lead the bot this far across a freshwater lake.
+const FRESHWATER_RADIUS_M: f32 = 250.0;
 
 /// A surface observed at a fishing school. It applies only to a short stretch of water
 /// around the cast, so it cannot change elevations along the trip to a fish stand.
@@ -289,7 +291,8 @@ struct LocalWater {
 
 impl LocalWater {
     fn swim_z(&self, pos: [f32; 3]) -> Option<f32> {
-        (dist2d(pos, self.center) <= 100.0).then_some(self.center[2] - (SEA_LEVEL - SWIM_Z))
+        (dist2d(pos, self.center) <= FRESHWATER_RADIUS_M)
+            .then_some(self.center[2] - (SEA_LEVEL - SWIM_Z))
     }
 }
 
@@ -1954,6 +1957,11 @@ mod tests {
         assert!(rig.motion.is_swimming());
 
         rig.motion.go_to(140.0, 10.0, 0.0, Pace::Run, rig.now);
+        while rig.tick(&ground, 250, 250) == MotionStatus::Moving {}
+        assert_eq!(rig.motion.pos()[2], 127.5);
+        assert!(rig.motion.is_swimming());
+
+        rig.motion.go_to(280.0, 10.0, 0.0, Pace::Run, rig.now);
         while rig.tick(&ground, 250, 250) == MotionStatus::Moving {}
         assert_eq!(rig.motion.pos()[2], 119.0);
         assert!(!rig.motion.is_swimming());
