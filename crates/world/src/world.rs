@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::auctioneers::Auctioneers;
 use crate::baked::{Baked, QuestSphere};
@@ -178,6 +178,8 @@ pub struct World {
     zones: Zones,
     /// Doodad templates (that spawn) yielding a gather item.
     gather_doodads: FxHashMap<u32, Box<[u32]>>,
+    /// NPCs that drop materials requested by a guild production order.
+    work_droppers: FxHashMap<u32, Box<[u32]>>,
     /// `(quest, component) -> index into baked.quest_spheres`.
     spheres: FxHashMap<(u32, u32), u32>,
     /// Portals, instance dungeons and boats (the travel abilities' static data).
@@ -213,6 +215,15 @@ impl World {
     /// Blocking (about half a second with the full 1.2 data); call it from `spawn_blocking` inside
     /// an async runtime.
     pub fn load(paths: &WorldPaths) -> Result<World> {
+        Self::load_with_work_items(paths, [], [])
+    }
+
+    /// Also index the loot sources of configured gather and hunt orders.
+    pub fn load_with_work_items(
+        paths: &WorldPaths,
+        gather_items: impl IntoIterator<Item = u32>,
+        hunt_items: impl IntoIterator<Item = u32>,
+    ) -> Result<World> {
         let started = Instant::now();
         let conn = open_readonly(&paths.compact)?;
         let texts = Texts::load(&conn).context("read localized_texts")?;
@@ -256,9 +267,18 @@ impl World {
             }
         }
         let start_gates = StartGates::load(&conn).context("load quest start requirements")?;
+        let mut gather = quests.gather_items();
+        gather.extend(gather_items);
         let gather_doodads = doodads
-            .item_sources(&conn, &quests.gather_items(), |d| doodad_spawns.has(d))
+            .item_sources(&conn, &gather, |d| doodad_spawns.has(d))
             .context("resolve gather item sources")?;
+        let hunt: FxHashSet<_> = hunt_items.into_iter().collect();
+        let work_droppers = if hunt.is_empty() {
+            FxHashMap::default()
+        } else {
+            crate::quest::load_droppers(&conn, &hunt, &|n| npc_spawns.has(n))
+                .context("resolve guild hunt item sources")?
+        };
         let economy =
             Economy::load(&conn, &texts, &skills, &doodads.bench_pairs).context("load crafts")?;
         let housing =
@@ -324,6 +344,7 @@ impl World {
             item_uses,
             zones,
             gather_doodads,
+            work_droppers,
             spheres,
             travel,
             events,
@@ -390,6 +411,7 @@ impl World {
         let gather = self
             .gather_doodads
             .values()
+            .chain(self.work_droppers.values())
             .map(|v| v.len() * 4 + 24)
             .sum::<usize>();
         let mut v = vec![
@@ -637,6 +659,10 @@ impl World {
     /// Doodad templates (that spawn here) which yield `item` when used.
     pub fn gather_doodads(&self, item: u32) -> &[u32] {
         self.gather_doodads.get(&item).map_or(&[], |v| &v[..])
+    }
+
+    pub fn work_droppers(&self, item: u32) -> &[u32] {
+        self.work_droppers.get(&item).map_or(&[], |v| &v[..])
     }
 
     // ---- Factions and characters ---------------------------------------------------------

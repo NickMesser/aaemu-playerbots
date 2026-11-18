@@ -239,15 +239,33 @@ async fn run(
         baked: cfg.data.baked.clone(),
         world: cfg.data.world.clone(),
     };
-    let world = tokio::task::spawn_blocking(move || World::load(&paths))
-        .await
-        .context("the world loader panicked")?
-        .with_context(|| {
-            format!(
-                "loading the world data (data.compact = {})",
-                cfg.data.compact.display()
-            )
-        })?;
+    let orders_cfg = cfg.clone();
+    let world = tokio::task::spawn_blocking(move || {
+        use playerbots::bot::goals::work::Order;
+
+        let orders = orders_cfg
+            .guild
+            .production_orders
+            .values()
+            .filter(|_| orders_cfg.guild.enabled);
+        let gather = orders.clone().filter_map(|order| match order {
+            Order::Gather { item, .. } => Some(*item),
+            _ => None,
+        });
+        let hunt = orders.filter_map(|order| match order {
+            Order::Hunt { item, .. } => Some(*item),
+            _ => None,
+        });
+        World::load_with_work_items(&paths, gather, hunt)
+    })
+    .await
+    .context("the world loader panicked")?
+    .with_context(|| {
+        format!(
+            "loading the world data (data.compact = {})",
+            cfg.data.compact.display()
+        )
+    })?;
     let world = Arc::new(world);
 
     let roster_path = cfg.bots.roster.clone();

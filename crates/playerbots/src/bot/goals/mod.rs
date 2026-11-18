@@ -260,6 +260,7 @@ impl Goal {
             Goal::Farm(g) => g.owns_combat(),
             Goal::Explore(g) => g.owns_combat(),
             Goal::Gear(g) => g.owns_combat(),
+            Goal::Work(g) => g.owns_combat(),
             _ => false,
         }
     }
@@ -322,7 +323,7 @@ impl Goal {
             Goal::Farm(g) => return g.tick(ctx),
             Goal::Explore(g) => return g.tick(ctx),
             Goal::Gear(g) => return g.tick(ctx),
-            Goal::Work(g) => return g.tick(ctx),
+            Goal::Work(g) => return g.tick(ctx, combat),
             Goal::Fish(g) => return g.tick(ctx),
             Goal::Delivery(g) => return g.tick(ctx),
             Goal::FieldParty(g) => return g.tick(ctx, combat),
@@ -404,6 +405,7 @@ impl Goal {
             Goal::Farm(g) => g.activity(moving, fighting),
             Goal::Explore(g) => g.activity(moving, fighting),
             Goal::Gear(g) => g.activity(moving, fighting),
+            Goal::Work(_) if fighting => Activity::Fighting,
             Goal::Fish(_) | Goal::Work(_) | Goal::Delivery(_) | Goal::FieldParty(_) => {
                 if moving {
                     Activity::Traveling

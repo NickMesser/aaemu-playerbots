@@ -442,7 +442,7 @@ impl Details {
 }
 
 /// NPC templates that can drop each wanted item and that `has_spawn`, best drop rate first.
-fn load_droppers(
+pub(crate) fn load_droppers(
     conn: &Connection,
     items: &FxHashSet<u32>,
     has_spawn: &dyn Fn(u32) -> bool,

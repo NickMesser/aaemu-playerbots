@@ -4,7 +4,9 @@ use aa_proto::cs;
 use serde::Deserialize;
 
 use super::{FailReason, GoalStatus};
+use crate::bot::combat::CombatStatus;
 use crate::bot::ctx::Ctx;
+use crate::bot::goals::grind::Grind;
 use crate::bot::guild::profession::{membership, Profession};
 use crate::bot::pvp::walk::{Walk, Walker};
 use crate::bot::state::dist3d;
@@ -19,6 +21,10 @@ pub enum Order {
     Gather {
         doodad: u32,
         item: u32,
+    },
+    Hunt {
+        item: u32,
+        count: u16,
     },
 }
 
@@ -36,6 +42,7 @@ impl std::fmt::Display for Order {
                 Ok(())
             }
             Self::Gather { doodad, item } => write!(f, "gather item {item} from doodad {doodad}"),
+            Self::Hunt { item, count } => write!(f, "hunt monsters for {count} of item {item}"),
         }
     }
 }
@@ -59,6 +66,13 @@ impl Order {
                     item: 1..,
                 },
                 Profession::Gatherer,
+            ) => true,
+            (
+                Self::Hunt {
+                    item: 1..,
+                    count: 1..=1000,
+                },
+                Profession::Adventurer,
             ) => true,
             _ => false,
         }
@@ -114,11 +128,14 @@ pub fn selected_order(ctx: &Ctx<'_>) -> Option<(Order, bool)> {
     Some((order, false))
 }
 
-fn plan(ctx: &Ctx<'_>) -> Option<Job> {
+fn available_order(ctx: &Ctx<'_>) -> Option<(Order, bool)> {
     if ctx.state.place.in_instance() || ctx.state.place.loading() || ctx.state.me.hp_pct() < 60 {
         return None;
     }
-    let (order, training) = selected_order(ctx)?;
+    selected_order(ctx)
+}
+
+fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
     let gather_doodad;
     let (doodads, item, increase) = match order {
         Order::Craft { recipe, .. } => {
@@ -149,6 +166,7 @@ fn plan(ctx: &Ctx<'_>) -> Option<Job> {
             gather_doodad = [doodad];
             (&gather_doodad[..], item, 1)
         }
+        Order::Hunt { .. } => return None,
     };
     let pos = ctx.pos();
     let (&object, target) = ctx
@@ -177,16 +195,42 @@ fn plan(ctx: &Ctx<'_>) -> Option<Job> {
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
-    if plan(ctx).is_some() {
-        1.0
-    } else {
-        0.0
+    match available_order(ctx) {
+        Some((Order::Hunt { item, count }, _)) if Hunt::start(ctx, item, count).is_some() => 1.0,
+        Some((order, training)) if plan(ctx, order, training).is_some() => 1.0,
+        _ => 0.0,
+    }
+}
+
+#[derive(Debug)]
+struct Hunt {
+    item: u32,
+    count: u16,
+    grind: Grind,
+}
+
+impl Hunt {
+    fn start(ctx: &Ctx<'_>, item: u32, count: u16) -> Option<Self> {
+        if ctx.state.item_count(item) >= i64::from(count)
+            || !ctx
+                .world
+                .item_facts(item)
+                .is_some_and(|facts| facts.tradable())
+        {
+            return None;
+        }
+        Some(Self {
+            item,
+            count,
+            grind: Grind::for_material(ctx, item)?,
+        })
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Work {
     job: Option<Job>,
+    hunt: Option<Box<Hunt>>,
     walker: Walker,
     deadline: u64,
     expected: Option<i64>,
@@ -194,11 +238,31 @@ pub struct Work {
 
 impl Work {
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
-        self.job = plan(ctx);
+        match available_order(ctx) {
+            Some((Order::Hunt { item, count }, _)) => {
+                self.hunt = Hunt::start(ctx, item, count).map(Box::new);
+            }
+            Some((order, training)) => self.job = plan(ctx, order, training),
+            None => {}
+        }
         self.deadline = ctx.now_ms + 90_000;
     }
 
-    pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
+    pub fn owns_combat(&self) -> bool {
+        self.hunt.is_some()
+    }
+
+    pub fn tick(&mut self, ctx: &mut Ctx<'_>, combat: CombatStatus) -> GoalStatus {
+        if let Some(hunt) = &mut self.hunt {
+            if ctx.state.item_count(hunt.item) >= i64::from(hunt.count) {
+                note_receipt(ctx, hunt.item, false);
+                return GoalStatus::Done;
+            }
+            return match hunt.grind.tick(ctx, combat) {
+                GoalStatus::Done => GoalStatus::Failed(FailReason::NoTarget),
+                status => status,
+            };
+        }
         let Some(job) = self.job else {
             return GoalStatus::Failed(FailReason::NoTarget);
         };
@@ -206,21 +270,7 @@ impl Work {
             .expected
             .is_some_and(|expected| ctx.state.item_count(job.item) >= expected)
         {
-            ctx.hub.journal.update(ctx.persona.id, |j| {
-                let count = if job.training {
-                    &mut j.production_training_completed
-                } else {
-                    &mut j.production_completed
-                };
-                *count = count.saturating_add(1);
-            });
-            let action = if job.training {
-                "training"
-            } else {
-                "production"
-            };
-            ctx.log
-                .say(format!("guild {action}: received item {}", job.item));
+            note_receipt(ctx, job.item, job.training);
             return GoalStatus::Done;
         }
         if ctx.now_ms >= self.deadline {
@@ -247,6 +297,7 @@ impl Work {
                 let skill = ctx.world.doodad_use_skill(doodad);
                 cs::start_skill_doodad(skill, ctx.state.me.obj, job.object)
             }
+            Order::Hunt { .. } => return GoalStatus::Failed(FailReason::NoTarget),
         };
         self.expected = Some(ctx.state.item_count(job.item).saturating_add(job.increase));
         self.deadline = ctx.now_ms + 30_000;
@@ -255,10 +306,19 @@ impl Work {
     }
 
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        if let Some(hunt) = &mut self.hunt {
+            hunt.grind.stop(ctx);
+        }
         ctx.motion.stop();
     }
 
     pub fn describe(&self, out: &mut String) {
+        if let Some(hunt) = &self.hunt {
+            use std::fmt::Write;
+            let _ = write!(out, "Hunting for {} of item {}. ", hunt.count, hunt.item);
+            hunt.grind.describe(out);
+            return;
+        }
         if let Some(job) = self.job {
             use std::fmt::Write;
             let action = if job.training {
@@ -271,6 +331,19 @@ impl Work {
     }
 }
 
+fn note_receipt(ctx: &Ctx<'_>, item: u32, training: bool) {
+    ctx.hub.journal.update(ctx.persona.id, |j| {
+        let count = if training {
+            &mut j.production_training_completed
+        } else {
+            &mut j.production_completed
+        };
+        *count = count.saturating_add(1);
+    });
+    let action = if training { "training" } else { "production" };
+    ctx.log.say(format!("guild {action}: received item {item}"));
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
@@ -280,14 +353,15 @@ mod tests {
         let config = r#"
 [guild]
 enabled = true
-professions = { "44" = "crafter", "45" = "gatherer" }
-production_orders = { "44" = { kind = "craft", recipe = 123 }, "45" = { kind = "gather", doodad = 456, item = 789 } }
+professions = { "44" = "crafter", "45" = "gatherer", "46" = "adventurer" }
+production_orders = { "44" = { kind = "craft", recipe = 123 }, "45" = { kind = "gather", doodad = 456, item = 789 }, "46" = { kind = "hunt", item = 890, count = 3 } }
 "#;
         assert_eq!(
             Config::parse(config).unwrap().guild.production_orders.len(),
-            2
+            3
         );
         assert!(Config::parse(&config.replace("crafter", "trader")).is_err());
         assert!(Config::parse(&config.replace("item = 789", "item = 0")).is_err());
+        assert!(Config::parse(&config.replace("count = 3", "count = 0")).is_err());
     }
 }

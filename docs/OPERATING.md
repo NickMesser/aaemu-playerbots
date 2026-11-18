@@ -341,10 +341,13 @@ site, rounded up. Thief members look for ripe crops on wild plots when alone and
 `[farm] steal` is enabled. The director also sees recent average prices for a Trader's sales.
 With ambushes enabled, Thief members avoid auctioneer districts and favor parts of trade routes
 where they previously recovered packs.
-Crafter and Gatherer members can run `work` for a configured production order, for example
+Crafter, Gatherer and Adventurer members can run `work` for a configured production order. Use
 `production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
 `{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
-Orders need compatible world templates, a nearby visible bench or node, and sufficient labor.
+Crafting and gathering need compatible world templates, a nearby visible bench or node, and
+sufficient labor. Set `{ "46" = { kind = "hunt", item = 789, count = 4 } }` for an Adventurer
+guild. Members look for nearby hostile monsters that can drop the tradeable material and
+replenish stock until the server confirms the requested quantity in their bags.
 Crafting reads proficiency from the server. Set `training_recipe` alongside `recipe` to practice a
 lower-tier recipe in the same vocation until the main recipe's requirement is met. Crafter members
 with trade-chat shopping enabled seek missing materials for their current recipe using the normal

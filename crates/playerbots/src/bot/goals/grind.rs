@@ -53,6 +53,7 @@ enum Phase {
 #[derive(Debug, Default, Clone)]
 pub struct Grind {
     end_ms: u64,
+    material: u32,
     phase: Phase,
     searches: u8,
     kills: u32,
@@ -71,6 +72,21 @@ impl Grind {
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
         *self = Grind::default();
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
+    }
+
+    pub fn for_material(ctx: &Ctx<'_>, item: u32) -> Option<Self> {
+        let grind = Self {
+            material: item,
+            end_ms: ctx.now_ms + TOTAL_MS.1,
+            ..Self::default()
+        };
+        (grind.pick_target(ctx).is_some() || grind.find_spawn(ctx).is_some()).then_some(grind)
+    }
+
+    fn suitable_template(&self, ctx: &Ctx<'_>, template: u32, pos: [f32; 3]) -> bool {
+        self.material == 0
+            || (ctx.world.work_droppers(self.material).contains(&template)
+                && !ctx.in_war_zone(pos[0], pos[1]))
     }
 
     /// One tick; `combat` is the controller's verdict of this tick.
@@ -123,6 +139,9 @@ impl Grind {
                     self.spot = Some((x, y));
                     self.phase = Phase::Walk;
                     return GoalStatus::Running;
+                }
+                if self.material != 0 {
+                    return self.empty_search();
                 }
                 // No known spawn to go to: move on a little to see more of the world.
                 let me = ctx.pos();
@@ -223,12 +242,18 @@ impl Grind {
                 continue;
             };
             let level = if u.level != 0 { u.level } else { t.level };
-            if t.grade > 1 || !level_ok(own_level, level) {
+            if t.grade > 1
+                || !level_ok(own_level, level)
+                || !self.suitable_template(ctx, u.id, u.pos)
+            {
                 continue;
             }
             // Monsters another character tagged (or is fighting) are left for them while a
             // free one is in view: the kill would bring the grinder no credit anyway.
             let taken = ctx.state.taken_by_other(obj);
+            if self.material != 0 && taken {
+                continue;
+            }
             if best.is_none_or(|b| better_target(taken, d, b.1, b.2)) {
                 best = Some((obj, taken, d));
             }
@@ -252,6 +277,7 @@ impl Grind {
                 if self.visited.contains(&cell(p.x, p.y))
                     || ctx.state.avoids(0, template, ctx.now_ms)
                     || ctx.in_war_zone(p.x, p.y)
+                    || !self.suitable_template(ctx, template, [p.x, p.y, p.z])
                 {
                     return;
                 }
