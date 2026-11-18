@@ -95,8 +95,8 @@ pub fn grid(
         let mut size = 0u32;
         while let Some(a) = stack.pop() {
             size += 1;
-            for l in d.adj_off[a] as usize..d.adj_off[a + 1] as usize {
-                let b = d.adj_target[l] as usize;
+            for &target in &d.adj_target[d.adj_off[a] as usize..d.adj_off[a + 1] as usize] {
+                let b = target as usize;
                 if comp[b] == usize::MAX {
                     comp[b] = id;
                     stack.push(b);
