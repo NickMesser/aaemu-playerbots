@@ -415,9 +415,10 @@ surroundings and use the usual PvP rules. These patrols use guild work time and 
 guild loses its last configured castle.
 
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
-auctioneer and stroll around the market. Add places such as taverns or campfires to
-`settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and
-can sit when their usual emote rules allow it. The director can choose a nearby settlement visit.
+auctioneer and stroll around the market. They can also visit an authored innkeeper, bench or
+campfire within reach. Add other places with `settlement_hangouts = [[x, y], ...]`. Bots linger
+at resting places for 30 to 55 seconds and can sit when their usual emote rules allow it. The
+director can choose a nearby settlement visit.
 
 ### Sport fishing
 
