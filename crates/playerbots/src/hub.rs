@@ -395,6 +395,8 @@ pub struct Hub {
     pub journal: Arc<crate::journal::JournalBook>,
     /// Recent confirmed market prices shared across guild members.
     pub market_prices: crate::bot::guild::prices::Prices,
+    /// Recent, server-confirmed trade-pack attacks eligible for bounty patrols.
+    pub bounties: crate::bot::pvp::bounties::Board,
     /// The log-in and log-out schedules of the bots (owned by the presence feature, see
     /// [`crate::presence`]).
     pub presence: crate::presence::Presence,
@@ -439,6 +441,7 @@ impl Hub {
             pop: Population::inert(),
             journal: Arc::new(crate::journal::JournalBook::memory()),
             market_prices: Default::default(),
+            bounties: Default::default(),
             presence: crate::presence::Presence::default(),
             zones: crate::agent::ZoneNames::from_world(p.world),
         }

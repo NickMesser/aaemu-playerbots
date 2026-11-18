@@ -28,6 +28,8 @@ use smallvec::SmallVec;
 
 use crate::bot::combat::{CombatStatus, LostReason};
 use crate::bot::ctx::Ctx;
+use crate::bot::guild::profession::{self, Profession};
+use crate::bot::pvp::bounties::Case;
 use crate::bot::pvp::fight::{self, Odds};
 use crate::bot::pvp::rules;
 use crate::bot::pvp::scan;
@@ -335,6 +337,20 @@ fn standable(world: &World) -> impl Fn([f32; 2]) -> bool + '_ {
     move |s| super::walkable(world, s[0], s[1])
 }
 
+pub fn bounty(ctx: &Ctx<'_>, matches: impl Fn(&Case) -> bool) -> Option<Case> {
+    if !matches!(
+        profession::membership(ctx),
+        Some((_, Profession::BountyHunter, false))
+    ) {
+        return None;
+    }
+    ctx.hub.bounties.find(
+        crate::hub::unix_ms(),
+        ctx.world.mother_faction(ctx.state.me.faction),
+        matches,
+    )
+}
+
 /// The zone groups at war that the bot may join now, with their distance and the bot's kills.
 fn wars(ctx: &Ctx<'_>) -> SmallVec<[War; 8]> {
     let mut out: SmallVec<[War; 8]> = SmallVec::new();
@@ -498,10 +514,20 @@ impl Machine {
         let now = ctx.now_ms;
         let list = wars(ctx);
         let roll = ctx.rng.usize(..2);
-        let Some(war) = pick_war(&list, roll) else {
+        let me = ctx.state.me.pos;
+        let lead = bounty(ctx, |c| {
+            let dist = (c.last_seen[0] - me[0]).hypot(c.last_seen[1] - me[1]);
+            list.iter().any(|war| war.group == c.group)
+                && (ctx.would_teleport(dist) || dist <= WALK_REACH_M)
+                && standable(ctx.world)(c.last_seen)
+        });
+        let chosen = lead
+            .as_ref()
+            .and_then(|case| list.iter().find(|war| war.group == case.group).copied())
+            .or_else(|| pick_war(&list, roll));
+        let Some(war) = chosen else {
             return self.fail(ctx, FailReason::NoTarget, "no war to join");
         };
-        let me = ctx.state.me.pos;
         let near: SmallVec<[([f32; 2], f32); 3]> = nearest_spots(
             ctx.world.zone_group_spots(war.group),
             [me[0], me[1]],
@@ -510,7 +536,15 @@ impl Machine {
         if near.is_empty() {
             return self.fail(ctx, FailReason::NoTarget, "no spot in the zone group");
         }
-        let (spot, _) = near[ctx.rng.usize(..near.len())];
+        let spot = if let Some(case) = lead {
+            ctx.log.say(format!(
+                "bounty patrol: checking the last sighting of {}",
+                case.name
+            ));
+            case.last_seen
+        } else {
+            near[ctx.rng.usize(..near.len())].0
+        };
         self.group = war.group;
         self.end_unix_s = war.end_unix_s;
         self.kills = war.kills;
@@ -603,7 +637,24 @@ impl Machine {
     fn look_around(&mut self, ctx: &mut Ctx<'_>) -> Option<GoalStatus> {
         let now = ctx.now_ms;
         let cands = scan::hunted(ctx, HUNT_M);
-        let c = cands.iter().min_by(|a, b| a.dist.total_cmp(&b.dist))?;
+        let lead = bounty(ctx, |case| {
+            cands.iter().any(|c| {
+                ctx.state
+                    .units
+                    .get(&c.obj)
+                    .is_some_and(|u| u.id == case.target)
+            })
+        });
+        let c = lead
+            .and_then(|case| {
+                cands.iter().find(|c| {
+                    ctx.state
+                        .units
+                        .get(&c.obj)
+                        .is_some_and(|u| u.id == case.target)
+                })
+            })
+            .or_else(|| cands.iter().min_by(|a, b| a.dist.total_cmp(&b.dist)))?;
         let obj = c.obj;
         let odds = scan::weigh(ctx, obj);
         let hp = ctx.state.me.hp_pct();

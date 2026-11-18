@@ -361,6 +361,9 @@ The guildmaster skips the profession's autonomous goals and continues to manage 
 membership. Members recover personal time after each professional goal based on its actual elapsed
 time. The percentage applies over completed work and recovery periods during a bot run. Existing
 commitments can finish. Trader and Crafter guilds decline bots with recorded Thief membership.
+Bounty hunters with warzone play enabled check recent sightings after a hostile character kills
+a trade runner carrying a pack. Hunters prioritize eligible targets in view during war patrols.
+The game must credit the kill to a hunter before the report is cleared and recorded in memory.
 The director sees the role, work availability and configured orders. When trade runs are eligible
 it also sees recent route outcomes and gross price estimates. External agents see the work summary
 as `guild_work` in `observe`.
@@ -372,6 +375,13 @@ postage while keeping its reserve. Confirmed trade-pack and auction receipts for
 stand receipts for Gatherers, and sales through the market for members doing market work accrue
 commission. The guildmaster claims the coins from express
 mail sent by members. `observe` reports the total claimed as `guild_copper_received`.
+
+Give a treasury a `weekly_support_copper` amount to pay a weekly allowance to each bot member
+by express mail. Apprentices receive the base amount. Members, officers and commanders receive
+two, three and four times the base. When the guildmaster is at a mailbox, it pays from confirmed
+contributions collected that week, including the cost of postage, and keeps the reserve intact.
+Bot members collect allowances from their guildmaster. The director remembers receipts so it can
+consider the added buying power when deciding what to do.
 
 Set `[guild] auction_flips = true` to let Trader members buy and relist one auction lot at a time.
 The bot uses recent confirmed market sales, keeps its configured copper reserve, and requires

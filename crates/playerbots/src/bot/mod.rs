@@ -766,12 +766,28 @@ impl Bot {
         self.record_companion_bloodlust(&ev);
         self.state.apply(&ev);
         if let ServerEvent::Activity(activity) = &ev {
-            if self.shared.cfg.guild.enabled && !self.shared.cfg.guild.treasuries.is_empty() {
+            if self.shared.cfg.guild.enabled
+                && !self.shared.cfg.guild.treasuries.is_empty()
+                && guild::treasury::is_mail(activity)
+            {
                 if let Some(mem) = self.state.guild.get_mut().filter(|mem| mem.log.in_guild()) {
                     let owner = mem.log.is_owner(self.state.me.char_id);
-                    mem.treasury.observe(activity, &mem.log, owner, now, |id| {
-                        self.shared.hub.is_bot_char(id)
-                    });
+                    if let Some(terms) = self
+                        .shared
+                        .cfg
+                        .guild
+                        .treasuries
+                        .get(&mem.log.id.to_string())
+                    {
+                        mem.treasury.observe(
+                            activity,
+                            &mem.log,
+                            owner,
+                            terms.weekly_support_copper > 0,
+                            now,
+                            |id| self.shared.hub.is_bot_char(id),
+                        );
+                    }
                 }
             }
         }
@@ -804,16 +820,27 @@ impl Bot {
             return;
         };
         let me = &self.state.me;
-        if *obj != me.obj || me.dead || self.combat.duel.in_duel() {
+        if me.dead || self.combat.duel.in_duel() {
             return;
         }
-        let Some(attacker) = self.state.units.get(killer).filter(|u| {
-            u.kind == UnitKind::Character
-                && u.id != me.char_id
-                && (self.shared.cfg.party.join_player_parties || self.shared.hub.is_bot_char(u.id))
-        }) else {
+        if *killer == me.obj {
+            self.record_bounty_kill(*obj);
+        }
+        if *obj != me.obj {
+            return;
+        }
+        let Some(attacker) = self
+            .state
+            .units
+            .get(killer)
+            .filter(|u| u.kind == UnitKind::Character && u.id != me.char_id)
+        else {
             return;
         };
+        self.report_pack_attack(attacker);
+        if !self.shared.cfg.party.join_player_parties && !self.shared.hub.is_bot_char(attacker.id) {
+            return;
+        }
         let loss = if self.persona.profile.outlaw < 0.5 {
             -30
         } else {
@@ -823,6 +850,73 @@ impl Bot {
             j.relationships
                 .update(attacker.id, |r| r.change_trust(loss));
         });
+    }
+
+    fn report_pack_attack(&self, attacker: &state::Unit) {
+        let cfg = &self.shared.cfg;
+        if !(cfg.guild.enabled && cfg.pvp.enabled && cfg.pvp.warzone)
+            || !cfg
+                .guild
+                .professions
+                .values()
+                .any(|role| *role == guild::profession::Profession::BountyHunter)
+            || self.state.place.in_instance()
+        {
+            return;
+        }
+        let world = &self.shared.world;
+        let me = &self.state.me;
+        if goals::trade_run::carried_pack_in(world, &self.state.equipment).is_none()
+            || !pvp::rules::Rules::new(world, cfg, me.faction).hostile(attacker.faction)
+        {
+            return;
+        }
+        let Some((name, zone)) = attacker
+            .name
+            .as_deref()
+            .zip(world.zone_info_at(attacker.pos[0], attacker.pos[1]))
+        else {
+            return;
+        };
+        self.shared.hub.bounties.report(
+            crate::hub::unix_ms(),
+            attacker.id,
+            name.into(),
+            world.mother_faction(me.faction),
+            zone.group,
+            [attacker.pos[0], attacker.pos[1]],
+        );
+    }
+
+    fn record_bounty_kill(&self, object: u32) {
+        let Some(victim) = self
+            .state
+            .units
+            .get(&object)
+            .filter(|u| u.kind == UnitKind::Character)
+        else {
+            return;
+        };
+        let me = &self.state.me;
+        let Some(log) = self.state.guild.log().filter(|log| {
+            log.in_guild() && log.member(me.char_id).is_some() && !log.is_owner(me.char_id)
+        }) else {
+            return;
+        };
+        let cfg = &self.shared.cfg;
+        if cfg.guild.enabled
+            && cfg.guild.professions.get(&log.id.to_string())
+                == Some(&guild::profession::Profession::BountyHunter)
+            && self.shared.hub.bounties.close(
+                crate::hub::unix_ms(),
+                self.shared.world.mother_faction(me.faction),
+                victim.id,
+            )
+        {
+            self.shared.hub.journal.update(self.entry.id, |j| {
+                j.bounties_completed = j.bounties_completed.saturating_add(1);
+            });
+        }
     }
 
     fn record_companion_bloodlust(&self, event: &ServerEvent) {

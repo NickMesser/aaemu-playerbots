@@ -16,6 +16,7 @@
 //! [`PvpMem`] is what a bot remembers of all this. It is allocated on first use (one pointer in
 //! [`BotState`](super::state::BotState)), because the per-bot budget is tight.
 
+pub mod bounties;
 pub mod defence;
 pub mod fight;
 pub mod post;

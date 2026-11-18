@@ -102,6 +102,8 @@ pub struct Journal {
     pub auction_resale_profit: i64,
     /// Places where this bot recovered a pack after a guild ambush.
     pub raid_sites: Vec<RaidSite>,
+    /// Server-confirmed kills of characters reported for attacking trade runners.
+    pub bounties_completed: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

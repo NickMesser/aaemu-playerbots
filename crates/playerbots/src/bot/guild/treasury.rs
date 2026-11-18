@@ -1,5 +1,7 @@
 //! Real guild contributions travel through the game's express mail system.
 
+mod support;
+
 use std::collections::VecDeque;
 
 use aa_proto::cs;
@@ -11,12 +13,25 @@ use super::profession;
 use crate::bot::{cmd::GoalKind, ctx::Ctx, state::dist3d};
 use crate::hub::unix_ms;
 
-const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+pub(crate) const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const EXPRESS_FEE: i64 = 100;
 const MIN_SEND_LEVEL: u8 = 10;
 const RETRY_MS: u64 = 60_000;
 const LIST_EVERY_MS: u64 = 300_000;
 const PREFIX: &str = "Guild contribution ";
+
+pub fn is_mail(event: &ActivityEvent) -> bool {
+    matches!(
+        event,
+        ActivityEvent::MailSent { .. }
+            | ActivityEvent::MailReceived { .. }
+            | ActivityEvent::MailList { .. }
+            | ActivityEvent::MailListEnd { .. }
+            | ActivityEvent::MailBody { .. }
+            | ActivityEvent::AttachmentTaken { .. }
+            | ActivityEvent::MailFailed { .. }
+    )
+}
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -24,6 +39,8 @@ pub struct Terms {
     pub weekly_dues_copper: u32,
     pub commission_percent: u8,
     pub reserve_copper: u32,
+    /// Rank-scaled weekly allowance, paid only from confirmed contributions.
+    pub weekly_support_copper: u32,
 }
 
 impl Default for Terms {
@@ -32,13 +49,16 @@ impl Default for Terms {
             weekly_dues_copper: 100,
             commission_percent: 5,
             reserve_copper: 10_000,
+            weekly_support_copper: 0,
         }
     }
 }
 
 impl Terms {
     pub fn valid(self) -> bool {
-        self.weekly_dues_copper <= 100_000 && self.commission_percent <= 25
+        self.weekly_dues_copper <= 100_000
+            && self.commission_percent <= 25
+            && self.weekly_support_copper <= 100_000
     }
 }
 
@@ -47,6 +67,27 @@ impl Terms {
 pub struct Account {
     pub unpaid_commission: u64,
     pub paid_week: u64,
+    pub contribution_week: u64,
+    pub contributions_this_week: u64,
+    pub support_received: u64,
+}
+
+impl Account {
+    fn add_contributions(&mut self, week: u64, copper: u64) {
+        if self.contribution_week != week {
+            self.contribution_week = week;
+            self.contributions_this_week = 0;
+        }
+        self.contributions_this_week = self.contributions_this_week.saturating_add(copper);
+    }
+
+    pub fn current_contributions(&self, week: u64) -> u64 {
+        if self.contribution_week == week {
+            self.contributions_this_week
+        } else {
+            0
+        }
+    }
 }
 
 /// Charges a share of confirmed receipts earned in the relevant guild profession.
@@ -66,10 +107,14 @@ pub fn note_receipt(ctx: &Ctx<'_>, work: GoalKind, copper: u64) {
 }
 
 pub fn queue_copper(journal: &mut crate::journal::Journal, guild: u32, copper: u64) {
-    if journal.guild_treasury.len() < 16 || journal.guild_treasury.contains_key(&guild) {
-        let account = journal.guild_treasury.entry(guild).or_default();
+    if let Some(account) = account_mut(journal, guild) {
         account.unpaid_commission = account.unpaid_commission.saturating_add(copper);
     }
+}
+
+fn account_mut(journal: &mut crate::journal::Journal, guild: u32) -> Option<&mut Account> {
+    (journal.guild_treasury.len() < 16 || journal.guild_treasury.contains_key(&guild))
+        .then(|| journal.guild_treasury.entry(guild).or_default())
 }
 
 #[derive(Debug)]
@@ -91,6 +136,7 @@ pub struct Treasury {
     done: VecDeque<i64>,
     claim: Option<Claim>,
     received: u64,
+    support: support::Support,
 }
 
 fn contribution(mail: &MailHeader, guild: u32) -> Option<(u64, u64)> {
@@ -123,13 +169,30 @@ impl Treasury {
         }
     }
 
-    fn note_received(&mut self, mail: &MailHeader, guild: &GuildLog, is_bot: impl Fn(u32) -> bool) {
+    fn note_received(
+        &mut self,
+        mail: &MailHeader,
+        guild: &GuildLog,
+        owner: bool,
+        is_bot: impl Fn(u32) -> bool,
+    ) {
+        let guild_mail = if owner {
+            contribution(mail, guild.id).is_some()
+                && guild
+                    .members
+                    .iter()
+                    .any(|m| m.name.eq_ignore_ascii_case(&mail.sender) && is_bot(m.char_id))
+        } else {
+            support::payment(mail, guild.id).is_some_and(|(_, recipient, _)| {
+                guild.member(recipient).is_some_and(|m| {
+                    is_bot(m.char_id) && m.name.eq_ignore_ascii_case(&mail.receiver)
+                })
+            }) && guild
+                .member(guild.owner)
+                .is_some_and(|m| is_bot(m.char_id) && m.name.eq_ignore_ascii_case(&mail.sender))
+        };
         if mail.attachments == 1
-            && contribution(mail, guild.id).is_some()
-            && guild
-                .members
-                .iter()
-                .any(|m| m.name.eq_ignore_ascii_case(&mail.sender) && is_bot(m.char_id))
+            && guild_mail
             && !self.done.contains(&mail.mail_id)
             && !self.incoming.contains(&mail.mail_id)
             && self.incoming.len() < 32
@@ -143,10 +206,14 @@ impl Treasury {
         event: &ActivityEvent,
         guild: &GuildLog,
         owner: bool,
+        support_enabled: bool,
         now: u64,
         is_bot: impl Fn(u32) -> bool,
     ) {
         self.for_guild(guild.id);
+        if owner && support_enabled {
+            self.support.observe(event, guild.id, unix_ms() / WEEK_MS);
+        }
         match event {
             ActivityEvent::MailSent { mail, .. } if !owner => self.note_sent(mail, guild.id),
             ActivityEvent::MailList { is_sent, mails } if *is_sent && !owner => {
@@ -158,25 +225,23 @@ impl Treasury {
             ActivityEvent::MailList {
                 is_sent: false,
                 mails,
-            } if owner => {
+            } if owner || support_enabled => {
                 for mail in mails {
-                    self.note_received(mail, guild, &is_bot);
+                    self.note_received(mail, guild, owner, &is_bot);
                 }
             }
             ActivityEvent::MailReceived {
                 mail,
                 is_cancel: false,
                 ..
-            } if owner => {
-                self.note_received(mail, guild, &is_bot);
+            } if owner || support_enabled => {
+                self.note_received(mail, guild, owner, &is_bot);
             }
             ActivityEvent::MailBody {
                 is_sent: false,
                 body,
                 ..
-            } if owner
-                && matches!(self.claim, Some(Claim::Reading { id, .. }) if id == body.mail_id) =>
-            {
+            } if matches!(self.claim, Some(Claim::Reading { id, .. }) if id == body.mail_id) => {
                 let id = body.mail_id;
                 if body.items.is_empty() && body.money > 0 && body.billing == 0 && body.money2 == 0
                 {
@@ -192,7 +257,7 @@ impl Treasury {
                 mail_id,
                 money: true,
                 ..
-            } if owner => {
+            } => {
                 if let Some(Claim::Taking { id, copper, .. }) = self.claim {
                     if id == *mail_id {
                         self.received = self.received.saturating_add(copper);
@@ -228,17 +293,25 @@ pub fn duty(ctx: &mut Ctx<'_>) {
         return;
     };
     ctx.state.guild.mem().treasury.for_guild(guild);
+    let support_enabled = terms.weekly_support_copper > 0;
     if owner {
-        collect(ctx);
+        if !collect(ctx, guild, true, support_enabled) && support_enabled {
+            support::pay(ctx, guild, terms);
+        }
     } else {
         contribute(ctx, guild, terms);
+        if support_enabled {
+            collect(ctx, guild, false, true);
+        }
     }
 }
 
-fn collect(ctx: &mut Ctx<'_>) {
+/// Returns whether an attachment is being collected.
+fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) -> bool {
     let treasury = &mut ctx.state.guild.mem().treasury;
     let now = ctx.now_ms;
     let received = std::mem::take(&mut treasury.received);
+    let mut listing = false;
     if let Some(Claim::Ready { id, copper }) = treasury.claim {
         ctx.out.push(cs::take_attachment_sequentially(id));
         treasury.claim = Some(Claim::Taking {
@@ -253,9 +326,16 @@ fn collect(ctx: &mut Ctx<'_>) {
                 id,
                 deadline: now + 8_000,
             });
-        } else if now >= treasury.next_check {
+        } else if now >= treasury.next_check
+            && treasury.checking.is_none()
+            && !treasury.support.listing()
+        {
             ctx.out.push(cs::list_mail());
+            if owner && support_enabled {
+                treasury.support.start_listing(unix_ms() / WEEK_MS, now);
+            }
             treasury.next_check = now + LIST_EVERY_MS;
+            listing = true;
         }
     } else if matches!(treasury.claim,
         Some(Claim::Reading { deadline, .. } | Claim::Taking { deadline, .. }) if now >= deadline)
@@ -263,14 +343,29 @@ fn collect(ctx: &mut Ctx<'_>) {
         treasury.claim = None;
         treasury.incoming.pop_front();
     }
+    let collecting = treasury.claim.is_some();
     if received > 0 {
         ctx.hub.journal.update(ctx.persona.id, |j| {
-            j.guild_copper_received = j.guild_copper_received.saturating_add(received);
+            if owner {
+                j.guild_copper_received = j.guild_copper_received.saturating_add(received);
+            }
+            if let Some(a) = account_mut(j, guild) {
+                if owner {
+                    a.add_contributions(unix_ms() / WEEK_MS, received);
+                } else {
+                    a.support_received = a.support_received.saturating_add(received);
+                }
+            }
         });
-        ctx.log.say(format!(
-            "guild: received {received} copper in contributions"
-        ));
+        let purpose = if owner {
+            "contributions"
+        } else {
+            "rank allowance"
+        };
+        ctx.log
+            .say(format!("guild: received {received} copper in {purpose}"));
     }
+    collecting || listing
 }
 
 fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
@@ -373,6 +468,7 @@ mod tests {
                 id: 42,
                 ..GuildLog::default()
             },
+            false,
             false,
             2000,
             |_| true,

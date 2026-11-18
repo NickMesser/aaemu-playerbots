@@ -818,17 +818,32 @@ impl Brain {
         if ctx.cfg.guild.treasuries.contains_key(&id.to_string()) {
             ctx.hub.journal.read(ctx.persona.id, |j| {
                 if master {
+                    let week = crate::hub::unix_ms() / super::guild::treasury::WEEK_MS;
+                    let current = j.guild_treasury.get(&id).map_or(0, |a| a.current_contributions(week));
                     context.push_str(&format!(
-                        " Guild contributors paid {} copper into the guildmaster's purse.",
+                        " Guild contributors paid {} copper into the guildmaster's purse, including {current} copper this week.",
                         j.guild_copper_received
                     ));
                 } else if let Some(a) = j.guild_treasury.get(&id) {
                     context.push_str(&format!(
-                        " Unpaid guild commission is {} copper.",
-                        a.unpaid_commission
+                        " Unpaid guild commission is {} copper. Guild rank allowances received: {} copper.",
+                        a.unpaid_commission, a.support_received
                     ));
                 }
             });
+        }
+        if role == profession::Profession::BountyHunter && !master {
+            let completed = ctx
+                .hub
+                .journal
+                .read(ctx.persona.id, |j| j.bounties_completed);
+            context.push_str(&format!(" Confirmed bounty patrol kills: {completed}."));
+            if let Some(case) = super::goals::warzone::bounty(ctx, |c| ctx.state.at_war(c.group)) {
+                context.push_str(&format!(
+                    " A trade runner reported {} in war zone group {}.",
+                    case.name, case.group
+                ));
+            }
         }
         if role == profession::Profession::Trader {
             ctx.hub.journal.read(ctx.persona.id, |j| {
