@@ -361,6 +361,10 @@ The guildmaster skips the profession's autonomous goals and continues to manage 
 membership. Members recover personal time after each professional goal based on its actual elapsed
 time. The percentage applies over completed work and recovery periods during a bot run. Existing
 commitments can finish. Trader and Crafter guilds decline bots with recorded Thief membership.
+With `[farm] husbandry = true`, Potato guild members can fill orders for supported livestock or
+their produce. They raise livestock on their own land or a ranch that accepts the animal. For
+each actual animal phase, the bot can feed, treat or collect eggs, milk or wool and keeps a record
+when the game confirms the action.
 Bounty hunters with warzone play enabled check recent sightings after a hostile character kills
 a trade runner carrying a pack. Hunters prioritize eligible targets in view during war patrols.
 The game must credit the kill to a hunter before the report is cleared and recorded in memory.

@@ -77,13 +77,16 @@ pub fn farm_order(ctx: &Ctx<'_>) -> Option<u32> {
         .into_iter()
         .flatten()
         .filter_map(|&seed| {
-            let crop = ctx
-                .world
-                .farm()
-                .crop_of_seed(seed)
-                .filter(|crop| crop.plantable_on_land())?;
-            let market_return: f32 = crop
-                .produce
+            let farm = ctx.world.farm();
+            let crop = farm.crop_of_seed(seed)?;
+            let yields = if crop.plantable_on_land() {
+                &crop.produce[..]
+            } else if ctx.cfg.farm.husbandry {
+                farm.livestock_yields(crop.doodad)?
+            } else {
+                return None;
+            };
+            let market_return: f32 = yields
                 .iter()
                 .filter_map(|y| prices.average(y.item, now).map(|price| y.average() * price))
                 .sum();

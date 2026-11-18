@@ -104,6 +104,8 @@ pub struct Journal {
     pub raid_sites: Vec<RaidSite>,
     /// Server-confirmed kills of characters reported for attacking trade runners.
     pub bounties_completed: u32,
+    /// Confirmed feed, treatment and collection actions on guild livestock.
+    pub livestock_actions: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

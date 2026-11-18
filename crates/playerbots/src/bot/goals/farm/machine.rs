@@ -124,6 +124,10 @@ pub enum Act {
 
 /// What the world offers the machine: spots, harvest skills.
 pub trait Ops {
+    fn managed_stock(&self, _doodad: u32) -> bool {
+        false
+    }
+
     /// A free spot (x, y, z) on `site` for a crop of `radius_mm`, claimed for this bot; `None`
     /// when the place has none.
     fn spot(&self, mem: &FarmMem, site: &Site, radius_mm: u16) -> Option<[f32; 3]>;
@@ -924,6 +928,7 @@ impl Machine {
         mem.plots
             .iter()
             .filter(|p| p.due(io.now_ms))
+            .filter(|p| !io.ops.managed_stock(p.doodad))
             .filter(|p| {
                 !self
                     .visited

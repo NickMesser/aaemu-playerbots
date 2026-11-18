@@ -111,6 +111,28 @@ pub struct Yield {
     pub max: u16,
 }
 
+/// A non-destructive interaction in an authored livestock phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StockAction {
+    Feed(u32),
+    Treat(u32),
+    Collect(u32),
+}
+
+impl StockAction {
+    pub fn skill(self) -> u32 {
+        match self {
+            Self::Feed(skill) | Self::Treat(skill) | Self::Collect(skill) => skill,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Livestock {
+    actions: FxHashMap<u32, StockAction>,
+    yields: Vec<Yield>,
+}
+
 impl Yield {
     /// The average count per harvest.
     pub fn average(self) -> f32 {
@@ -282,6 +304,7 @@ pub struct Farming {
     by_produce: FxHashMap<u32, Vec<u32>>,
     /// NPC templates that sell a seed (merchants with a spawn in the world).
     vendors: FxHashMap<u32, Box<[u32]>>,
+    livestock: FxHashMap<u32, Livestock>,
     areas: Vec<FarmArea>,
 }
 
@@ -467,6 +490,7 @@ impl Farming {
         };
 
         let mut crops: Vec<Crop> = Vec::new();
+        let mut livestock = FxHashMap::default();
         for &(seed, doodad) in &seeds {
             let Some(a) = almighty.get(&doodad) else {
                 continue;
@@ -483,12 +507,31 @@ impl Farming {
             // ripe: a use func with a skill whose next phase hands out items
             let mut ripe: Vec<(u32, u32)> = Vec::new();
             let mut produce: Vec<Yield> = Vec::new();
+            let mut stock = Livestock::default();
             for &g in &phases {
                 for (ty, _, skill, next) in funcs.get(&g).into_iter().flatten() {
                     if ty != "DoodadFuncUse" || *skill == 0 || *next == 0 {
                         continue;
                     }
                     let got = produce_of(*next);
+                    if a.group == 5 && owner_of_group.get(next) == Some(&doodad) {
+                        let action = match *skill {
+                            13820 | 13821 | 20595 | 20678 => Some(StockAction::Feed(*skill)),
+                            13794 => Some(StockAction::Treat(*skill)),
+                            13800..=13802 | 16771 | 20606 | 24243 if !got.is_empty() => {
+                                for y in &got {
+                                    if !stock.yields.contains(y) {
+                                        stock.yields.push(*y);
+                                    }
+                                }
+                                Some(StockAction::Collect(*skill))
+                            }
+                            _ => None,
+                        };
+                        if let Some(action) = action {
+                            stock.actions.entry(g).or_insert(action);
+                        }
+                    }
                     if got.is_empty() {
                         continue;
                     }
@@ -502,6 +545,9 @@ impl Farming {
             }
             if ripe.is_empty() || grow_ms == 0 {
                 continue;
+            }
+            if !stock.yields.is_empty() && a.restrict == 0 {
+                livestock.insert(doodad, stock);
             }
             crops.push(Crop {
                 seed,
@@ -583,6 +629,7 @@ impl Farming {
             by_doodad,
             by_produce,
             vendors,
+            livestock,
             areas: Vec::new(),
         })
     }
@@ -637,6 +684,15 @@ impl Farming {
         self.by_doodad.contains_key(&doodad)
     }
 
+    /// Milk, eggs or wool collected without removing this animal.
+    pub fn livestock_yields(&self, doodad: u32) -> Option<&[Yield]> {
+        self.livestock.get(&doodad).map(|stock| &stock.yields[..])
+    }
+
+    pub fn stock_action(&self, doodad: u32, phase: u32) -> Option<StockAction> {
+        self.livestock.get(&doodad)?.actions.get(&phase).copied()
+    }
+
     /// The crops whose harvest gives `item` (their own seed does not count as produce).
     pub fn crops_yielding(&self, item: u32) -> impl Iterator<Item = &Crop> {
         self.by_produce
@@ -687,6 +743,15 @@ impl Farming {
                 .sum::<usize>()
             + self.areas.capacity() * std::mem::size_of::<FarmArea>()
             + self.areas.iter().map(|a| a.points.len() * 8).sum::<usize>()
+            + self
+                .livestock
+                .values()
+                .map(|s| {
+                    s.actions.capacity() * 12
+                        + s.yields.capacity() * std::mem::size_of::<Yield>()
+                        + 48
+                })
+                .sum::<usize>()
     }
 }
 

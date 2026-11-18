@@ -327,6 +327,8 @@ growth_rate = 1.0
 public_farms = true
 # Plant on the land of the bot's own houses.
 own_land = true
+# Potato guild members can raise livestock from orders on their gardens or a public ranch.
+husbandry = false
 # Plant the seeds a harvest gives back on the spot the crop stood.
 replant = true
 # The farthest a bot walks to a farm, a vendor or a plot, in metres. With bots.gm_bootstrap and

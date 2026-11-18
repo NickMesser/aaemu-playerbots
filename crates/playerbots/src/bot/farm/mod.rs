@@ -160,6 +160,8 @@ pub struct FarmMem {
     bad_spots: SmallVec<[(f32, f32, u64); 6]>,
     /// Seeds the server refused `(seed, until bot clock ms)`.
     bad_seeds: SmallVec<[(u32, u64); 3]>,
+    /// Deferred livestock actions at a given position and phase.
+    pub stock_retry: SmallVec<[([f32; 3], u32, u64); 4]>,
     /// While a harvest is under way: whether its seeds were bought (see the ledger docs).
     pub harvest_honest: Option<bool>,
     /// The list of the public farm crops was asked for in this session.

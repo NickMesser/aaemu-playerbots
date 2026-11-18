@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use aa_world::{FarmKind, World, WorldPaths};
+use aa_world::{FarmKind, StockAction, World, WorldPaths};
 
 fn load() -> Option<World> {
     let compact = PathBuf::from(std::env::var_os("AA_COMPACT")?);
@@ -65,6 +65,30 @@ fn the_potato_and_the_rice_grow_as_the_server_says() {
     // the grapevine sapling (4865) is a nursery tree
     let vine = f.crop_of_seed(4865).expect("the grapevine is a crop");
     assert!(vine.allowed_in(FarmKind::Nursery) && !vine.allowed_in(FarmKind::Farm));
+
+    let chick = f.crop_of_seed(16230).expect("the chick can be raised");
+    assert_eq!(chick.doodad, 2673);
+    assert!(chick.allowed_in(FarmKind::Ranch));
+    assert_eq!(
+        f.stock_action(chick.doodad, 5792),
+        Some(StockAction::Feed(13820))
+    );
+    assert_eq!(
+        f.stock_action(chick.doodad, 5797),
+        Some(StockAction::Treat(13794))
+    );
+    assert_eq!(
+        f.stock_action(chick.doodad, 5798),
+        Some(StockAction::Collect(13801))
+    );
+    assert_eq!(f.stock_action(chick.doodad, 5799), None);
+    let eggs = f
+        .livestock_yields(chick.doodad)
+        .unwrap()
+        .iter()
+        .find(|y| y.item == 3603)
+        .unwrap();
+    assert_eq!((eggs.min, eggs.max), (2, 4));
 }
 
 #[test]

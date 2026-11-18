@@ -43,7 +43,7 @@ pub use doodad::{DoodadFlags, DoodadTemplate};
 pub use economy::Craft;
 pub use event::{EventDef, Events};
 pub use faction::Relation;
-pub use farm::{farm_limit, Crop, FarmArea, FarmKind, Farming, Yield};
+pub use farm::{farm_limit, Crop, FarmArea, FarmKind, Farming, StockAction, Yield};
 pub use gear::{GearClass, GearData, GearItem, Lunagem};
 pub use geom::Vec3;
 pub use housing::HousingDesign;

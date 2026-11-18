@@ -49,6 +49,7 @@
 //! wish nudge apply on top (`brain::scores_now`).
 
 pub mod machine;
+mod stock;
 
 #[cfg(test)]
 mod tests;
@@ -96,6 +97,7 @@ const NEED_CAP: f32 = 3.0;
 #[derive(Debug, Default)]
 pub struct Farm {
     run: Option<Box<Machine>>,
+    stock: Option<Box<stock::Job>>,
     /// What the goal was started with (`wild`: plant on a wild patch, `item`: the seed to grow).
     args: Option<Box<GoalArgs>>,
 }
@@ -109,7 +111,10 @@ impl Farm {
     /// A fresh goal started with `args` (`GoalArgs::wild`: plant on unprotected land, `item`: the
     /// seed to grow, or a crop that gives that item).
     pub fn with_args(args: Option<Box<GoalArgs>>) -> Farm {
-        Farm { run: None, args }
+        Farm {
+            args,
+            ..Self::default()
+        }
     }
 
     /// The arguments it was started with.
@@ -121,6 +126,10 @@ impl Farm {
     /// decides between harvesting and planting.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
         restore_wild(ctx);
+        if let Some(job) = stock::choose(ctx) {
+            self.stock = Some(Box::new(job));
+            return;
+        }
         self.run = choose_job(ctx, self.args.as_deref()).map(Box::new);
         match &self.run {
             Some(m) => ctx.log.say(format!(
@@ -133,12 +142,16 @@ impl Farm {
 
     /// One tick.
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
-        let Some(machine) = self.run.as_mut() else {
-            return GoalStatus::Failed(FailReason::NoTarget);
-        };
         if !ctx.cfg.farm.enabled {
             return GoalStatus::Failed(FailReason::Other("farming is switched off"));
         }
+        if let Some(job) = self.stock.as_mut() {
+            return job.tick(ctx);
+        }
+        let Some(machine) = self.run.as_mut() else {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        };
+        let husbandry = stock::enabled(ctx);
         let mut mem = ctx.state.market.take_farm();
         let harvested_before = mem.harvested;
         let mut acts = Vec::new();
@@ -151,6 +164,7 @@ impl Farm {
                 now_ms: ctx.now_ms,
                 fallback_z: ctx.state.me.pos[2],
                 rng: RefCell::new(&mut *ctx.rng),
+                husbandry,
             };
             let st: &BotState = ctx.state;
             let count = |t: u32| st.item_count(t);
@@ -193,6 +207,10 @@ impl Farm {
     /// Called when the goal ends, fails or is interrupted: the harvest window closes, the walk
     /// stops, the board is told what grows.
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        if let Some(stock) = self.stock.take() {
+            stock.stop(ctx);
+            return;
+        }
         let mut mem = ctx.state.market.take_farm();
         if let Some(mut machine) = self.run.take() {
             let mut acts = Vec::new();
@@ -228,6 +246,9 @@ impl Farm {
     /// Appends a one-line description of what the goal is doing to `out`.
     pub fn describe(&self, out: &mut String) {
         out.push_str("farm");
+        if let Some(job) = &self.stock {
+            out.push_str(job.description());
+        }
         if let Some(m) = &self.run {
             out.push_str(": ");
             out.push_str(m.note());
@@ -266,11 +287,9 @@ pub fn score(ctx: &Ctx<'_>, _base: f32) -> f32 {
     let mem = ctx.state.market.farm();
     let now = ctx.now_ms;
     let pos = ctx.state.me.pos;
-    if mem.is_some_and(|m| {
-        m.plots
-            .iter()
-            .any(|p| p.due(now) && dist2d(pos, p.pos) <= cfg.max_trip_m)
-    }) {
+    if stock::choose(ctx).is_some()
+        || mem.is_some_and(|m| m.plots.iter().any(|p| harvest_due(ctx, p, now, pos)))
+    {
         return base * HARVEST_BOOST;
     }
     // a ripe wild plot of the journal the memory has not found again yet (after a restart)
@@ -309,6 +328,7 @@ struct Who {
     item: Option<u32>,
     /// This planting uses the portion of farm space assigned to the guild.
     guild_order: bool,
+    livestock_order: Option<u32>,
     /// The bot keeps out of zones at war.
     avoid_war: bool,
 }
@@ -325,9 +345,16 @@ impl Who {
             wild_only: order.is_none() && cfg.wild && asked,
             item: order.or_else(|| args.and_then(|a| a.item)),
             guild_order: order.is_some(),
+            livestock_order: order.filter(|_| stock::enabled(ctx)),
             avoid_war: crate::bot::war::avoiding(&ctx.cfg.events),
         }
     }
+}
+
+fn harvest_due(ctx: &Ctx<'_>, plot: &Plot, now: u64, pos: [f32; 3]) -> bool {
+    plot.due(now)
+        && dist2d(pos, plot.pos) <= ctx.cfg.farm.max_trip_m
+        && !(stock::enabled(ctx) && ctx.world.farm().livestock_yields(plot.doodad).is_some())
 }
 
 /// Harvest if a plot is due and reachable, else plant if there is a plan.
@@ -337,11 +364,7 @@ fn choose_job(ctx: &mut Ctx<'_>, args: Option<&GoalArgs>) -> Option<Machine> {
     let pos = ctx.state.me.pos;
     let mem = ctx.state.market.farm();
     let fetch = cfg.public_farms && mem.is_none_or(|m| !m.list_asked);
-    if mem.is_some_and(|m| {
-        m.plots
-            .iter()
-            .any(|p| p.due(now) && dist2d(pos, p.pos) <= cfg.max_trip_m)
-    }) {
+    if mem.is_some_and(|m| m.plots.iter().any(|p| harvest_due(ctx, p, now, pos))) {
         return Some(Machine::harvest(fetch, now));
     }
     if let Some(f) = steal_target(ctx) {
@@ -403,7 +426,7 @@ fn plan_now(
     let mut sites = if who.wild_only {
         Vec::new()
     } else {
-        candidate_sites(world, state, mem, cfg)
+        candidate_sites(world, state, mem, cfg, who.livestock_order.is_some())
     };
     // an outlaw plants out in the wild first, the rest where it may
     if let Some(w) = wild {
@@ -412,6 +435,24 @@ fn plan_now(
     if sites.is_empty() {
         return None;
     }
+    let mut wished = hub.pop.wished();
+    if let Some(item) = who.item.filter(|_| who.guild_order) {
+        let farm = world.farm();
+        if let Some(crop) = farm.crop_of_seed(item) {
+            let yields = who
+                .livestock_order
+                .and_then(|_| farm.livestock_yields(crop.doodad))
+                .unwrap_or(&crop.produce);
+            wished.extend(
+                yields
+                    .iter()
+                    .map(|y| y.item)
+                    .filter(|&product| product != item),
+            );
+        } else {
+            wished.push(item);
+        }
+    }
     let env = RealEnv {
         world,
         state,
@@ -419,17 +460,25 @@ fn plan_now(
         bot,
         gm: cfg.bots.gm_bootstrap,
         max_trip_m: fcfg.max_trip_m,
-        wished: hub.pop.wished(),
+        wished,
         sites: &sites,
         mem,
         now_ms,
+        livestock_order: who.livestock_order,
     };
     let crops = world.farm().crops();
     let pick = match who.item {
         // the goal was started for an item: that seed, or a crop that gives it
         Some(item) => crops
             .iter()
-            .filter(|c| c.seed == item || c.produce.iter().any(|y| y.item == item))
+            .filter(|c| {
+                c.seed == item
+                    || env
+                        .livestock_yields(c)
+                        .unwrap_or(&c.produce)
+                        .iter()
+                        .any(|y| y.item == item)
+            })
             .filter_map(|c| plan::evaluate(c, &env, fcfg.growth_rate))
             .max_by(|a, b| a.score.total_cmp(&b.score))?,
         None => plan::choose(crops, &env, fcfg.growth_rate, rng)?,
@@ -500,6 +549,9 @@ fn wild_site(
 /// Whether `site` takes `crop`: a garden and a wild patch take any crop that grows on land, a
 /// farm the crops of its kind.
 fn takes(crop: &Crop, site: &Site) -> bool {
+    if crop.group == 5 && site.is_wild() {
+        return false;
+    }
     match site.kind() {
         None => true,
         Some(kind) => crop.allowed_in(kind),
@@ -513,6 +565,7 @@ fn candidate_sites(
     state: &BotState,
     mem: Option<&FarmMem>,
     cfg: &crate::config::Config,
+    include_ranch: bool,
 ) -> Vec<Site> {
     let fcfg = &cfg.farm;
     let mut all: Vec<Site> = Vec::new();
@@ -522,10 +575,11 @@ fn candidate_sites(
         }));
     }
     if fcfg.public_farms {
-        all.extend(site::farms(
-            world.farm().areas(),
-            FarmKind::Farm.bit() | FarmKind::Nursery.bit(),
-        ));
+        let mut kinds = FarmKind::Farm.bit() | FarmKind::Nursery.bit();
+        if include_ranch {
+            kinds |= FarmKind::Ranch.bit();
+        }
+        all.extend(site::farms(world.farm().areas(), kinds));
     }
     all.retain(|s| site::room(mem, s.land, fcfg.max_plots) > 0);
     site::nearest(all, state.me.pos, fcfg.max_trip_m)
@@ -851,9 +905,16 @@ struct RealEnv<'a> {
     sites: &'a [Site],
     mem: Option<&'a FarmMem>,
     now_ms: u64,
+    livestock_order: Option<u32>,
 }
 
 impl Env for RealEnv<'_> {
+    fn livestock_yields(&self, crop: &Crop) -> Option<&[aa_world::Yield]> {
+        let order = self.livestock_order?;
+        let yields = self.world.farm().livestock_yields(crop.doodad)?;
+        (crop.seed == order || yields.iter().any(|y| y.item == order)).then_some(yields)
+    }
+
     fn have(&self, seed: u32) -> i64 {
         self.state.item_count(seed)
     }
@@ -930,9 +991,14 @@ struct RealOps<'a> {
     now_ms: u64,
     fallback_z: f32,
     rng: RefCell<&'a mut fastrand::Rng>,
+    husbandry: bool,
 }
 
 impl Ops for RealOps<'_> {
+    fn managed_stock(&self, doodad: u32) -> bool {
+        self.husbandry && self.world.farm().livestock_yields(doodad).is_some()
+    }
+
     fn spot(&self, mem: &FarmMem, site: &Site, radius_mm: u16) -> Option<[f32; 3]> {
         let spacing = site::spacing_m(radius_mm);
         let (world, hub, bot, now) = (self.world, self.hub, self.bot, self.now_ms);

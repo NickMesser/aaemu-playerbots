@@ -61,6 +61,10 @@ pub struct Vendor {
 
 /// What the planner reads about the bot and the world.
 pub trait Env {
+    /// Yield when the plot is raised for recurring livestock products.
+    fn livestock_yields(&self, _crop: &Crop) -> Option<&[aa_world::Yield]> {
+        None
+    }
     /// Seeds `seed` in the bag.
     fn have(&self, seed: u32) -> i64;
     /// What a vendor asks for one `item`.
@@ -127,7 +131,11 @@ impl Pick {
 /// How well one crop suits the bot now; `None` when it cannot be grown at all (not plantable,
 /// refused lately, no place, no seeds and no way to get any, nothing it gives is worth anything).
 pub fn evaluate(crop: &Crop, env: &dyn Env, rate: f32) -> Option<Pick> {
-    if !crop.plantable_on_land() || env.bad_seed(crop.seed) || !env.place_for(crop) {
+    let livestock = env.livestock_yields(crop);
+    if (!crop.plantable_on_land() && livestock.is_none())
+        || env.bad_seed(crop.seed)
+        || !env.place_for(crop)
+    {
         return None;
     }
     let have = u32::try_from(env.have(crop.seed).max(0)).unwrap_or(u32::MAX);
@@ -147,7 +155,11 @@ pub fn evaluate(crop: &Crop, env: &dyn Env, rate: f32) -> Option<Pick> {
     let mut need = 0.0f32;
     let mut best = (0.0f32, Why::Profit);
     let mut products = 0;
-    for y in crop.produce.iter().filter(|y| y.item != crop.seed) {
+    for y in livestock
+        .unwrap_or(&crop.produce)
+        .iter()
+        .filter(|y| y.item != crop.seed)
+    {
         products += 1;
         value += env.value(y.item) * y.average();
         let damp = 1.0 / (1.0 + env.growing(y.item) / DAMP_UNITS);

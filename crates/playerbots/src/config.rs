@@ -797,6 +797,8 @@ pub struct FarmCfg {
     pub public_farms: bool,
     /// Bots plant on the land of their own houses.
     pub own_land: bool,
+    /// Potato guild members can raise and tend livestock on protected land.
+    pub husbandry: bool,
     /// A bot plants the seeds a harvest gives back on the spot it harvested.
     pub replant: bool,
     /// The farthest a bot walks to a farm, a vendor or a plot (metres); trips longer than
@@ -827,6 +829,7 @@ impl Default for FarmCfg {
             growth_rate: 1.0,
             public_farms: true,
             own_land: true,
+            husbandry: false,
             replant: true,
             max_trip_m: 4_000.0,
             wild: false,

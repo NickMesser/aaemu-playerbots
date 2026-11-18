@@ -807,6 +807,15 @@ impl Brain {
                 " The farm goal tends ripe crops and plants item {item}."
             ));
         }
+        if role == profession::Profession::Potato && !master && ctx.cfg.farm.husbandry {
+            let actions = ctx
+                .hub
+                .journal
+                .read(ctx.persona.id, |j| j.livestock_actions);
+            context.push_str(&format!(
+                " Confirmed livestock care and collection actions: {actions}."
+            ));
+        }
         if let Some(order) = ctx.cfg.guild.production_orders.get(&id.to_string()) {
             let (done, training) = ctx.hub.journal.read(ctx.persona.id, |j| {
                 (j.production_completed, j.production_training_completed)
