@@ -63,7 +63,7 @@ pub enum PartyPurpose {
     /// [`super::guild`]).
     Guild,
     /// Make a short open-world trip together.
-    Field { explore: bool },
+    Field(FieldActivity),
     /// Lie in wait together for trade pack carriers (the gank goal, see
     /// [`pvp::squad`](super::pvp::squad)).
     Ambush {
@@ -72,6 +72,13 @@ pub enum PartyPurpose {
         /// The leader's post, whole metres (y).
         y: i32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldActivity {
+    Explore,
+    Grind,
+    Quest,
 }
 
 /// The coordinator's order to one member of a party.
@@ -104,7 +111,7 @@ impl PartyOrder {
             PartyPurpose::Dungeon { zone_group } => zone_group,
             // (a charter has no dungeon)
             PartyPurpose::Guild => 0,
-            PartyPurpose::Field { .. } => 0,
+            PartyPurpose::Field(_) => 0,
             PartyPurpose::Ambush { .. } => 0,
         }
     }

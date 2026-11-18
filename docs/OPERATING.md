@@ -415,10 +415,11 @@ minutes elapse. The leader can whisper `escort cancel`. Agents can read `escorts
 
 Set `[behavior] field_parties = true` to offer the `field_party` goal. The coordinator gathers
 two to four bots of the same alliance within 120 metres and five levels of each other. It favors
-familiar characters and a mix of party roles, and skips pairs that distrust each other.
-Among the group, more outgoing and dedicated bots tend to lead. The group's exploration preference
-gives the leader double weight when choosing a stroll or a grind. Followers stay near the leader
-and assist with fights. The group dissolves after the outing, or when the leader leaves.
+familiar characters, compatible attitudes toward outlaw activity, and a mix of party roles.
+Bots skip teammates they strongly distrust and leave if trust falls that far during a trip.
+Outgoing, dedicated bots tend to lead. The coordinator gives their preferences double weight
+when it chooses exploration, questing, or grinding. The leader announces the plan in party
+chat. Followers stay nearby and assist with fights. More sociable bots tend to stay longer.
 
 **See it.** The web UI's bot list carries each bot's guild with its members (`guild` in
 `/api/bots`); the bot's log has the `guild:` lines (invited, joined, handed over, left). Server

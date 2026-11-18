@@ -39,7 +39,7 @@ use tokio_util::sync::CancellationToken;
 use super::cmd::{BotCmd, PairKind, PairOrder, PairRole};
 use super::guild::forming::Wishes as GuildWishes;
 use super::guild::plan::GuildWish;
-use super::party::{self, PartyOrder, PartyPurpose, Site, Wish};
+use super::party::{self, FieldActivity, PartyOrder, PartyPurpose, Site, Wish};
 use super::pvp::squad::{self, Standby};
 use crate::hub::Hub;
 
@@ -166,6 +166,9 @@ pub struct FieldOffer {
     pub role: u8,
     pub lead: f32,
     pub explore: f32,
+    pub quest: f32,
+    pub cooperation: f32,
+    pub outlaw: f32,
 }
 
 /// The cheap, cloneable end bots talk to the coordinator with.
@@ -470,6 +473,8 @@ impl Coordinator {
                             let duplicate =
                                 group.iter().any(|&m| self.field[m].0.role == offer.role);
                             distance(seed, offer) - 2.0 * f32::from(trust(i, index))
+                                + 40.0 * (seed.outlaw - offer.outlaw).abs()
+                                - 15.0 * offer.cooperation
                                 + if duplicate { 20.0 } else { 0.0 }
                         };
                         score(*a, *left).total_cmp(&score(*b, *right))
@@ -483,9 +488,23 @@ impl Coordinator {
             }
             group.sort_by(|&a, &b| self.field[b].0.lead.total_cmp(&self.field[a].0.lead));
             let leader = self.field[group[0]].0;
-            let preference = (leader.explore
-                + group.iter().map(|&m| self.field[m].0.explore).sum::<f32>())
-                / (group.len() + 1) as f32;
+            let vote = |interest: fn(FieldOffer) -> f32| {
+                (interest(leader)
+                    + group
+                        .iter()
+                        .map(|&m| interest(self.field[m].0))
+                        .sum::<f32>())
+                    / (group.len() + 1) as f32
+            };
+            let explore = vote(|offer| offer.explore);
+            let quest = vote(|offer| offer.quest);
+            let outing = if leader.quest > 0.0 && quest >= 0.6 && quest > explore {
+                FieldActivity::Quest
+            } else if explore >= 0.5 {
+                FieldActivity::Explore
+            } else {
+                FieldActivity::Grind
+            };
             let members = group
                 .iter()
                 .map(|&m| self.field[m].0.bot)
@@ -494,9 +513,7 @@ impl Coordinator {
                 party_id: self.next_party,
                 leader: leader.bot,
                 members,
-                purpose: PartyPurpose::Field {
-                    explore: preference >= 0.5,
-                },
+                purpose: PartyPurpose::Field(outing),
             };
             self.next_party = self.next_party.wrapping_add(1).max(1);
             for &bot in &order.members {
@@ -828,6 +845,9 @@ mod tests {
             role: 1,
             lead: 0.2,
             explore: 0.0,
+            quest: 0.0,
+            cooperation: 0.5,
+            outlaw: 0.5,
         };
         for candidate in [
             offer,
@@ -863,8 +883,42 @@ mod tests {
         for (_, order) in orders {
             assert_eq!(order.members.as_slice(), &[2, 1]);
             assert_eq!(order.leader, 2);
-            assert_eq!(order.purpose, PartyPurpose::Field { explore: true });
+            assert_eq!(order.purpose, PartyPurpose::Field(FieldActivity::Explore));
         }
+    }
+
+    #[test]
+    fn a_questing_leader_breaks_a_field_partys_tie() {
+        let (rec, _, mut coord) = coordinator();
+        let now = Instant::now();
+        let follower = FieldOffer {
+            bot: 1,
+            at: [0.0, 0.0],
+            mother: 148,
+            level: 10,
+            role: 1,
+            lead: 0.3,
+            explore: 0.9,
+            quest: 0.2,
+            cooperation: 0.5,
+            outlaw: 0.5,
+        };
+        let leader = FieldOffer {
+            bot: 2,
+            role: 2,
+            lead: 0.9,
+            explore: 0.2,
+            quest: 0.9,
+            ..follower
+        };
+        coord.handle(CoordMsg::Field(follower), now);
+        coord.handle(CoordMsg::Field(leader), now);
+        coord.expire(now + Duration::from_secs(8));
+        let orders = parties(&rec);
+        assert_eq!(orders.len(), 2);
+        assert!(orders
+            .iter()
+            .all(|(_, order)| order.purpose == PartyPurpose::Field(FieldActivity::Quest)));
     }
 
     #[test]

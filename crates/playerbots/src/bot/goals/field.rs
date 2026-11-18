@@ -1,12 +1,12 @@
-//! Short bot-only parties for open-world patrols and grinding.
+//! Short bot-only parties for open-world exploration, grinding and quests.
 
 use aa_proto::cs;
 
-use super::{FailReason, GoalStatus, Grind, Wander};
+use super::{FailReason, GoalStatus, Grind, Quest, Wander};
 use crate::bot::combat::CombatStatus;
 use crate::bot::coordinator::{Dispatch, FieldOffer};
 use crate::bot::ctx::Ctx;
-use crate::bot::party::{PartyOrder, PartyPurpose};
+use crate::bot::party::{FieldActivity, PartyOrder, PartyPurpose};
 use crate::bot::pvp::walk::{Walk, Walker};
 use crate::bot::state::{dist2d, UnitKind};
 
@@ -18,10 +18,15 @@ pub fn ready(ctx: &Ctx<'_>) -> bool {
         && !ctx.state.team().is_some_and(|t| t.in_team())
 }
 
+pub fn cooperation(ctx: &Ctx<'_>) -> f32 {
+    (ctx.persona.profile.chatty + 1.0 - ctx.persona.temper.homebody) * 0.5
+}
+
 #[derive(Debug)]
 enum Outing {
     Explore(Wander),
     Grind(Grind),
+    Quest(Quest),
 }
 
 #[derive(Debug, Default)]
@@ -29,6 +34,7 @@ pub struct Field {
     order: Option<PartyOrder>,
     deadline: u64,
     next_invite: u64,
+    next_relationship_check: u64,
     invite_index: usize,
     accepted: bool,
     team_id: u32,
@@ -58,6 +64,13 @@ impl Field {
                 role: crate::bot::companion::duty::role_of(ctx.persona.archetype.role),
                 lead: (ctx.persona.profile.dedication + ctx.persona.profile.chatty) * 0.5,
                 explore: ctx.persona.profile.explorer,
+                quest: if ctx.cfg.behavior.quest > 0.0 {
+                    ctx.persona.temper.quester
+                } else {
+                    0.0
+                },
+                cooperation: cooperation(ctx),
+                outlaw: ctx.persona.profile.outlaw,
             });
         }
     }
@@ -124,13 +137,32 @@ impl Field {
         if size < 2 {
             return GoalStatus::Done;
         }
+        if ctx.now_ms >= self.next_relationship_check {
+            self.next_relationship_check = ctx.now_ms + 3_000;
+            if team.is_some_and(|team| {
+                ctx.hub.journal.read(ctx.persona.id, |j| {
+                    team.members.iter().any(|mate| {
+                        j.relationships
+                            .get(mate.char_id)
+                            .is_some_and(|r| r.trust <= -40)
+                    })
+                })
+            }) {
+                ctx.log
+                    .say("field party: leaving after a breakdown in trust");
+                return GoalStatus::Done;
+            }
+        }
         if !self.started {
-            let explore = matches!(order.purpose, PartyPurpose::Field { explore: true });
-            self.begin_outing(ctx, explore);
+            let PartyPurpose::Field(activity) = order.purpose else {
+                return GoalStatus::Failed(FailReason::NoTarget);
+            };
+            self.begin_outing(ctx, activity);
         }
         match &mut self.outing {
             Some(Outing::Explore(wander)) => wander.tick(ctx),
             Some(Outing::Grind(grind)) => grind.tick(ctx, combat),
+            Some(Outing::Quest(quest)) => quest.tick(ctx),
             None => {
                 if ctx.combat.busy() {
                     return GoalStatus::Running;
@@ -166,9 +198,9 @@ impl Field {
         }
     }
 
-    fn begin_outing(&mut self, ctx: &mut Ctx<'_>, explore: bool) {
+    fn begin_outing(&mut self, ctx: &mut Ctx<'_>, activity: FieldActivity) {
         self.started = true;
-        self.deadline = ctx.now_ms + 5 * 60_000;
+        self.deadline = ctx.now_ms + 180_000 + (240_000.0 * cooperation(ctx)) as u64;
         if let Some(team) = ctx.state.team() {
             ctx.hub.journal.update(ctx.persona.id, |j| {
                 for mate in team
@@ -194,15 +226,27 @@ impl Field {
             .as_ref()
             .is_some_and(|o| o.is_leader(ctx.persona.id))
         {
-            self.outing = Some(if explore {
-                let mut wander = Wander::default();
-                wander.start(ctx);
-                Outing::Explore(wander)
-            } else {
-                let mut grind = Grind::default();
-                grind.start(ctx);
-                Outing::Grind(grind)
-            });
+            let (outing, message) = match activity {
+                FieldActivity::Explore => {
+                    let mut wander = Wander::default();
+                    wander.start(ctx);
+                    (Outing::Explore(wander), "Let's explore a bit. Stay close.")
+                }
+                FieldActivity::Grind => {
+                    let mut grind = Grind::default();
+                    grind.start(ctx);
+                    (Outing::Grind(grind), "Let's clear out monsters together.")
+                }
+                FieldActivity::Quest => {
+                    let mut quest = Quest::default();
+                    quest.start(ctx);
+                    (Outing::Quest(quest), "Let's work on quests together.")
+                }
+            };
+            self.outing = Some(outing);
+            if let Some(message) = super::social::wire_text(message) {
+                ctx.send(cs::chat(cs::chat_type::PARTY, "", message));
+            }
         }
     }
 
@@ -211,6 +255,7 @@ impl Field {
         match &mut self.outing {
             Some(Outing::Explore(wander)) => wander.stop(ctx),
             Some(Outing::Grind(grind)) => grind.stop(ctx),
+            Some(Outing::Quest(quest)) => quest.stop(ctx),
             None => ctx.motion.stop(),
         }
         let me = ctx.state.me.char_id;
@@ -234,6 +279,7 @@ impl Field {
         out.push_str(match &self.outing {
             Some(Outing::Explore(_)) => "Exploring with a bot party",
             Some(Outing::Grind(_)) => "Leading a grinding party",
+            Some(Outing::Quest(_)) => "Leading a questing party",
             None if self.team_id != 0 => "Following the field party",
             None => "Looking for a nearby field party",
         });

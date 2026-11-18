@@ -362,7 +362,7 @@ impl Brain {
                 let kind = match order.purpose {
                     PartyPurpose::Dungeon { .. } => GoalKind::Dungeon,
                     PartyPurpose::Guild => GoalKind::Guild,
-                    PartyPurpose::Field { .. } => GoalKind::FieldParty,
+                    PartyPurpose::Field(_) => GoalKind::FieldParty,
                     PartyPurpose::Ambush { .. } => GoalKind::Gank,
                 };
                 self.queue(kind, None);
@@ -739,7 +739,7 @@ impl Brain {
         let field = GoalKind::FieldParty.index();
         s[field] = own_score(blocked, field, || {
             if super::goals::field::ready(ctx) {
-                0.7
+                0.3 + 0.8 * super::goals::field::cooperation(ctx)
             } else {
                 0.0
             }
