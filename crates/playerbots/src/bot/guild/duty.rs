@@ -33,6 +33,7 @@ use super::life::{
     RECRUIT_EVERY_MS, REJOIN_PAUSE_MS,
 };
 use super::plan::{GuildWish, WISH_TTL};
+use super::profession::{self, Profession};
 use super::report::{self, Problem};
 use crate::bot::cmd::GoalKind;
 use crate::bot::ctx::Ctx;
@@ -248,6 +249,11 @@ fn publish(ctx: &mut Ctx<'_>, running: Option<GoalKind>) {
             },
             unix_ms(),
         );
+        if profession::of(ctx, guild) == Some(Profession::Thief)
+            && !ctx.hub.journal.read(bot, |j| j.thief_history)
+        {
+            ctx.hub.journal.update(bot, |j| j.thief_history = true);
+        }
     }
     post_wish(ctx, &f);
 }
@@ -308,6 +314,13 @@ fn answer_invitation(ctx: &mut Ctx<'_>) {
         (ctx.cfg.guild.accept_player_invites, ctx.cfg.guild.min_level);
     let level = ctx.state.me.level;
     let bot = ctx.persona.id;
+    let profession_allowed = ctx
+        .state
+        .guild
+        .log()
+        .and_then(|log| log.invite.as_ref())
+        .and_then(|inv| profession::of(ctx, inv.guild))
+        .is_none_or(|p| p.accepts(ctx.hub.journal.read(bot, |j| j.thief_history)));
     let Some(mem) = ctx.state.guild.get_mut() else {
         return;
     };
@@ -321,14 +334,15 @@ fn answer_invitation(ctx: &mut Ctx<'_>) {
             .is_none_or(|r| r.guild != inv.guild || r.inviter != inv.inviter)
         {
             let from_bot = ctx.hub.is_bot_char(inv.inviter);
-            let join = policy(
-                from_bot,
-                mem.t.founding,
-                mem.log.in_guild(),
-                level,
-                min_level,
-                accept_players,
-            );
+            let join = profession_allowed
+                && policy(
+                    from_bot,
+                    mem.t.founding,
+                    mem.log.in_guild(),
+                    level,
+                    min_level,
+                    accept_players,
+                );
             let due_ms = now + life::jitter(ctx.rng, ANSWER_DELAY_MS);
             mem.t.reply = Some(Reply {
                 due_ms,
@@ -353,8 +367,9 @@ fn answer_invitation(ctx: &mut Ctx<'_>) {
     }
     mem.t.reply = None;
     mem.log.invite = None;
-    ctx.out.push(wire::reply_invite(r.guild, r.inviter, r.join));
-    if r.join {
+    let join = r.join && profession_allowed && !mem.log.in_guild() && !mem.t.founding;
+    ctx.out.push(wire::reply_invite(r.guild, r.inviter, join));
+    if join {
         mem.t.join_sent = Some((r.guild, now.max(1)));
         mem.t.wished_ms = 0;
     }

@@ -144,6 +144,8 @@ pub enum Named {
 
 /// What the state machine needs from the bot. [`Live`] wraps a [`Ctx`]; the tests use a fake.
 pub trait Env {
+    /// Records the outcome of a run for future decisions.
+    fn note_route(&mut self, _plan: &Plan, _sold: bool) {}
     /// The bot clock in milliseconds.
     fn now_ms(&self) -> u64;
     /// The bot's position.
@@ -207,6 +209,11 @@ pub trait Env {
 pub struct Live<'a, 'c>(pub &'a mut Ctx<'c>);
 
 impl Env for Live<'_, '_> {
+    fn note_route(&mut self, plan: &Plan, sold: bool) {
+        self.0.hub.journal.update(self.0.persona.id, |j| {
+            j.note_trade_route(plan.item, plan.buyer_tpl, plan.price, sold);
+        });
+    }
     fn now_ms(&self) -> u64 {
         self.0.now_ms
     }
@@ -611,6 +618,11 @@ impl TradeRun {
 
     /// Leaves the run: the reason goes to the web UI's event log.
     fn fail(&mut self, env: &mut dyn Env, why: FailReason, text: &'static str) -> GoalStatus {
+        if self.phase != Phase::Payment {
+            if let Some(plan) = self.plan {
+                env.note_route(&plan, false);
+            }
+        }
         env.say(&format!("trade run failed: {text}"));
         let why = match why {
             FailReason::Other(_) => FailReason::Other(text),
@@ -1158,6 +1170,7 @@ impl TradeRun {
         };
         if !carries(env.state(), plan.item) {
             env.state_mut().econ.note_sale();
+            env.note_route(&plan, true);
             env.say(&format!(
                 "trade run: sold {} to {}, the payment is coming by mail",
                 env.name(Named::Item, plan.item),

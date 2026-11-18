@@ -316,11 +316,12 @@ impl Who {
         let cfg = &ctx.cfg.farm;
         let asked = args.is_some_and(|a| a.wild);
         let outlaw = ctx.persona.profile.outlaw >= cfg.wild_outlaw;
+        let order = crate::bot::guild::profession::farm_order(ctx);
         Who {
             bot: ctx.persona.id,
-            wild: cfg.wild && (asked || outlaw),
-            wild_only: cfg.wild && asked,
-            item: args.and_then(|a| a.item),
+            wild: order.is_none() && cfg.wild && (asked || outlaw),
+            wild_only: order.is_none() && cfg.wild && asked,
+            item: order.or_else(|| args.and_then(|a| a.item)),
             avoid_war: crate::bot::war::avoiding(&ctx.cfg.events),
         }
     }
@@ -527,7 +528,11 @@ fn candidate_sites(
 /// without `bots.gm_bootstrap`, of anybody), not watched by a real player. The nearest.
 pub fn steal_target(ctx: &Ctx<'_>) -> Option<Foreign> {
     let cfg = &ctx.cfg.farm;
-    if !cfg.steal || ctx.persona.profile.outlaw < cfg.wild_outlaw || ctx.real_player_near {
+    if !cfg.steal
+        || ctx.persona.profile.outlaw < cfg.wild_outlaw
+        || ctx.real_player_near
+        || crate::bot::guild::profession::farm_order(ctx).is_some()
+    {
         return None;
     }
     let players = cfg.steal_from_players && !ctx.cfg.bots.gm_bootstrap;

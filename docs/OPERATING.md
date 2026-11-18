@@ -322,6 +322,36 @@ invitation (and a whisper that says so); a member that cannot invite names an of
 real player's line in guild chat is answered by one bot with a canned line. With
 `accept_player_invites` a bot that is in no guild accepts a real player's invitation too.
 
+**Professions.** Assign existing server guild IDs in `[guild]`. For example:
+
+```toml
+work_percent = 60
+professions = { "42" = "potato", "43" = "trader" }
+farm_orders = { "42" = 12345 }
+```
+
+Potato members favor farming and market work, traders favor trade runs and auctions, thieves
+favor ambushes, adventurers favor dungeons and grinding, and bounty hunters favor war zones.
+Each activity uses its existing switches and prerequisites. A Potato order supplies a seed or
+produce template for new plantings on protected land. Existing ripe crops are tended first.
+Crafter and Gatherer members can run `work` for a configured production order, for example
+`production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
+`{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
+Orders need compatible world templates, a nearby visible bench or node, and sufficient labor.
+Crafting currently uses recipes without a proficiency requirement and materials already in the bag.
+
+The guildmaster skips the profession's autonomous goals and continues to manage recruitment and
+membership. Members recover personal time after each professional goal based on its actual elapsed
+time. The percentage applies over completed work and recovery periods during a bot run. Existing
+commitments can finish. Trader and Crafter guilds decline bots with recorded Thief membership.
+The director sees the role, work availability and configured orders. When trade runs are eligible
+it also sees recent route outcomes and gross price estimates. External agents see the work summary
+as `guild_work` in `observe`.
+
+With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
+auctioneer and stroll around the market. The director can also choose a destination offered by
+the settlement planner.
+
 **See it.** The web UI's bot list carries each bot's guild with its members (`guild` in
 `/api/bots`); the bot's log has the `guild:` lines (invited, joined, handed over, left). Server
 behaviour that contradicts the protocol (an accepted invitation that never became a membership, a
@@ -451,10 +481,19 @@ party chat of the members of the bot's party (never from the bots of this proces
 | `leave` | leaves the party (the leader only) |
 | `dungeon <name>` | walks to the entrance of the dungeon and waits there; the leader only; the name is matched by the beginning of its words ("which one?" when it names several) |
 | `inv`, `invite me` (whisper, from anyone) | invites the speaker to its party, if the policy above allows it and the bot owns its party or has none |
+| `remember dungeons` (whisper, party member) | remembers a preferred activity. Also accepts `questing`, `grinding`, `exploring`, `farming` and `trading` |
+| `forget preference` (whisper, party member) | clears the speaker's saved preference |
 
 Filler words are ignored ("follow me", "come here pls"); a line of more than six words is
 conversation, not a command. The bot answers by whisper with a short natural line (a late joiner of a
 team gets no party chat from the server, so nothing is said there).
+
+**Memory.** The journal keeps the last 32 character relationships, including shared parties,
+trust and a stated activity preference. Confirmed party play earns trust and being killed
+outside a duel costs trust. At −40 or below the bot declines the known character's party invite.
+Dungeon matchmaking favors familiar, similarly leveled bots and fills tank and healer roles when
+possible. It excludes pairs when either side distrusts the other. A private LLM reply can use the
+sender's own remembered preference. External agents can read `relationships` in `observe`.
 
 **Roles.** A bot announces its party role on joining (`CSSetTeamMemberRole`): tank for tanks, healer
 for healers, attacker for the rest. Healing allies is **not** done: the rotation heals are

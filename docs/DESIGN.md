@@ -1125,8 +1125,9 @@ while it walks, the server's own NPCs ten (one per AI tick), both at an even pac
   `bots.move_update_ms` (125 ms, about eight a second), evenly: between two brain ticks
   (`bots.tick_ms`) the bot loop wakes for a movement-only tick (`Bot::on_motion_tick`; the
   schedule is the pure `bot::next_wake_ms`) that moves the bot on and sends the update, nothing
-  else. A moving update is due within 20 ms of its gap (`SEND_SLACK_MS`), so a timer that wakes a
-  little early does not skip one. A bot nobody can see sends one update a second.
+  else. Movement deadlines are computed from the last movement packet. An earlier brain tick
+  keeps the same deadline, and the socket flush does not add time to the scheduled wake.
+  A bot nobody can see sends an update on the first brain tick after a second.
 - **Who can see it.** The server shows a unit to the players in its own 64 m region and the eight
   around it, up to about 181 m away; a real character within `VIEW_RADIUS` (190 m) counts. The
   watch radius of the life-like movement and the chat stays 150 m.

@@ -47,6 +47,8 @@ pub enum GoalKind {
     Explore,
     /// Get, equip, socket and upgrade gear for the bot's level (owned by the gear feature).
     Gear,
+    /// Carry out a guild production order.
+    Work,
 }
 
 /// A set of goals, one bit per [`GoalKind::index`] (the brain's `disabled`, `blocked` and gate
@@ -58,7 +60,7 @@ const _: () = assert!(GoalKind::COUNT <= GoalMask::BITS as usize);
 
 impl GoalKind {
     /// Every goal.
-    pub const ALL: [GoalKind; 20] = [
+    pub const ALL: [GoalKind; 21] = [
         GoalKind::Wander,
         GoalKind::Rest,
         GoalKind::Grind,
@@ -79,6 +81,7 @@ impl GoalKind {
         GoalKind::Farm,
         GoalKind::Explore,
         GoalKind::Gear,
+        GoalKind::Work,
     ];
 
     /// Number of goals.
@@ -112,6 +115,7 @@ impl GoalKind {
             GoalKind::Farm => "farm",
             GoalKind::Explore => "explore",
             GoalKind::Gear => "gear",
+            GoalKind::Work => "work",
         }
     }
 

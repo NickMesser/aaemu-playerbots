@@ -57,6 +57,10 @@ pub trait Dispatch: Send + Sync {
     fn guild_book(&self) -> Option<&super::guild::GuildBook> {
         None
     }
+    /// Character identity and past interactions for dungeon matchmaking.
+    fn party_memory(&self, _bot: u32) -> (u32, crate::journal::Relationships) {
+        (0, Default::default())
+    }
 }
 
 impl Dispatch for Hub {
@@ -82,6 +86,17 @@ impl Dispatch for Hub {
 
     fn guild_book(&self) -> Option<&super::guild::GuildBook> {
         Some(&self.guilds)
+    }
+
+    fn party_memory(&self, bot: u32) -> (u32, crate::journal::Relationships) {
+        let Some(slot) = self.slot(bot) else {
+            return (0, Default::default());
+        };
+        let character = slot.char_id.load(std::sync::atomic::Ordering::Relaxed);
+        (
+            character,
+            self.journal.read(bot, |j| j.relationships.clone()),
+        )
     }
 }
 
@@ -454,7 +469,21 @@ impl Coordinator {
                 .iter()
                 .map(|w| (w.wish, now.saturating_duration_since(w.since).as_secs()))
                 .collect();
-            let Some(f) = party::plan(&wishes, &self.sites, self.relax_after_secs) else {
+            let memory: Vec<_> = wishes
+                .iter()
+                .map(|(w, _)| self.sink.party_memory(w.bot))
+                .collect();
+            let trust = |a: usize, b: usize| {
+                let a_trust = memory[a].1.get(memory[b].0).map_or(0, |r| r.trust);
+                let b_trust = memory[b].1.get(memory[a].0).map_or(0, |r| r.trust);
+                if a_trust.min(b_trust) <= -40 {
+                    a_trust.min(b_trust)
+                } else {
+                    a_trust.max(b_trust)
+                }
+            };
+            let Some(f) = party::plan_with(&wishes, &self.sites, self.relax_after_secs, trust)
+            else {
                 return;
             };
             let bots: SmallVec<[u32; party::MAX_PARTY]> =
@@ -833,6 +862,7 @@ mod tests {
             skip: 0,
             raise: false,
             jump: false,
+            role: 0,
         }
     }
 

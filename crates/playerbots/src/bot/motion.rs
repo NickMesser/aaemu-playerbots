@@ -55,10 +55,6 @@ const MAX_STEP_MS: u64 = 1000;
 const FACE_EPSILON: f32 = 0.09;
 /// The server's idea of the position may be this far off before [`Motion::pin`] corrects it.
 const PIN_EPSILON_M: f32 = 0.15;
-/// A moving update is due this many ms before its gap is over: the timer of the bot loop wakes a
-/// little late or early, and a tick that just misses the gap must not skip an update (which
-/// would double the next gap).
-const SEND_SLACK_MS: u64 = 20;
 
 /// Where the ground is. [`aa_world::World`] answers from the baked height grid.
 pub trait Ground {
@@ -407,6 +403,23 @@ impl Motion {
             .as_ref()?
             .wake_at(now_ms)
             .map(|t| t.saturating_sub(now_ms))
+    }
+
+    /// Deadline of the next ordinary movement packet. An intervening brain tick does not move
+    /// it. If a tick could not move (for example, a waypoint has zero length), wait a full
+    /// period before retrying.
+    pub fn move_due_ms(&self, period_ms: u64) -> Option<u64> {
+        (self.is_moving()
+            && self.moving_sent
+            && !self.life.as_deref().is_some_and(|l| l.jump.is_some()))
+        .then(|| {
+            let due = self.last_send_ms + period_ms;
+            if due <= self.last_tick_ms {
+                self.last_tick_ms + period_ms
+            } else {
+                due
+            }
+        })
     }
 
     /// The idle mannerisms of a bot that stands and may show off: a turn on the spot, now and
@@ -1091,10 +1104,8 @@ impl Motion {
             }
             return;
         }
-        // (the loop ticks a walker in view every gap, so every such tick sends: evenly paced)
         let since = now.saturating_sub(self.last_send_ms);
-        let due =
-            self.force_send || !self.moving_sent || since + SEND_SLACK_MS >= env.send_gap_ms.max(1);
+        let due = self.force_send || !self.moving_sent || since >= env.send_gap_ms.max(1);
         if due {
             self.send(env, true, vel);
         }
@@ -1246,7 +1257,7 @@ impl Motion {
         self.status = MotionStatus::Moving;
         let due = self.force_send
             || !self.moving_sent
-            || now.saturating_sub(self.last_send_ms) + SEND_SLACK_MS >= env.send_gap_ms.max(1);
+            || now.saturating_sub(self.last_send_ms) >= env.send_gap_ms.max(1);
         if due {
             let packet = self.packet(now, env.combat, true, (dir.0 * speed, dir.1 * speed), None);
             env.out.push(packet);
@@ -1397,6 +1408,14 @@ impl Motion {
     /// Queues one `CSMoveUnit` on the ground and updates the bookkeeping. A ground update ends
     /// a jump in progress (the bot lands where it is).
     fn send(&mut self, env: &mut MotionEnv<'_>, moving: bool, vel: (f32, f32)) {
+        tracing::trace!(
+            target: "pb_move",
+            obj = self.move_obj(),
+            t_ms = env.now_ms,
+            gap_ms = env.send_gap_ms,
+            moving,
+            "bot movement queued"
+        );
         self.life_end_jump();
         let packet = self.packet(env.now_ms, env.combat, moving, vel, None);
         env.out.push(packet);
@@ -1895,22 +1914,22 @@ mod tests {
     }
 
     /// A walker a real player can see is ticked every `move_update_ms` and sends an update on
-    /// every tick, evenly, also when the timer wakes it a few ms early or late; the position of
+    /// its deadline, even with intervening brain ticks and timer jitter. The position of
     /// each update is where the one before said the bot would be.
     #[test]
     fn a_walker_in_view_sends_evenly_paced_updates_that_agree_with_each_other() {
         let t = ramp();
         let mut rig = Rig::new([10.0, 10.0, 121.0]);
         rig.motion.go_to(400.0, 10.0, 0.0, Pace::Run, rig.now);
-        let mut times = Vec::new();
+        rig.tick(&t, 125, 125);
         for i in 0..80u64 {
-            // 125 ms on average, the timer off by up to 8 ms either way
-            let dt = 125 + (i % 3) * 8 - 8;
-            rig.tick(&t, dt, 125);
-            times.push(rig.now);
+            let due = rig.motion.move_due_ms(125).unwrap();
+            rig.tick(&t, 60, 125); // the brain wakes first
+            assert_eq!(rig.motion.move_due_ms(125), Some(due));
+            rig.tick(&t, due - rig.now + (i % 3) * 4, 125);
         }
         let moving: Vec<&Out> = rig.out.iter().filter(|p| flags(p) == 0x02).collect();
-        assert_eq!(moving.len(), 80, "an update on every tick");
+        assert_eq!(moving.len(), 81, "an update at each movement deadline");
         let read = |p: &Out| {
             let mut s = aa_proto::PacketStream::from_bytes(p.body.clone());
             s.read_bc().unwrap();
@@ -1925,7 +1944,7 @@ mod tests {
             let (t0, x0, _, vx) = read(w[0]);
             let (t1, x1, _, _) = read(w[1]);
             let dt = (t1 - t0) as f32 / 1000.0;
-            assert!((117..=133).contains(&(t1 - t0)), "{}", t1 - t0);
+            assert!((125..=133).contains(&(t1 - t0)), "{}", t1 - t0);
             // (dead reckoning from the update before: within the position's wire precision)
             assert!((x0 + vx * dt - x1).abs() < 0.05, "{x0} {vx} {dt} {x1}");
         }

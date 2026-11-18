@@ -596,10 +596,11 @@ impl Bot {
                     } else {
                         self.on_motion_tick();
                     }
+                    let next = self.next_wake(brain);
                     if let Some(end) = self.flush(conn, cancel).await {
                         return end;
                     }
-                    tick.as_mut().reset(Instant::now() + self.next_wake(brain));
+                    tick.as_mut().reset(next);
                 }
                 _ = housekeeping.tick() => {
                     if let Some(quiet) = watch.expired(Instant::now()) {
@@ -687,21 +688,19 @@ impl Bot {
         }
     }
 
-    /// How long the loop sleeps after a tick (`brain`: it was a brain tick, which schedules the
+    /// When the loop wakes after a tick (`brain`: it was a brain tick, which schedules the
     /// next one). See [`next_wake_ms`].
-    fn next_wake(&mut self, brain: bool) -> Duration {
+    fn next_wake(&mut self, brain: bool) -> Instant {
         let now = self.now_ms();
         if brain {
             self.next_brain_ms = now + self.brain_period_ms();
         }
-        let walking_in_view = self.watched && self.motion.is_moving();
-        let at = next_wake_ms(
-            now,
-            self.next_brain_ms,
-            walking_in_view.then_some(self.shared.cfg.bots.move_update_ms),
-            self.motion.wake_in(now),
-        );
-        Duration::from_millis(at - now)
+        let move_due = self
+            .watched
+            .then(|| self.motion.move_due_ms(self.shared.cfg.bots.move_update_ms))
+            .flatten();
+        let at = next_wake_ms(now, self.next_brain_ms, move_due, self.motion.wake_in(now));
+        self.clock + Duration::from_millis(at - 1)
     }
 
     fn on_packet(&mut self, p: &Packet) {
@@ -757,6 +756,7 @@ impl Bot {
                 return;
             }
         }
+        self.record_hostile_death(&ev);
         self.state.apply(&ev);
         // (the guild lists the server sends name the guilds that exist: those names are taken)
         if let ServerEvent::Activity(aa_proto::sc_activity::ActivityEvent::Guild(g)) = &ev {
@@ -780,6 +780,32 @@ impl Bot {
         self.pin_position(queued, now);
         self.clear_target_after_player_fight();
         self.drain_findings();
+    }
+
+    fn record_hostile_death(&self, event: &ServerEvent) {
+        let ServerEvent::World(WorldEvent::UnitDeath { obj, killer, .. }) = event else {
+            return;
+        };
+        let me = &self.state.me;
+        if *obj != me.obj || me.dead || self.combat.duel.in_duel() {
+            return;
+        }
+        let Some(attacker) = self.state.units.get(killer).filter(|u| {
+            u.kind == UnitKind::Character
+                && u.id != me.char_id
+                && (self.shared.cfg.party.join_player_parties || self.shared.hub.is_bot_char(u.id))
+        }) else {
+            return;
+        };
+        let loss = if self.persona.profile.outlaw < 0.5 {
+            -30
+        } else {
+            -20
+        };
+        self.shared.hub.journal.update(self.entry.id, |j| {
+            j.relationships
+                .update(attacker.id, |r| r.change_trust(loss));
+        });
     }
 
     /// A pong: its first field is the bot clock at which the ping left.
@@ -1427,18 +1453,18 @@ fn failed(e: SessionError, online: Duration, phase: Phase) -> SessionEnd {
 }
 
 /// When the bot loop wakes next (bot clock, ms) after a tick at `now`: at the next brain tick
-/// (`next_brain_ms`), sooner every `move_every_ms` while the bot walks in view of a real player
+/// (`next_brain_ms`), sooner at `move_due_ms` while the bot walks in view of a real player
 /// (the movement update between brain ticks), and for the next packet of a jump (`jump_in`, at
 /// least [`MIN_WAKE_MS`] away). Always after `now`.
 pub fn next_wake_ms(
     now: u64,
     next_brain_ms: u64,
-    move_every_ms: Option<u64>,
+    move_due_ms: Option<u64>,
     jump_in: Option<u64>,
 ) -> u64 {
     let mut at = next_brain_ms;
-    if let Some(every) = move_every_ms {
-        at = at.min(now + every);
+    if let Some(due) = move_due_ms {
+        at = at.min(due);
     }
     if let Some(wait) = jump_in {
         at = at.min(now + wait.max(MIN_WAKE_MS));
@@ -1514,7 +1540,7 @@ mod tests {
             if now >= next_brain {
                 next_brain = now + 250;
             }
-            let at = next_wake_ms(now, next_brain, Some(125), None);
+            let at = next_wake_ms(now, next_brain, Some(now + 125), None);
             wakes.push(at - now);
             now = at;
         }
@@ -1522,7 +1548,10 @@ mod tests {
         // nobody sees it: the brain tick only
         assert_eq!(next_wake_ms(1_000, 1_250, None, None), 1_250);
         // a jump wakes it for its next packet, but never sooner than the shortest wake
-        assert_eq!(next_wake_ms(1_000, 1_250, Some(125), Some(40)), 1_040);
+        assert_eq!(next_wake_ms(1_000, 1_250, Some(1_125), Some(40)), 1_040);
+        // A brain wake at 1100 cannot move the packet from 1125 to 1225.
+        assert_eq!(next_wake_ms(1_000, 1_100, Some(1_125), None), 1_100);
+        assert_eq!(next_wake_ms(1_100, 1_350, Some(1_125), None), 1_125);
         assert_eq!(
             next_wake_ms(1_000, 1_250, None, Some(0)),
             1_000 + MIN_WAKE_MS

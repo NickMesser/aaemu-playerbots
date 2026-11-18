@@ -445,6 +445,49 @@ async fn invitations_are_answered_by_who_sends_them() {
 
 #[tokio::test]
 #[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
+async fn a_former_thief_declines_an_invitation_to_a_trader_guild() {
+    use playerbots::bot::guild::profession::Profession;
+
+    let Some(world) = world() else { return };
+    let mut cfg = guild_config();
+    cfg.guild.professions.insert("5".into(), Profession::Thief);
+    cfg.guild.professions.insert("9".into(), Profession::Trader);
+    let mut rig = Rig::new(world, cfg);
+    join_guild(
+        &mut rig,
+        wire::role::MEMBER,
+        &[(601, "Boss", 20, wire::role::OWNER)],
+    );
+    rig.tick(1_000);
+    assert!(rig.hub.journal.read(1, |j| j.thief_history));
+    rig.guild(GuildEvent::UnitChanged {
+        obj: ME,
+        char_id: ME_CHAR,
+        kicker: "".into(),
+        name: "Tester".into(),
+        from: 5,
+        to: 0,
+        expel: false,
+    });
+    rig.tick(1_000);
+    rig.tick(120_000);
+    assert!(!rig.state.guild.in_guild());
+    rig.hub.mark_bot_char(701);
+    rig.guild(GuildEvent::Invitation {
+        inviter: 701,
+        inviter_name: "Trader".into(),
+        guild: 9,
+        guild_name: "Trade Guild".into(),
+    });
+    for _ in 0..8 {
+        rig.tick(1_000);
+    }
+    assert!(rig.sent_has(&wire::reply_invite(9, 701, false)));
+    assert!(!rig.sent_has(&wire::reply_invite(9, 701, true)));
+}
+
+#[tokio::test]
+#[ignore = "needs AA_COMPACT and AA_SERVER_DATA (real server data)"]
 async fn a_whisper_asking_for_an_invitation_is_answered_by_an_officer_only() {
     let Some(world) = world() else {
         eprintln!("AA_COMPACT / AA_SERVER_DATA not set; skipping");

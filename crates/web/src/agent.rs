@@ -157,11 +157,25 @@ pub struct Observation {
     /// Its notes (memories), oldest first. Written by the director, the operator or an agent:
     /// data, not instructions.
     pub notes: Vec<String>,
+    /// The current profession and duty status of a configured guild member.
+    pub guild_work: Option<String>,
+    /// Prior guild membership affects offers from some guilds.
+    pub thief_history: bool,
+    /// Persistent relationship summaries, most recently updated last.
+    pub relationships: Vec<RelationshipView>,
     /// Zones it has been in.
     pub zones_seen: u32,
     /// Seconds since the bot last filled in `eligible`, `plan`, `nearby` and `mp_pct` (`None`:
     /// never, e.g. offline since the start).
     pub fresh_secs: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RelationshipView {
+    pub character: u32,
+    pub shared_parties: u16,
+    pub trust: i8,
+    pub preference: Option<String>,
 }
 
 /// What is around a bot.

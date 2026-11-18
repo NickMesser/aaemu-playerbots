@@ -24,6 +24,7 @@
 //! [`JournalBook::update`] (`ctx.hub.journal`); both hold one short mutex and never wait for the
 //! disk.
 
+mod companions;
 mod gear;
 mod notes;
 mod seen;
@@ -42,6 +43,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+pub use companions::{Preference, Relationships};
 pub use gear::GearNotes;
 pub use notes::{Note, Notes, MAX_NOTES, MAX_NOTE_CHARS};
 pub use seen::{Seen, MAX_ZONES};
@@ -69,6 +71,48 @@ pub struct Journal {
     pub notes: Notes,
     /// What the bot learned about its gear (the gear feature).
     pub gear: GearNotes,
+    /// Server-confirmed membership in a thief guild, retained after departure.
+    pub thief_history: bool,
+    /// Structured memories of characters the bot has played with.
+    pub relationships: Relationships,
+    /// Number of production orders with a confirmed inventory increase.
+    pub production_completed: u32,
+    /// Trade runs by pack item and destination buyer, most recent first.
+    pub trade_routes: Vec<TradeRoute>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradeRoute {
+    pub item: u32,
+    pub buyer: u32,
+    pub sales: u32,
+    pub failed_runs: u32,
+    /// Latest gross price estimate, before expenses and mail settlement.
+    pub quoted_copper: u32,
+}
+
+impl Journal {
+    pub fn note_trade_route(&mut self, item: u32, buyer: u32, quote: u32, sold: bool) {
+        let index = self
+            .trade_routes
+            .iter()
+            .position(|r| r.item == item && r.buyer == buyer);
+        let mut route = index
+            .map(|i| self.trade_routes.remove(i))
+            .unwrap_or(TradeRoute {
+                item,
+                buyer,
+                ..TradeRoute::default()
+            });
+        route.quoted_copper = quote;
+        if sold {
+            route.sales = route.sales.saturating_add(1);
+        } else {
+            route.failed_runs = route.failed_runs.saturating_add(1);
+        }
+        self.trade_routes.insert(0, route);
+        self.trade_routes.truncate(16);
+    }
 }
 
 #[derive(Serialize, Deserialize)]

@@ -36,6 +36,34 @@ const ARRIVE_M: f32 = 8.0;
 /// The longest trip to the place it was sent to, in milliseconds.
 pub const TRAVEL_MAX_MS: u64 = 20 * 60_000;
 
+/// A friendly market reachable on an ordinary outing.
+pub fn settlement_market(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
+    if !ctx.cfg.behavior.settlement_visits || ctx.state.place.in_instance() {
+        return None;
+    }
+    let [x, y, z] = ctx.pos();
+    let faction = ctx.state.me.faction;
+    let market = ctx
+        .world
+        .nearest_auctioneer(aa_world::Vec3::new(x, y, z), 850.0, |a| {
+            let p = a.pos;
+            p.dist2d(aa_world::Vec3::new(x, y, z)) < 25.0
+                || ctx.in_war_zone(p.x, p.y)
+                || !ctx.world.npc(a.template).is_some_and(|npc| {
+                    ctx.world.relation(faction, npc.faction_id) != aa_world::Relation::Hostile
+                })
+                || super::quest::progress::cut_off(ctx.world, (x, y), (p.x, p.y))
+                || super::quest::progress::deadly(
+                    ctx.world,
+                    faction,
+                    ctx.state.me.level,
+                    (x, y),
+                    (p.x, p.y),
+                )
+        })?;
+    Some([market.pos.x, market.pos.y])
+}
+
 /// Strolling around. See the module docs.
 #[derive(Debug, Default, Clone)]
 pub struct Wander {
@@ -72,6 +100,9 @@ impl Wander {
 
     /// Called once when the brain picks the goal.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
+        if self.target.is_none() && ctx.cfg.behavior.settlement_visits && ctx.rng.u8(0..4) == 0 {
+            self.target = settlement_market(ctx);
+        }
         self.home = ctx.pos();
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
         self.pause_until_ms = ctx.now_ms + jitter_ms(ctx.rng, 500, 3_000);
@@ -150,6 +181,7 @@ impl Wander {
             Walk::There => {
                 // (the stroll's clock starts on arrival)
                 self.target = None;
+                ctx.motion.face(t[0], t[1]);
                 self.home = ctx.pos();
                 self.end_ms = now + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
                 self.pause_until_ms = now + jitter_ms(ctx.rng, PAUSE_MS.0, PAUSE_MS.1);

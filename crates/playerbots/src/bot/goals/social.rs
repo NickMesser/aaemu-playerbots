@@ -225,6 +225,10 @@ pub trait Services {
     fn llm(&self) -> Option<Arc<pb_llm::Llm>>;
     /// The process-wide chat limits and counters.
     fn gate(&self) -> &gate::ChatGate;
+    /// A structured memory for a private reply to this character.
+    fn companion_memory(&self, _bot: u32, _character: u32) -> Option<String> {
+        None
+    }
 }
 
 impl Services for Hub {
@@ -242,6 +246,17 @@ impl Services for Hub {
 
     fn gate(&self) -> &gate::ChatGate {
         &self.chat.gate
+    }
+
+    fn companion_memory(&self, bot: u32, character: u32) -> Option<String> {
+        self.journal.read(bot, |j| {
+            let record = j.relationships.get(character)?;
+            let activity = record.preference.map_or("unspecified", |p| p.label());
+            Some(format!(
+                "You have partied together {} times. Your trust in this player is {} out of 100. Their stated preferred activity is {}. Use this to suggest an activity when relevant.",
+                record.shared_parties, record.trust, activity
+            ))
+        })
     }
 }
 
@@ -315,6 +330,9 @@ pub fn temperament_text(dominant: &str) -> &'static str {
 
 /// Everything one step looks at.
 pub struct Inputs<'a> {
+    /// Roster id and the party roster, used to resolve a companion's private message.
+    pub bot_id: u32,
+    pub team: Option<&'a crate::bot::party::TeamLog>,
     /// The bot clock in milliseconds.
     pub now_ms: u64,
     /// Wall-clock instant, for the process-wide limits.
@@ -515,6 +533,7 @@ struct Pending {
 #[derive(Debug, Clone)]
 struct Plan {
     who: String,
+    character: Option<u32>,
     whisper: bool,
     addressed: bool,
     text: String,
@@ -680,6 +699,8 @@ impl Social {
         let facts = facts_of(ctx.persona, &ctx.state.me, ctx.world);
         let me = &ctx.state.me;
         let mut inp = Inputs {
+            bot_id: ctx.persona.id,
+            team: ctx.state.team(),
             now_ms: ctx.now_ms,
             now: ctx.now.into_std(),
             active: me.spawned && !me.dead,
@@ -888,6 +909,13 @@ impl Social {
         }
         let plan = Plan {
             who: who.to_string(),
+            character: unit.map(|u| u.id).or_else(|| {
+                inp.team?
+                    .remote
+                    .iter()
+                    .find(|r| r.name.eq_ignore_ascii_case(who))
+                    .map(|r| r.char_id)
+            }),
             whisper,
             addressed,
             text: line.text.to_string(),
@@ -906,12 +934,21 @@ impl Social {
             Some(llm) => {
                 // The newest line is the last one remembered: the player's.
                 let messages = self.mem.messages(&plan.who, now_ms);
-                let request = reply::build_request(
+                let mut request = reply::build_request(
                     &inp.facts.persona_with(inp.style.llm()),
                     &plan.who,
                     plan.whisper,
                     messages,
                 );
+                if plan.whisper {
+                    if let Some(memory) = plan
+                        .character
+                        .and_then(|id| svc.companion_memory(inp.bot_id, id))
+                    {
+                        request.system.push('\n');
+                        request.system.push_str(&memory);
+                    }
+                }
                 let rx = reply::spawn(llm, request);
                 self.pending = Some(Pending {
                     rx,

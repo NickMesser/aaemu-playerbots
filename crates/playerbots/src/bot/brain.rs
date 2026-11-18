@@ -36,6 +36,7 @@ use super::ctx::Ctx;
 use super::director::{self, Ask, AskRequest, Decided, Director, Situation, Trigger, What};
 use super::goals::social::{self, ChatEvent, Social};
 use super::goals::{FailReason, Goal, GoalStatus};
+use super::guild::profession::{self, ServiceTime};
 use super::party::{PartyOrder, PartyPurpose};
 use super::state::UnitKind;
 use crate::config::BehaviorCfg;
@@ -247,6 +248,7 @@ struct Chat {
     director: Director,
     /// When the agent API's view of the bot is refreshed next (bot clock).
     agent_next_ms: u64,
+    guild_service: ServiceTime,
 }
 
 /// Chooses and runs goals for one bot. See the module docs.
@@ -304,6 +306,7 @@ impl Brain {
                 social: Social::new(rng),
                 director: Director::new(rng, director_interval_secs),
                 agent_next_ms: 0,
+                guild_service: ServiceTime::default(),
             })
         })
     }
@@ -530,6 +533,13 @@ impl Brain {
         order: Option<PairOrder>,
         args: Option<Box<GoalArgs>>,
     ) {
+        if args.is_some() && !self.guild_work_allowed(ctx, kind) {
+            ctx.log.debug(format!(
+                "guild work: {} unavailable during personal time",
+                kind.name()
+            ));
+            return;
+        }
         if self.goal.is_some() {
             self.end_goal(ctx, None);
         }
@@ -540,6 +550,12 @@ impl Brain {
         match why {
             Some(why) => ctx.log.say(format!("goal: {} ({why})", kind.name())),
             None => ctx.log.say(format!("goal: {}", kind.name())),
+        }
+        if let Some((_, profession, false)) = profession::membership(ctx) {
+            if profession.goals().contains(&kind) {
+                let interval = ctx.cfg.llm.director_interval_secs;
+                self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
+            }
         }
         self.goal = Some(goal);
     }
@@ -558,6 +574,8 @@ impl Brain {
         super::travel::on_goal_end(ctx);
         self.last = Some(kind);
         if let Some(ext) = self.ext.as_mut() {
+            ext.guild_service
+                .finish(ctx.now_ms, ctx.cfg.guild.work_percent);
             ext.director.note_goal(kind, why.is_none());
             if why.is_none() {
                 match kind {
@@ -634,7 +652,8 @@ impl Brain {
     fn scores_now(&self, ctx: &Ctx<'_>) -> [f32; GoalKind::COUNT] {
         let mut blocked = self.disabled | self.gated_goals(ctx);
         // (asked again here: the gate answer is cached, a pack can start or end in between)
-        if super::goals::trade_run::pack_busy(ctx) {
+        let pack_busy = super::goals::trade_run::pack_busy(ctx);
+        if pack_busy {
             blocked |= super::goals::trade_run::pack_block_mask();
         }
         for g in GoalKind::ALL {
@@ -651,9 +670,68 @@ impl Brain {
         };
         let mut s = scores(&self.base, &input);
         own_scores(ctx, &self.base, blocked, &mut s);
+        let work = GoalKind::Work.index();
+        s[work] = own_score(blocked, work, || super::goals::work::score(ctx));
         // the population director's goal multipliers (all 1.0 unless its policy sets some)
         ctx.hub.pop.bias.apply(&mut s);
+        if let Some((_, role, master)) = profession::membership(ctx) {
+            let available = !master && self.guild_service_available(ctx.now_ms);
+            for kind in role.goals() {
+                if !pack_busy || *kind != GoalKind::TradeRun {
+                    s[kind.index()] *= if available { 2.0 } else { 0.0 };
+                }
+            }
+        }
         s
+    }
+
+    fn guild_service_available(&self, now: u64) -> bool {
+        self.ext
+            .as_ref()
+            .is_none_or(|ext| ext.guild_service.available(now))
+    }
+
+    fn guild_work_allowed(&self, ctx: &Ctx<'_>, kind: GoalKind) -> bool {
+        if kind == GoalKind::TradeRun && super::goals::trade_run::pack_busy(ctx) {
+            return true;
+        }
+        profession::membership(ctx).is_none_or(|(_, profession, master)| {
+            !profession.goals().contains(&kind)
+                || (!master && self.guild_service_available(ctx.now_ms))
+        })
+    }
+
+    fn guild_work_context(&self, ctx: &Ctx<'_>) -> Option<String> {
+        let (id, role, master) = profession::membership(ctx)?;
+        let state = if master {
+            "guildmaster"
+        } else if self
+            .ext
+            .as_ref()
+            .is_some_and(|ext| ext.guild_service.active())
+        {
+            "on guild duty"
+        } else if self.guild_service_available(ctx.now_ms) {
+            "available for guild work"
+        } else {
+            "personal time"
+        };
+        let mut context = format!("Guild {id}, {} profession, {state}.", role.title());
+        if let Some(item) = profession::farm_order(ctx) {
+            context.push_str(&format!(
+                " The farm goal tends ripe crops and plants item {item}."
+            ));
+        }
+        if let Some(order) = ctx.cfg.guild.production_orders.get(&id.to_string()) {
+            let done = ctx
+                .hub
+                .journal
+                .read(ctx.persona.id, |j| j.production_completed);
+            context.push_str(&format!(
+                " Production order: {order}. Lifetime orders completed: {done}."
+            ));
+        }
+        Some(context)
     }
 
     /// The goals [`gate`] blocks, asked again when the last answer is old or the level changed.
@@ -781,7 +859,7 @@ impl Brain {
             .filter(|u| u.kind == UnitKind::Character && u.dist2d(me.pos) <= 60.0)
             .count();
         let facts = social::facts(ctx);
-        let situation = director::describe(&Situation {
+        let mut situation = director::describe(&Situation {
             facts,
             level: me.level,
             hp_pct: me.hp_pct(),
@@ -797,6 +875,20 @@ impl Brain {
             notes: &notes,
             why_now: why_now.as_deref(),
         });
+        if let Some(guild) = self.guild_work_context(ctx) {
+            situation.push_str(&guild);
+            situation.push('\n');
+        }
+        if scored.iter().any(|&(goal, _)| goal == GoalKind::TradeRun) {
+            use std::fmt::Write;
+            hub.journal.read(id, |j| {
+                for route in j.trade_routes.iter().take(3) {
+                    let _ = writeln!(situation,
+                        "Trade route history, item {} to buyer {}: {} sold, {} failed, last gross quote {} copper.",
+                        route.item, route.buyer, route.sales, route.failed_runs, route.quoted_copper);
+                }
+            });
+        }
         let system = director::system_prompt(&facts);
         let steps = ctx.cfg.llm.plan_steps();
         self.director(&mut *ctx.rng, interval).ask(AskRequest {
@@ -920,6 +1012,7 @@ impl Brain {
             characters_near: characters,
             players_near: players,
             plan: plan.iter().map(|s| s.label(&zone_name)).collect(),
+            guild_work: self.guild_work_context(ctx),
         };
         ctx.log.with_slot(|g| g.agent = view);
     }

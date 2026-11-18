@@ -97,6 +97,7 @@ fn sharpwind_mines_is_the_cheapest_dungeon_for_three_level_20_bots_at_its_door()
         skip: 0,
         raise: false,
         jump: false,
+        role: 0,
     };
     let wishes = [(wish(1, 0.0), 0), (wish(2, 2.0), 0), (wish(3, 4.0), 0)];
     let f = party::plan(&wishes, &sites, party::RELAX_AFTER_SECS).expect("a party forms");
@@ -124,6 +125,7 @@ fn a_level_1_bot_without_a_gm_raise_fits_no_dungeon_and_with_one_all_that_start_
         skip: 0,
         raise: false,
         jump: false,
+        role: 0,
     };
     assert!(sites.iter().all(|s| !w1.fits(s)));
     let raised = Wish { raise: true, ..w1 };

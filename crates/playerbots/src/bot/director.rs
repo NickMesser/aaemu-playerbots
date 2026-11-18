@@ -87,10 +87,10 @@ const NOTES_SHOWN: usize = 3;
 /// Longest note shown, in characters.
 const NOTE_SHOWN_CHARS: usize = 120;
 
-/// Whether `kind` needs GM rights (`bots.gm_bootstrap`) to get anywhere: trade runs and housing
-/// need materials, labor, certificates and gold a fresh character does not have.
+/// Whether the director offers the goal only with `bots.gm_bootstrap`. The trade-run gate
+/// already checks the bag and labor when GM help is off.
 pub fn gm_only(kind: GoalKind) -> bool {
-    matches!(kind, GoalKind::TradeRun | GoalKind::Housing)
+    kind == GoalKind::Housing
 }
 
 /// The goals the director may offer: those the brain's scoring gives a chance (`scores` is 0 for
@@ -135,6 +135,7 @@ pub fn option_text(kind: GoalKind) -> &'static str {
         GoalKind::Farm => "farm: plant and harvest crops",
         GoalKind::Explore => "explore: see places this character has never been",
         GoalKind::Gear => "gear: get, equip and upgrade gear for this level",
+        GoalKind::Work => "work: craft or gather for the configured guild production order",
         GoalKind::Rest => "rest: sit down and recover",
         GoalKind::Wander => "wander: stroll around and see the sights",
     }
@@ -355,7 +356,10 @@ pub fn step_allowed(
 /// `farm.wild_outlaw` (the same threshold the farm goal uses).
 pub fn wild_ok(ctx: &Ctx<'_>) -> bool {
     let f = &ctx.cfg.farm;
-    f.enabled && f.wild && ctx.persona.profile.outlaw >= f.wild_outlaw
+    f.enabled
+        && f.wild
+        && ctx.persona.profile.outlaw >= f.wild_outlaw
+        && super::guild::profession::farm_order(ctx).is_none()
 }
 
 /// The options for this tick: the eligible goals (`scored`, best first) and the variants the bot
@@ -414,7 +418,17 @@ pub fn menu(ctx: &Ctx<'_>, scored: &[(GoalKind, f32)]) -> Menu {
         }
     }
     if has(GoalKind::Wander) {
-        if let Some(z) = here.and_then(|h| super::goals::quest::atlas(ctx.world).zone(h)) {
+        if let Some(at) = super::goals::wander::settlement_market(ctx)
+            .filter(|at| ctx.world.zone_key_at(at[0], at[1]).is_some())
+        {
+            variants.push(Opt {
+                kind: GoalKind::Wander,
+                what: What::Point {
+                    at,
+                    town: ctx.world.zone_key_at(at[0], at[1]),
+                },
+            });
+        } else if let Some(z) = here.and_then(|h| super::goals::quest::atlas(ctx.world).zone(h)) {
             let d = dist(me2, z.hub);
             if (TOWN_MIN_M..=TOWN_MAX_M).contains(&d) && !ctx.in_war_zone(z.hub[0], z.hub[1]) {
                 variants.push(Opt {
@@ -986,7 +1000,7 @@ mod tests {
     fn gm_only_goals_are_offered_only_when_gm_rights_are_on() {
         let s = scores_for(0);
         let without = eligible_goals(&s, false);
-        assert!(!without.contains(&GoalKind::TradeRun));
+        assert!(without.contains(&GoalKind::TradeRun));
         assert!(!without.contains(&GoalKind::Housing));
         assert!(without.contains(&GoalKind::Quest) && without.contains(&GoalKind::Wander));
         let with = eligible_goals(&s, true);
@@ -996,7 +1010,7 @@ mod tests {
         // temperament weight, which `own_scores` replaces)
         // (the auction, market, guild, gank, warzone, event, companion and farm goals do too, and
         // are 0 until their features exist)
-        assert_eq!(with.len(), GoalKind::COUNT - 11);
+        assert_eq!(with.len(), GoalKind::COUNT - 12);
         assert!(!with.contains(&GoalKind::Sail));
         assert!(!with.contains(&GoalKind::Auction) && !with.contains(&GoalKind::Market));
         for g in [

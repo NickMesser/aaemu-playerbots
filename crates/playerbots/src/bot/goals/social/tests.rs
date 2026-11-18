@@ -110,6 +110,8 @@ impl Env {
 
     fn step(&mut self, social: &mut Social, svc: &dyn Services, heard: Vec<ChatIn>) -> Vec<Action> {
         let mut inp = Inputs {
+            bot_id: 1,
+            team: None,
             now_ms: self.now_ms,
             now: self.now,
             active: self.active,

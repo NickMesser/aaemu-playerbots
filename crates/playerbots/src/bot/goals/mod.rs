@@ -44,6 +44,7 @@ pub mod trade;
 pub mod trade_run;
 pub mod wander;
 pub mod warzone;
+pub mod work;
 
 use pb_web::Activity;
 
@@ -143,6 +144,8 @@ pub enum Goal {
     Explore(Explore),
     /// Get, equip and upgrade gear.
     Gear(Gear),
+    /// Craft or gather for the guild.
+    Work(work::Work),
 }
 
 impl Goal {
@@ -190,6 +193,7 @@ impl Goal {
             GoalKind::Farm => Goal::Farm(Farm::with_args(args)),
             GoalKind::Explore => Goal::Explore(Explore::new(args)),
             GoalKind::Gear => Goal::Gear(Gear::new(args)),
+            GoalKind::Work => Goal::Work(work::Work::default()),
         }
     }
 
@@ -216,6 +220,7 @@ impl Goal {
             Goal::Farm(_) => GoalKind::Farm,
             Goal::Explore(_) => GoalKind::Explore,
             Goal::Gear(_) => GoalKind::Gear,
+            Goal::Work(_) => GoalKind::Work,
         }
     }
 
@@ -263,6 +268,7 @@ impl Goal {
             Goal::Farm(g) => g.start(ctx),
             Goal::Explore(g) => g.start(ctx),
             Goal::Gear(g) => g.start(ctx),
+            Goal::Work(g) => g.start(ctx),
         }
     }
 
@@ -295,6 +301,7 @@ impl Goal {
             Goal::Farm(g) => return g.tick(ctx),
             Goal::Explore(g) => return g.tick(ctx),
             Goal::Gear(g) => return g.tick(ctx),
+            Goal::Work(g) => return g.tick(ctx),
         };
         if !resume {
             return GoalStatus::Done;
@@ -331,6 +338,7 @@ impl Goal {
             Goal::Farm(g) => g.stop(ctx),
             Goal::Explore(g) => g.stop(ctx),
             Goal::Gear(g) => g.stop(ctx),
+            Goal::Work(g) => g.stop(ctx),
         }
     }
 
@@ -369,6 +377,13 @@ impl Goal {
             Goal::Farm(g) => g.activity(moving, fighting),
             Goal::Explore(g) => g.activity(moving, fighting),
             Goal::Gear(g) => g.activity(moving, fighting),
+            Goal::Work(_) => {
+                if moving {
+                    Activity::Traveling
+                } else {
+                    Activity::Idle
+                }
+            }
         }
     }
 
@@ -395,6 +410,7 @@ impl Goal {
             Goal::Farm(g) => g.describe(out),
             Goal::Explore(g) => g.describe(out),
             Goal::Gear(g) => g.describe(out),
+            Goal::Work(g) => g.describe(out),
         }
     }
 }

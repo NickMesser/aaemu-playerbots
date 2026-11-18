@@ -262,6 +262,8 @@ pub struct BehaviorCfg {
     pub jump_rate: f32,
     /// Bots use emotes (a wave, a bow, a sit) in life-like moments. Off: no emotes.
     pub emotes: bool,
+    /// Idle wander goals sometimes visit a nearby settlement market.
+    pub settlement_visits: bool,
 }
 
 impl Default for BehaviorCfg {
@@ -285,6 +287,7 @@ impl Default for BehaviorCfg {
             lifelike: true,
             jump_rate: 1.0,
             emotes: true,
+            settlement_visits: false,
         }
     }
 }
@@ -475,6 +478,14 @@ impl Default for MarketCfg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuildCfg {
+    /// Server guild ID (a decimal string in TOML) to its profession.
+    pub professions: std::collections::BTreeMap<String, crate::bot::guild::profession::Profession>,
+    /// Potato guild ID to the seed or produce item members should grow.
+    pub farm_orders: std::collections::BTreeMap<String, u32>,
+    /// Repeatable crafting and gathering orders by guild ID.
+    pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    /// Long-run percentage of play that can go to professional goals.
+    pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
     /// guild.
     pub enabled: bool,
@@ -497,6 +508,10 @@ pub struct GuildCfg {
 impl Default for GuildCfg {
     fn default() -> Self {
         Self {
+            professions: Default::default(),
+            farm_orders: Default::default(),
+            production_orders: Default::default(),
+            work_percent: 60,
             enabled: false,
             found: true,
             min_level: 5,
@@ -1356,6 +1371,32 @@ impl Config {
         );
         let g = &self.guild;
         ensure!(g.min_level >= 1, "guild.min_level must be at least 1");
+        ensure!(
+            g.production_orders.iter().all(|(id, order)| {
+                g.professions
+                    .get(id)
+                    .is_some_and(|profession| order.allowed_in(*profession))
+            }),
+            "guild.production_orders must name a guild with the corresponding profession"
+        );
+        ensure!(
+            (50..=75).contains(&g.work_percent),
+            "guild.work_percent must be in 50..=75"
+        );
+        ensure!(
+            g.professions.keys().all(|key| key
+                .parse::<u32>()
+                .is_ok_and(|id| id != 0 && id.to_string() == *key)),
+            "guild.professions keys must be positive numeric guild IDs"
+        );
+        ensure!(
+            g.farm_orders.iter().all(|(id, item)| {
+                *item != 0
+                    && g.professions.get(id)
+                        == Some(&crate::bot::guild::profession::Profession::Potato)
+            }),
+            "guild.farm_orders must name a Potato guild and a nonzero item ID"
+        );
         ensure!(
             (1..=50).contains(&g.party_size),
             "guild.party_size must be in 1..=50"

@@ -103,6 +103,8 @@ lifelike = true
 jump_rate = 1.0
 # Emotes (a wave, a bow, a sit) in life-like moments.
 emotes = true
+# Idle bots sometimes visit a friendly auctioneer in a nearby settlement.
+settlement_visits = false
 
 [dungeons]
 # Count the server's entry limit (three entries per zone group and four hours) and skip a dungeon
@@ -177,6 +179,11 @@ ad_interval_secs = 900
 # Bots in guilds (expeditions): found one together, join one, keep one running (goal "guild").
 # Off until enabled.
 enabled = false
+# Long-run share of autonomous play spent on a configured guild profession (50 to 75).
+work_percent = 60
+# Server guild IDs are strings in these tables. Examples:
+# professions = { "42" = "potato", "43" = "trader" }
+# farm_orders = { "42" = 12345 }  # seed or produce item template
 # Bots may found guilds. false = they only join existing ones.
 found = true
 # A bot founds or joins a guild from this level on.

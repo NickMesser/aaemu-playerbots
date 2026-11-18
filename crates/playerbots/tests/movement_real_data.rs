@@ -233,11 +233,15 @@ impl Sim {
         if brain {
             self.next_brain_ms = self.now_ms + self.brain_period();
         }
-        let walking_in_view = self.audience && self.motion.is_moving();
+        let move_due = if self.audience {
+            self.motion.move_due_ms(self.move_update_ms)
+        } else {
+            None
+        };
         self.now_ms = playerbots::bot::next_wake_ms(
             self.now_ms,
             self.next_brain_ms,
-            walking_in_view.then_some(self.move_update_ms),
+            move_due,
             self.motion.wake_in(self.now_ms),
         );
     }

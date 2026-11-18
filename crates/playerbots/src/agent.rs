@@ -48,6 +48,8 @@ pub struct AgentSlot {
     pub players_near: u16,
     /// The LLM director's plan, the next step first.
     pub plan: Vec<String>,
+    /// The bot's role in a configured guild.
+    pub guild_work: Option<String>,
 }
 
 /// The goal names of `mask`, in [`GoalKind::ALL`] order.
@@ -252,6 +254,7 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
         o.mp_pct = a.mp_pct;
         o.eligible = goal_names(a.eligible);
         o.plan = a.plan.clone();
+        o.guild_work = a.guild_work.clone();
         o.nearby = pb_web::Nearby {
             monsters: a.monsters_near,
             characters: u32::from(a.characters_near),
@@ -265,6 +268,18 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
         .map(|n| n.text.clone())
         .collect();
     o.zones_seen = journal.seen.zones.len() as u32;
+    o.thief_history = journal.thief_history;
+    o.relationships = journal
+        .relationships
+        .entries
+        .iter()
+        .map(|r| pb_web::agent::RelationshipView {
+            character: r.character,
+            shared_parties: r.shared_parties,
+            trust: r.trust,
+            preference: r.preference.map(|p| p.label().to_owned()),
+        })
+        .collect();
     o
 }
 
@@ -391,6 +406,7 @@ mod tests {
             characters_near: 3,
             players_near: 1,
             plan: vec!["explore Gweonid Forest".into()],
+            guild_work: None,
         };
         let mut j = Journal::default();
         j.seen.add_zone(4);

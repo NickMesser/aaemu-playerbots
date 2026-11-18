@@ -43,6 +43,7 @@ pub mod life;
 pub mod log;
 pub mod names;
 pub mod plan;
+pub mod profession;
 pub mod report;
 
 use aa_proto::guild::GuildEvent;
