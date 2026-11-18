@@ -90,6 +90,8 @@ pub struct Plan {
     pub to_bench_m: f32,
     /// Straight-line distance from the bench to the buyer.
     pub carry_m: f32,
+    /// The carrying leg includes a passage on the member's boat.
+    pub sea: bool,
 }
 
 impl Plan {
@@ -161,6 +163,16 @@ pub fn best_buyer<D: RouteData + ?Sized>(
     from: [f32; 2],
     buyer_ok: &dyn Fn(u32) -> bool,
 ) -> Option<(u32, [f32; 2], u32)> {
+    best_buyer_at(data, item, from, buyer_ok, &|_, _| true)
+}
+
+fn best_buyer_at<D: RouteData + ?Sized>(
+    data: &D,
+    item: u32,
+    from: [f32; 2],
+    buyer_ok: &dyn Fn(u32) -> bool,
+    buyer_at: &dyn Fn([f32; 2], [f32; 2]) -> bool,
+) -> Option<(u32, [f32; 2], u32)> {
     let mut best: Option<(u32, [f32; 2], u32, f32)> = None;
     for &npc in data.buyers(item) {
         if !buyer_ok(npc) {
@@ -169,6 +181,9 @@ pub fn best_buyer<D: RouteData + ?Sized>(
         let price = data.pack_price(item, npc);
         for sp in data.npc_spawns(npc) {
             let p = [sp.x, sp.y];
+            if !buyer_at(from, p) {
+                continue;
+            }
             let cost = buyer_cost(d2(from, p), price);
             if best.is_none_or(|b| cost < b.3) {
                 best = Some((npc, p, price, cost));
@@ -180,6 +195,14 @@ pub fn best_buyer<D: RouteData + ?Sized>(
 
 /// Every acceptable route for `q`, best first (at most [`MAX_CANDIDATES`]).
 pub fn candidates<D: RouteData + ?Sized>(data: &D, q: &Query<'_>) -> Vec<Plan> {
+    candidates_at(data, q, &|_, _| true)
+}
+
+pub(super) fn candidates_at<D: RouteData + ?Sized>(
+    data: &D,
+    q: &Query<'_>,
+    buyer_at: &dyn Fn([f32; 2], [f32; 2]) -> bool,
+) -> Vec<Plan> {
     let mut out: Vec<Plan> = Vec::new();
     let center = Vec3::new(q.from[0], q.from[1], 0.0);
     data.benches_within(center, q.radius_m, &mut |tpl, pos| {
@@ -193,7 +216,8 @@ pub fn candidates<D: RouteData + ?Sized>(data: &D, q: &Query<'_>) -> Vec<Plan> {
             if !c.is_pack || c.product.0 == 0 || !(q.craft_ok)(c) {
                 continue;
             }
-            let Some((buyer_tpl, buyer, price)) = best_buyer(data, c.product.0, bench, q.buyer_ok)
+            let Some((buyer_tpl, buyer, price)) =
+                best_buyer_at(data, c.product.0, bench, q.buyer_ok, buyer_at)
             else {
                 continue;
             };
@@ -207,6 +231,7 @@ pub fn candidates<D: RouteData + ?Sized>(data: &D, q: &Query<'_>) -> Vec<Plan> {
                 price,
                 to_bench_m,
                 carry_m: d2(bench, buyer),
+                sea: false,
             };
             if plan.total_m() <= q.max_route_m {
                 out.push(plan);
@@ -249,7 +274,17 @@ pub fn carry_only<D: RouteData + ?Sized>(
     from: [f32; 2],
     buyer_ok: &dyn Fn(u32) -> bool,
 ) -> Option<Plan> {
-    let (buyer_tpl, buyer, price) = best_buyer(data, item, from, buyer_ok)?;
+    carry_at(data, item, from, buyer_ok, &|_, _| true)
+}
+
+pub(super) fn carry_at<D: RouteData + ?Sized>(
+    data: &D,
+    item: u32,
+    from: [f32; 2],
+    buyer_ok: &dyn Fn(u32) -> bool,
+    buyer_at: &dyn Fn([f32; 2], [f32; 2]) -> bool,
+) -> Option<Plan> {
+    let (buyer_tpl, buyer, price) = best_buyer_at(data, item, from, buyer_ok, buyer_at)?;
     Some(Plan {
         craft: 0,
         item,
@@ -260,6 +295,7 @@ pub fn carry_only<D: RouteData + ?Sized>(
         price,
         to_bench_m: 0.0,
         carry_m: d2(from, buyer),
+        sea: false,
     })
 }
 

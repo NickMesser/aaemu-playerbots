@@ -882,6 +882,11 @@ impl Brain {
             }
         }
         if role == profession::Profession::Trader {
+            if ctx.cfg.sail.trade_passages {
+                if let Some(buyer) = ctx.cfg.guild.voyage_buyers.get(&id.to_string()) {
+                    context.push_str(&format!(" Priority sea shipment to pack buyer {buyer} when an owned boat and a safe route are available."));
+                }
+            }
             ctx.hub.journal.read(ctx.persona.id, |j| {
                 if ctx.cfg.guild.auction_flips {
                     context.push_str(&format!(
@@ -1081,8 +1086,8 @@ impl Brain {
             hub.journal.read(id, |j| {
                 for route in j.trade_routes.iter().take(3) {
                     let _ = writeln!(situation,
-                        "Trade route history, item {} to buyer {}: {} sold, {} failed, last gross quote {} copper.",
-                        route.item, route.buyer, route.sales, route.failed_runs, route.quoted_copper);
+                        "Trade route by {}, item {} to buyer {}. {} sold, {} failed, last gross quote {} copper.",
+                        if route.sea { "sea" } else { "land" }, route.item, route.buyer, route.sales, route.failed_runs, route.quoted_copper);
                 }
             });
         }

@@ -66,6 +66,7 @@ fn plan() -> Plan {
         price: 40_000,
         to_bench_m: 100.0,
         carry_m: 200.0,
+        sea: false,
     }
 }
 

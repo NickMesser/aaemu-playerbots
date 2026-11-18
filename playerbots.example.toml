@@ -129,6 +129,8 @@ relax_after_secs = 120
 # gm_bootstrap or the scroll in the bag. The bigger boats need more room: a cutter is launched
 # from a beach with deep water, sails wide of the coast and berths out at sea.
 ship = "rowboat"
+# Trader guild members can sail an owned boat to a trade buyer on another continent.
+trade_passages = false
 
 [mounts]
 # Mounts and gliders: a bot summons the rideable mate of a summon item it owns for a long

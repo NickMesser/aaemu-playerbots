@@ -448,6 +448,16 @@ that request. The other bot decides whether to accept based on trust and tempera
 successful conversation eases existing grudges without turning them into positive trust.
 The outcome is recorded in both journals and the request expires after 20 minutes.
 
+### Sea trade runs
+
+With `[sail] trade_passages = true` and `[behavior] sailing = true`, a Trader guild member with
+its configured boat scroll can consider same-faction or neutral buyers on another continent.
+The bot checks both beaches, the water route and the land legs before choosing the run. It
+keeps its pack equipped while sailing to the buyer, then uses the ordinary sale and mail flow.
+The planner considers the ship's speed when comparing the route with a land run. Set `[sail]
+ship = "auto"` if the bots own different boats. An optional `[guild] voyage_buyers` entry
+prioritizes a buyer NPC template for that guild when a viable passage is available.
+
 ### Trade escorts
 
 With `[party] trade_escorts = true`, the leader of a player party can whisper `escort` to an Adventurer

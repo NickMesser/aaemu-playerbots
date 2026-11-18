@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use aa_world::{World, WorldPaths};
+use playerbots::bot::goals::sail::trip::{danger_zones, plan_passage, Kind, TripCfg};
 use playerbots::bot::goals::trade_run::plan::{candidates, carry_only, Plan, Query};
 use playerbots::bot::goals::trade_run::route_risky;
 
@@ -116,6 +117,53 @@ fn the_sweeteners_sell_at_misty_in_solzreed() {
     let p = carry_only(&*w, 31855, [15578.0, 15382.0], &|n| n == 10664).expect("a Solzreed buyer");
     println!("{}", describe(&w, &p));
     assert!(p.carry_m < 3_000.0);
+}
+
+#[test]
+#[ignore = "needs AA_COMPACT, AA_SERVER_DATA and AA_BAKED"]
+fn a_clipper_can_take_a_real_pack_buyer_route_between_continents() {
+    let w = world().expect("AA_COMPACT and AA_SERVER_DATA");
+    let craft = w.craft(6223).expect("Rokhala pack recipe");
+    let bench = craft
+        .benches
+        .iter()
+        .flat_map(|&tpl| w.doodad_spawns(tpl))
+        .find(|p| (p.x - 20307.0).abs() < 5.0 && (p.y - 13181.0).abs() < 5.0)
+        .expect("authored specialty bench");
+    assert!(w.specialty_buyers(craft.product.0).contains(&4478));
+    let buyer = &w.npc_spawns(4478)[0];
+    let continent = |x, y| {
+        w.travel()
+            .portals
+            .continent_of_zone(w.zone_key_at(x, y).unwrap())
+    };
+    assert_eq!(continent(bench.x, bench.y), 4);
+    assert_eq!(continent(buyer.x, buyer.y), 3);
+    let cfg = TripCfg::for_ship(aa_world::travel::ShipClass::CLIPPER);
+    let ground = |x, y| w.ground_z(x, y);
+    let midpoint = ((bench.x + buyer.x) * 0.5, (bench.y + buyer.y) * 0.5);
+    let danger = danger_zones(
+        &w,
+        w.water().expect("baked sea terrain"),
+        101,
+        midpoint,
+        5_000.0,
+    );
+    let route = plan_passage(
+        w.water_for(&cfg.ship).unwrap(),
+        &ground,
+        (bench.x, bench.y),
+        (buyer.x, buyer.y),
+        &cfg,
+        &danger,
+    )
+    .expect("connected sea route");
+    assert_eq!(route.kind, Kind::Cross);
+    assert!((4_500.0..7_000.0).contains(&route.route_m));
+    println!(
+        "pack {}, boat leg {:.0} m, buyer 4478",
+        craft.product.0, route.route_m
+    );
 }
 
 #[test]

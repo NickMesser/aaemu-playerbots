@@ -152,32 +152,27 @@ fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
 
-/// Plans a trip for a bot at `from` (see the module docs). `avoid` are the closed areas.
-pub fn plan_trip(
+fn berth(map: &WaterMap, cfg: &TripCfg, spot: &ShoreSpot) -> Option<(f32, f32)> {
+    if cfg.ship.size == HullSize::Small {
+        return Some(spot.water);
+    }
+    let clear = cfg.plan_clear();
+    let point = moor_point(map, spot, clear, MOOR_REACH_M);
+    map.open_at(point.0, point.1, clear).then_some(point)
+}
+
+fn departure(
     map: &WaterMap,
     ground: &dyn Fn(f32, f32) -> Option<f32>,
-    rng: &mut fastrand::Rng,
     from: (f32, f32),
     cfg: &TripCfg,
     avoid: &[Disc],
-) -> Result<Plan, PlanError> {
+) -> Result<ShoreSpot, PlanError> {
     let ship = &cfg.ship;
-    let clear = cfg.plan_clear();
-    let rc = route_cfg(clear, PLAN_NODES, avoid);
-    // the berth of a spot: its water point for a rowboat, open sea for the bigger hulls (none:
-    // the spot does not do)
-    let berth = |spot: &ShoreSpot| -> Option<(f32, f32)> {
-        if ship.size == HullSize::Small {
-            return Some(spot.water);
-        }
-        let p = moor_point(map, spot, clear, MOOR_REACH_M);
-        map.open_at(p.0, p.1, clear).then_some(p)
-    };
     // the launch beach: the nearest with room for the hull and, for the bigger hulls, open sea
     // within reach of it; a beach without is left out of the next search (a bay too narrow for a
     // yawl does not end the trip)
     let mut skip: Vec<Disc> = avoid.to_vec();
-    let mut found: Option<(ShoreSpot, (f32, f32))> = None;
     for _ in 0..LAUNCH_TRIES {
         let launch = match ship.size {
             HullSize::Small => find_shore(map, ground, from, cfg.launch_m, &skip),
@@ -199,14 +194,13 @@ pub fn plan_trip(
             ),
         };
         let Some(launch) = launch else {
-            if found.is_none() && skip.len() == avoid.len() {
+            if skip.len() == avoid.len() {
                 return Err(PlanError::NoCoast);
             }
             break;
         };
-        if let Some(b) = berth(&launch) {
-            found = Some((launch, b));
-            break;
+        if berth(map, cfg, &launch).is_some() {
+            return Ok(launch);
         }
         skip.push(Disc {
             x: launch.water.0,
@@ -214,7 +208,53 @@ pub fn plan_trip(
             r: LAUNCH_SKIP_M,
         });
     }
-    let (launch, launch_berth) = found.ok_or(PlanError::NoTrip)?;
+    Err(PlanError::NoTrip)
+}
+
+/// Plans a sailing leg between shores close to two trade endpoints.
+pub fn plan_passage(
+    map: &WaterMap,
+    ground: &dyn Fn(f32, f32) -> Option<f32>,
+    from: (f32, f32),
+    to: (f32, f32),
+    cfg: &TripCfg,
+    avoid: &[Disc],
+) -> Result<Plan, PlanError> {
+    let launch = departure(map, ground, from, cfg, avoid)?;
+    let landing = find_shore(map, ground, to, cfg.launch_m, avoid).ok_or(PlanError::NoTrip)?;
+    let moor = berth(map, cfg, &landing).ok_or(PlanError::NoTrip)?;
+    let straight = dist(launch.water, moor);
+    let max_m = cfg.max_m * 2.0;
+    if straight < 500.0 || straight > max_m {
+        return Err(PlanError::NoTrip);
+    }
+    let rc = route_cfg(cfg.plan_clear(), PLAN_NODES * 2, avoid);
+    let crossing = route(map, launch.water, moor, &rc).map_err(|_| PlanError::NoTrip)?;
+    if crossing.length > max_m.min(DETOUR * straight) {
+        return Err(PlanError::NoTrip);
+    }
+    Ok(Plan {
+        launch,
+        landing,
+        moor,
+        kind: Kind::Cross,
+        route_m: crossing.length,
+    })
+}
+
+/// Plans a trip for a bot at `from` (see the module docs). `avoid` are the closed areas.
+pub fn plan_trip(
+    map: &WaterMap,
+    ground: &dyn Fn(f32, f32) -> Option<f32>,
+    rng: &mut fastrand::Rng,
+    from: (f32, f32),
+    cfg: &TripCfg,
+    avoid: &[Disc],
+) -> Result<Plan, PlanError> {
+    let clear = cfg.plan_clear();
+    let rc = route_cfg(clear, PLAN_NODES, avoid);
+    let launch = departure(map, ground, from, cfg, avoid)?;
+    let launch_berth = berth(map, cfg, &launch).ok_or(PlanError::NoTrip)?;
     // a crossing to another beach
     for _ in 0..ATTEMPTS {
         let ang = rng.f32() * std::f32::consts::TAU;
@@ -229,7 +269,7 @@ pub fn plan_trip(
         let Some(landing) = find_shore(map, ground, t, LANDING_SEARCH_M, avoid) else {
             continue;
         };
-        let Some(moor) = berth(&landing) else {
+        let Some(moor) = berth(map, cfg, &landing) else {
             continue;
         };
         let straight = dist(launch.water, moor);
@@ -421,6 +461,22 @@ mod tests {
             Some(if land(c, r) { 110.0 } else { 50.0 })
         };
         (map, ground)
+    }
+
+    #[test]
+    fn a_trade_passage_targets_the_buyer_coast_and_never_falls_back_to_a_loop() {
+        let (map, ground) = two_coasts(false);
+        let cfg = TripCfg::default();
+        let from = (95.0, 400.0);
+        let buyer = (1330.0, 400.0);
+        let plan = plan_passage(&map, &ground, from, buyer, &cfg, &[]).unwrap();
+        assert_eq!(plan.kind, Kind::Cross);
+        assert!(dist(plan.landing.stand, buyer) < 100.0);
+        assert!(plan.route_m > 1100.0);
+        assert_eq!(
+            plan_passage(&map, &ground, from, (95.0, 440.0), &cfg, &[]),
+            Err(PlanError::NoTrip)
+        );
     }
 
     const SHORT: TripCfg = TripCfg {

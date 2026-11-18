@@ -256,6 +256,7 @@ impl Goal {
             | Goal::FieldParty(_)
             | Goal::Siege(_) => true,
             Goal::Dungeon(g) => g.owns_combat(),
+            Goal::TradeRun(g) => g.owns_combat(),
             Goal::Sail(g) => g.owns_combat(),
             Goal::Auction(g) => g.owns_combat(),
             Goal::Market(g) => g.owns_combat(),

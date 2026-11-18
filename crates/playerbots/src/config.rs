@@ -373,6 +373,8 @@ pub struct SailCfg {
     /// `schooner` or `auto`. With `bots.gm_bootstrap` a bot gets the scroll with the GM
     /// `/item add` command; without, it needs the scroll in its bag.
     pub ship: ShipChoice,
+    /// Allow Trader guild members to sail their own boats with packs to other continents.
+    pub trade_passages: bool,
 }
 
 /// `[mounts]`: the owned mount and glider a bot uses on long trips (switched on and off by
@@ -504,6 +506,8 @@ pub struct GuildCfg {
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
+    /// Optional priority cross-continent pack buyer for a Trader guild.
+    pub voyage_buyers: std::collections::BTreeMap<String, u32>,
     /// Long-run percentage of play that can go to professional goals.
     pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
@@ -535,6 +539,7 @@ impl Default for GuildCfg {
             production_orders: Default::default(),
             treasuries: Default::default(),
             siege_zones: Default::default(),
+            voyage_buyers: Default::default(),
             work_percent: 60,
             enabled: false,
             found: true,
@@ -1428,6 +1433,15 @@ impl Config {
                         && zones.iter().all(|&zone| zone > 0)
                 }),
             "guild.siege_zones must name nonzero guild and zone group ids"
+        );
+        ensure!(
+            g.voyage_buyers.len() <= 16
+                && g.voyage_buyers.iter().all(|(guild, buyer)| {
+                    *buyer != 0
+                        && g.professions.get(guild)
+                            == Some(&crate::bot::guild::profession::Profession::Trader)
+                }),
+            "guild.voyage_buyers must name Trader guilds and nonzero pack buyer templates"
         );
         ensure!(
             (50..=75).contains(&g.work_percent),

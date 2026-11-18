@@ -120,6 +120,8 @@ pub struct Journal {
 pub struct TradeRoute {
     pub item: u32,
     pub buyer: u32,
+    #[serde(default)]
+    pub sea: bool,
     pub sales: u32,
     pub failed_runs: u32,
     /// Latest gross price estimate, before expenses and mail settlement.
@@ -150,16 +152,17 @@ impl Journal {
         self.raid_sites.truncate(12);
     }
 
-    pub fn note_trade_route(&mut self, item: u32, buyer: u32, quote: u32, sold: bool) {
+    pub fn note_trade_route(&mut self, item: u32, buyer: u32, sea: bool, quote: u32, sold: bool) {
         let index = self
             .trade_routes
             .iter()
-            .position(|r| r.item == item && r.buyer == buyer);
+            .position(|r| r.item == item && r.buyer == buyer && r.sea == sea);
         let mut route = index
             .map(|i| self.trade_routes.remove(i))
             .unwrap_or(TradeRoute {
                 item,
                 buyer,
+                sea,
                 ..TradeRoute::default()
             });
         route.quoted_copper = quote;

@@ -61,13 +61,20 @@ const COAST_PROBES_M: [f32; 3] = [100.0, 250.0, 450.0];
 #[derive(Debug, Default)]
 pub struct Sail {
     trip: Option<Box<Machine>>,
+    trade_destination: Option<(f32, f32)>,
 }
 
 impl Sail {
     /// Called once when the brain picks the goal.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
+        self.trade_destination = None;
         ctx.state.vehicle.sailor_mut().active = true;
         self.trip = Some(Box::new(Machine::new(ctx.now_ms, ctx.state.me.pos)));
+    }
+
+    pub(super) fn start_trade_passage(&mut self, ctx: &mut Ctx<'_>, buyer: [f32; 2]) {
+        self.start(ctx);
+        self.trade_destination = Some((buyer[0], buyer[1]));
     }
 
     /// One tick.
@@ -93,12 +100,13 @@ impl Sail {
                 shore_map,
                 class: pick.class,
                 faction: ctx.state.me.faction,
+                trade_destination: self.trade_destination,
                 rng: RefCell::new(&mut *ctx.rng),
             };
             let io = input(
                 ctx.state,
                 ctx.now_ms,
-                ctx.cfg.bots.gm_bootstrap,
+                ctx.cfg.bots.gm_bootstrap && self.trade_destination.is_none(),
                 ctx.motion.status(),
                 &pick,
                 &ops,
@@ -124,6 +132,7 @@ impl Sail {
                         shore_map,
                         class: pick.class,
                         faction: ctx.state.me.faction,
+                        trade_destination: self.trade_destination,
                         rng: RefCell::new(&mut *ctx.rng),
                     };
                     let io = input(
@@ -240,6 +249,36 @@ fn pick_for(ctx: &Ctx<'_>) -> Option<Pick> {
         ctx.persona.temper.merchant,
         |item| ctx.state.item_count(item),
     )
+}
+
+pub(super) fn owned_trade_ship(ctx: &Ctx<'_>) -> Option<ShipClass> {
+    if !ctx.cfg.behavior.sailing || ctx.state.place.in_instance() {
+        return None;
+    }
+    let pick = pick_for(ctx)?;
+    (ctx.state.item_count(pick.item) > 0).then_some(pick.class)
+}
+
+pub(super) fn plan_trade_passage(
+    ctx: &Ctx<'_>,
+    ship: ShipClass,
+    from: [f32; 2],
+    to: [f32; 2],
+) -> Option<Plan> {
+    let world = ctx.world;
+    let from = (from[0], from[1]);
+    let to = (to[0], to[1]);
+    let ground = |x, y| world.ground_z(x, y);
+    let avoid = danger(world, world.water()?, ctx.state.me.faction, from, Some(to));
+    trip::plan_passage(
+        world.water_for(&ship)?,
+        &ground,
+        from,
+        to,
+        &TripCfg::for_ship(ship),
+        &avoid,
+    )
+    .ok()
 }
 
 /// The boat family a bot sails. A fixed choice is that family. `auto` is the first family the bag
@@ -383,22 +422,48 @@ struct RealOps<'a> {
     shore_map: &'a WaterMap,
     class: ShipClass,
     faction: u32,
+    trade_destination: Option<(f32, f32)>,
     rng: RefCell<&'a mut fastrand::Rng>,
+}
+
+fn danger(
+    world: &World,
+    map: &WaterMap,
+    faction: u32,
+    from: (f32, f32),
+    destination: Option<(f32, f32)>,
+) -> Vec<Disc> {
+    let (center, radius) = destination.map_or((from, 5_000.0), |to| {
+        let center = ((from.0 + to.0) * 0.5, (from.1 + to.1) * 0.5);
+        let radius = (to.0 - center.0).hypot(to.1 - center.1) + 2_000.0;
+        (center, radius)
+    });
+    trip::danger_zones(world, map, faction, center, radius)
 }
 
 impl Ops for RealOps<'_> {
     fn danger(&self, from: (f32, f32)) -> Vec<Disc> {
-        trip::danger_zones(self.world, self.shore_map, self.faction, from, 5000.0)
+        danger(
+            self.world,
+            self.shore_map,
+            self.faction,
+            from,
+            self.trade_destination,
+        )
     }
 
     fn plan(&self, from: (f32, f32), avoid: &[Disc]) -> Result<Plan, PlanError> {
         let ground = |x: f32, y: f32| self.world.ground_z(x, y);
+        let cfg = TripCfg::for_ship(self.class);
+        if let Some(to) = self.trade_destination {
+            return trip::plan_passage(self.map, &ground, from, to, &cfg, avoid);
+        }
         trip::plan_trip(
             self.map,
             &ground,
             &mut self.rng.borrow_mut(),
             from,
-            &TripCfg::for_ship(self.class),
+            &cfg,
             avoid,
         )
     }
