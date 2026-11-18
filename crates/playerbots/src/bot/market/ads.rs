@@ -209,6 +209,8 @@ pub struct Env<'a> {
     pub audience: usize,
     /// Whether a character is one of our bots.
     pub is_bot: &'a dyn Fn(&str) -> bool,
+    /// Whether the seller knows this buyer as a trusted companion.
+    pub trusted_companion: &'a dyn Fn(&str) -> bool,
     /// How much of an advertised item the bot wants and what it pays at most per unit, given the
     /// template, the units offered and the asking price.
     pub interest: &'a dyn Fn(u32, u32, u32) -> Option<(u32, u32)>,
@@ -543,7 +545,12 @@ impl AdState {
                     return;
                 }
                 let free = l.qty;
-                let mut t = Talk::seller(&h.sender, medium, l.template, free, l.quote, env.now_ms);
+                let quote = if medium == Medium::Whisper && (env.trusted_companion)(&h.sender) {
+                    l.quote.for_companion()
+                } else {
+                    l.quote
+                };
+                let mut t = Talk::seller(&h.sender, medium, l.template, free, quote, env.now_ms);
                 if self.deal.is_some() {
                     self.say(env, medium, &h.sender, Speech::Decline(Decline::SoldOut));
                     return;

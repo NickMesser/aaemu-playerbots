@@ -103,6 +103,7 @@ impl Rig {
             money: self.money,
             audience: self.audience,
             is_bot: &is_bot,
+            trusted_companion: &|_| false,
             interest: &interest,
             place: &mut place,
             board: &self.board,

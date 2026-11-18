@@ -424,6 +424,8 @@ a share. The bot asks by whisper once per party after the server reports the Mas
 The player can assign items through the game's loot controls.
 Bots also remember seeing a party member enable Bloodlust. Lawful personalities lose more
 trust, and repeated toggles have a 15-minute cooldown for each relationship.
+Nearby companions with at least 20 trust get up to 10 percent off a seller's asking price
+when they reply to a trade advertisement by whisper. The seller keeps its normal minimum price.
 
 ### Open-world bot parties
 

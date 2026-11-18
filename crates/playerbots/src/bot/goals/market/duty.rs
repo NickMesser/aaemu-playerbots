@@ -235,6 +235,22 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let units = &st.units;
     let item_name = |t: u32| world.item_name(t).unwrap_or("goods").to_owned();
     let is_bot = |n: &str| hub.chat.names.contains(n);
+    let trusted_companion = |name: &str| {
+        let Some(character) = units.values().find(|unit| {
+            unit.kind == UnitKind::Character
+                && unit
+                    .name
+                    .as_deref()
+                    .is_some_and(|seen| seen.eq_ignore_ascii_case(name))
+        }) else {
+            return false;
+        };
+        hub.journal.read(bot_id, |j| {
+            j.relationships
+                .get(character.id)
+                .is_some_and(|r| r.trust >= 20)
+        })
+    };
     let interest = |template: u32, qty: u32, ask: u32| {
         let need = needs.iter().find(|n| n.template == template)?;
         let q = prices.quote(template)?;
@@ -301,6 +317,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
         money,
         audience,
         is_bot: &is_bot,
+        trusted_companion: &trusted_companion,
         interest: &interest,
         place: &mut place,
         board,

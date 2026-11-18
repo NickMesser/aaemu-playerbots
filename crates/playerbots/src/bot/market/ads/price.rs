@@ -47,6 +47,14 @@ pub struct Quote {
 }
 
 impl Quote {
+    /// A companion saves up to ten percent while the seller keeps the same minimum price.
+    pub fn for_companion(self) -> Self {
+        Self {
+            ask: (self.ask - self.ask / 10).max(self.floor),
+            ..self
+        }
+    }
+
     /// The same quote with the asking price moved by `percent` percent (`-10..=10` is the
     /// per-bot spread), the floor and the ceiling following in proportion.
     pub fn spread(self, percent: i32) -> Quote {
@@ -111,6 +119,16 @@ pub fn quote_from_vendor(price: u32, refund: u32) -> Option<Quote> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_discount_preserves_the_sellers_floor() {
+        let quote = Quote {
+            ask: 200,
+            floor: 185,
+            ceiling: 230,
+        };
+        assert_eq!(quote.for_companion(), Quote { ask: 185, ..quote });
+    }
 
     #[test]
     fn amounts_are_written_like_players_do() {
