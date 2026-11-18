@@ -126,6 +126,8 @@ pub struct TradeRoute {
     pub failed_runs: u32,
     /// Latest gross price estimate, before expenses and mail settlement.
     pub quoted_copper: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_material_copper: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -152,7 +154,15 @@ impl Journal {
         self.raid_sites.truncate(12);
     }
 
-    pub fn note_trade_route(&mut self, item: u32, buyer: u32, sea: bool, quote: u32, sold: bool) {
+    pub fn note_trade_route(
+        &mut self,
+        item: u32,
+        buyer: u32,
+        sea: bool,
+        quote: u32,
+        materials: Option<u32>,
+        sold: bool,
+    ) {
         let index = self
             .trade_routes
             .iter()
@@ -166,6 +176,9 @@ impl Journal {
                 ..TradeRoute::default()
             });
         route.quoted_copper = quote;
+        if materials.is_some() {
+            route.estimated_material_copper = materials;
+        }
         if sold {
             route.sales = route.sales.saturating_add(1);
         } else {

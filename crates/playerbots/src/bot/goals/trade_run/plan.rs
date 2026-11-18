@@ -101,6 +101,13 @@ impl Plan {
         self.to_bench_m + buyer_cost(self.carry_m, self.price)
     }
 
+    pub(super) fn trader_score(&self, materials: u32, sold: u32, failed: u32) -> f32 {
+        let successes = sold as f32 + 2.0;
+        let expected = self.price as f32 * successes / (successes + failed as f32);
+        self.to_bench_m + CARRY_WEIGHT * self.carry_m
+            - (expected - materials as f32) / COPPER_PER_METRE
+    }
+
     /// Total straight-line distance of the run.
     pub fn total_m(&self) -> f32 {
         self.to_bench_m + self.carry_m

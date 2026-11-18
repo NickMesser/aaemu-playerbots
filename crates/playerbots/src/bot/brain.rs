@@ -1085,8 +1085,9 @@ impl Brain {
             use std::fmt::Write;
             hub.journal.read(id, |j| {
                 for route in j.trade_routes.iter().take(3) {
+                    let costs = route.estimated_material_copper.map_or_else(String::new, |copper| format!(" Estimated replacement materials cost {copper} copper."));
                     let _ = writeln!(situation,
-                        "Trade route by {}, item {} to buyer {}. {} sold, {} failed, last gross quote {} copper.",
+                        "Trade route by {}, item {} to buyer {}. {} sold, {} failed, last gross quote {} copper.{costs}",
                         if route.sea { "sea" } else { "land" }, route.item, route.buyer, route.sales, route.failed_runs, route.quoted_copper);
                 }
             });

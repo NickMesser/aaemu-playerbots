@@ -70,6 +70,14 @@ fn plan() -> Plan {
     }
 }
 
+#[test]
+fn a_trader_discounts_gross_quotes_by_failures_and_material_cost() {
+    let route = plan();
+    assert_eq!(route.trader_score(0, 0, 0), route.score());
+    assert!(route.trader_score(10_000, 0, 0) > route.score());
+    assert!(route.trader_score(0, 0, 2) > route.trader_score(0, 3, 2));
+}
+
 impl Fake {
     fn new(gm: bool) -> Fake {
         let mut st = BotState::new();

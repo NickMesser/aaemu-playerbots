@@ -211,8 +211,16 @@ pub struct Live<'a, 'c>(pub &'a mut Ctx<'c>);
 
 impl Env for Live<'_, '_> {
     fn note_route(&mut self, plan: &Plan, sold: bool) {
+        let materials = material_cost(self.0, plan.craft, crate::hub::unix_ms());
         self.0.hub.journal.update(self.0.persona.id, |j| {
-            j.note_trade_route(plan.item, plan.buyer_tpl, plan.sea, plan.price, sold);
+            j.note_trade_route(
+                plan.item,
+                plan.buyer_tpl,
+                plan.sea,
+                plan.price,
+                materials,
+                sold,
+            );
         });
     }
     fn now_ms(&self) -> u64 {
@@ -303,6 +311,8 @@ impl Env for Live<'_, '_> {
             |_tpl: u32, p: [f32; 2]| !st.econ.skipped(SkipKind::Bench, spot_key(p[0], p[1]), now);
         let buyer_ok = |npc: u32| !st.econ.skipped(SkipKind::Buyer, npc, now);
         let trader = sea_trader(ctx);
+        let history = trader_history(ctx);
+        let at_ms = crate::hub::unix_ms();
         let assignment =
             trader.and_then(|id| ctx.cfg.guild.voyage_buyers.get(&id.to_string()).copied());
         let sea = trader
@@ -322,7 +332,9 @@ impl Env for Live<'_, '_> {
                     .into_iter()
                     .take(8)
                     .filter_map(|p| sea_plan(ctx, ship, p))
-                    .min_by(|a, b| a.score().total_cmp(&b.score()))
+                    .map(|p| (route_score(ctx, &p, history.as_deref(), at_ms), p))
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, p)| p)
             });
         // Walking: the shortest budget that has a route; `/move` makes distances irrelevant.
         let budgets: &[f32] = if teleport {
@@ -339,7 +351,7 @@ impl Env for Live<'_, '_> {
                 bench_ok: &bench_ok,
                 buyer_ok: &buyer_ok,
             };
-            let cands: Vec<Plan> = plan::candidates_at(world, &q, &|from, to| {
+            let mut cands: Vec<Plan> = plan::candidates_at(world, &q, &|from, to| {
                 trader.is_none() || !intercontinental(world, from, to)
             })
             .into_iter()
@@ -350,9 +362,21 @@ impl Env for Live<'_, '_> {
                 !route_risky(world, faction, run_level, [me[0], me[1]], p)
             })
             .collect();
+            if let Some(history) = &history {
+                let mut ranked: Vec<_> = cands
+                    .drain(..)
+                    .map(|p| (route_score(ctx, &p, Some(history), at_ms), p))
+                    .collect();
+                ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                cands.extend(ranked.into_iter().map(|(_, p)| p));
+            }
             if let Some(p) = plan::pick(&cands, ctx.rng) {
                 return sea
-                    .filter(|s| assignment.is_some() || s.score() < p.score())
+                    .filter(|s| {
+                        assignment.is_some()
+                            || route_score(ctx, s, history.as_deref(), at_ms)
+                                < route_score(ctx, &p, history.as_deref(), at_ms)
+                    })
                     .or(Some(p));
             }
         }
@@ -386,8 +410,16 @@ impl Env for Live<'_, '_> {
             })
             .and_then(|p| sea_plan(ctx, ship, p))
         });
-        sea.filter(|s| assignment.is_some() || land.is_none_or(|l| s.score() < l.score()))
-            .or(land)
+        let history = trader_history(ctx);
+        let at_ms = crate::hub::unix_ms();
+        sea.filter(|s| {
+            assignment.is_some()
+                || land.is_none_or(|l| {
+                    route_score(ctx, s, history.as_deref(), at_ms)
+                        < route_score(ctx, &l, history.as_deref(), at_ms)
+                })
+        })
+        .or(land)
     }
 
     fn send(&mut self, out: Out) {
@@ -432,6 +464,50 @@ fn sea_trader(ctx: &Ctx<'_>) -> Option<u32> {
         Some((id, Profession::Trader, false)) => Some(id),
         _ => None,
     }
+}
+
+fn trader_history(ctx: &Ctx<'_>) -> Option<Vec<crate::journal::TradeRoute>> {
+    use crate::bot::guild::profession::{membership, Profession};
+    matches!(membership(ctx), Some((_, Profession::Trader, false))).then(|| {
+        ctx.hub
+            .journal
+            .read(ctx.persona.id, |journal| journal.trade_routes.clone())
+    })
+}
+
+fn material_cost(ctx: &Ctx<'_>, recipe: u32, now_ms: u64) -> Option<u32> {
+    let recipe = ctx.world.craft(recipe)?;
+    let total = recipe
+        .materials
+        .iter()
+        .try_fold(0.0, |total, &(item, count)| {
+            let price = ctx.hub.market_prices.average(item, now_ms).or_else(|| {
+                let facts = ctx.world.item_facts(item)?;
+                (facts.price > 0).then_some(facts.price as f32)
+            })?;
+            Some(total + price * count as f32)
+        })?;
+    Some(total.ceil() as u32)
+}
+
+fn route_score(
+    ctx: &Ctx<'_>,
+    plan: &Plan,
+    history: Option<&[crate::journal::TradeRoute]>,
+    now_ms: u64,
+) -> f32 {
+    let Some(history) = history else {
+        return plan.score();
+    };
+    let (sold, failed) = history
+        .iter()
+        .find(|r| r.item == plan.item && r.buyer == plan.buyer_tpl && r.sea == plan.sea)
+        .map_or((0, 0), |r| (r.sales, r.failed_runs));
+    plan.trader_score(
+        material_cost(ctx, plan.craft, now_ms).unwrap_or(0),
+        sold,
+        failed,
+    )
 }
 
 fn intercontinental(world: &aa_world::World, a: [f32; 2], b: [f32; 2]) -> bool {
