@@ -9,6 +9,7 @@ use aa_world::{
 
 use super::{FailReason, GoalStatus};
 use crate::bot::ctx::Ctx;
+use crate::bot::motion::SEA_LEVEL;
 use crate::bot::pvp::walk::{Walk, Walker};
 use crate::bot::state::{dist3d, UnitKind, U_MY_SUMMON};
 
@@ -128,6 +129,10 @@ fn cast_point(ctx: &Ctx<'_>) -> Option<[f32; 3]> {
 }
 
 fn water_towards(ctx: &Ctx<'_>, me: [f32; 3], school: [f32; 3]) -> Option<[f32; 3]> {
+    // The sport cast and the chum both require a stable footing in freshwater.
+    if school[2] > SEA_LEVEL && me[2] < school[2] + 0.15 {
+        return None;
+    }
     let dx = school[0] - me[0];
     let dy = school[1] - me[1];
     let distance = dx.hypot(dy);
@@ -172,19 +177,20 @@ fn chum_target(ctx: &Ctx<'_>) -> Option<(u32, [f32; 3], FishChum, u64)> {
     })
 }
 
-fn bank_near_school(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
+fn bank_near_school(ctx: &Ctx<'_>) -> Option<([f32; 2], [f32; 3])> {
     if ctx.state.item_count(FRESHWATER_CHUM) == 0 {
         return None;
     }
     let [x, y, z] = ctx.pos();
     let from = Vec3::new(x, y, z);
     let school = ctx.world.nearest_doodad_spawn(FRESHWATER_SCHOOL, from)?;
-    if school.z <= super::super::motion::SEA_LEVEL
+    if school.z <= SEA_LEVEL
         || school.dist2d(from) > BANK_SEARCH_M
         || ctx.in_war_zone(school.x, school.y)
     {
         return None;
     }
+    let surface = [school.x, school.y, school.z];
     (0..32)
         .filter_map(|index| {
             let angle = index as f32 * std::f32::consts::TAU / 32.0;
@@ -194,11 +200,11 @@ fn bank_near_school(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
             if !(school.z + 0.25..=school.z + 6.0).contains(&z) || ctx.in_war_zone(x, y) {
                 return None;
             }
-            water_towards(ctx, [x, y, z], [school.x, school.y, school.z])?;
+            water_towards(ctx, [x, y, z], surface)?;
             Some(([x, y], Vec3::new(x, y, z).dist2d_sq(from)))
         })
         .min_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map(|(pos, _)| pos)
+        .map(|(pos, _)| (pos, surface))
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
@@ -322,9 +328,10 @@ impl Fish {
                 let cast_at = cast_point(ctx);
                 let chum_at = chum_target(ctx);
                 if cast_at.is_none() && chum_at.is_none() {
-                    let Some(bank) = bank_near_school(ctx) else {
+                    let Some((bank, surface)) = bank_near_school(ctx) else {
                         return GoalStatus::Failed(FailReason::NoTarget);
                     };
+                    ctx.motion.note_water_surface(surface);
                     self.step = Seek {
                         bank,
                         deadline: now + 150_000,
@@ -499,33 +506,37 @@ impl Fish {
                         deadline: now + LAND_WAIT_MS,
                     };
                     return GoalStatus::Running;
-                } else if distance > FOLLOW_FISH_M
-                    || (ctx.motion.is_moving() && distance > KEEP_FISH_M)
-                {
-                    if ctx.in_war_zone(pos[0], pos[1])
-                        || self.walker.step(ctx, [pos[0], pos[1]], KEEP_FISH_M - 2.0) == Walk::Stuck
-                    {
-                        return GoalStatus::Failed(FailReason::Stuck);
-                    }
-                } else if now >= due && !rod_changing(ctx) {
-                    let skill = ctx
-                        .state
-                        .fish_cue
-                        .as_ref()
-                        .filter(|cue| {
-                            cue.object == object
-                                && now.saturating_sub(cue.seen_ms) <= REEL_CUE_MAX_AGE_MS
-                        })
-                        .and_then(|cue| ctx.world.skill(cue.skill));
-                    if let Some(skill) = skill.filter(|skill| {
+                }
+                // Reel while the cue is fresh whenever the fish is in skill range. A fish
+                // swimming away can still be reachable before the pursuit comes to a stop.
+                let response = ctx
+                    .state
+                    .fish_cue
+                    .as_ref()
+                    .filter(|cue| {
+                        now >= due
+                            && !rod_changing(ctx)
+                            && cue.object == object
+                            && now.saturating_sub(cue.seen_ms) <= REEL_CUE_MAX_AGE_MS
+                    })
+                    .and_then(|cue| ctx.world.skill(cue.skill))
+                    .filter(|skill| {
                         ctx.state.cooldown_ready(skill.id, now)
                             && (f32::from(skill.min_range)..=f32::from(skill.max_range))
                                 .contains(&distance)
-                    }) {
-                        ctx.motion.stop();
-                        ctx.send(cs::start_skill_unit(skill.id, ctx.state.me.obj, object));
-                        due = now + REEL_CHANNEL_MS.max(u64::from(skill.casting_time));
-                    }
+                    });
+                let pursue =
+                    distance > FOLLOW_FISH_M || (ctx.motion.is_moving() && distance > KEEP_FISH_M);
+                if let Some(skill) = response {
+                    ctx.motion.stop();
+                    ctx.send(cs::start_skill_unit(skill.id, ctx.state.me.obj, object));
+                    due = now + REEL_CHANNEL_MS.max(u64::from(skill.casting_time));
+                } else if pursue
+                    && (ctx.in_war_zone(pos[0], pos[1])
+                        || self.walker.step(ctx, [pos[0], pos[1]], KEEP_FISH_M - 2.0)
+                            == Walk::Stuck)
+                {
+                    return GoalStatus::Failed(FailReason::Stuck);
                 }
                 self.step = Reel {
                     object,
