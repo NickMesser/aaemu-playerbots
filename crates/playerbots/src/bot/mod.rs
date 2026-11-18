@@ -260,12 +260,16 @@ impl Bot {
                 &mut rng,
             ));
         }
+        let mut state = BotState::new();
+        if cfg.guild.enabled && !cfg.guild.siege_zones.is_empty() {
+            state.enable_sieges();
+        }
         Bot {
             log: Logger::new(slot.clone()),
             slot,
             entry: Box::new(entry),
             persona,
-            state: BotState::new(),
+            state,
             motion,
             combat: Combat::new(),
             brain,
@@ -766,11 +770,6 @@ impl Bot {
         self.record_companion_bloodlust(&ev);
         self.state.apply(&ev);
         if let ServerEvent::Activity(activity) = &ev {
-            if let aa_proto::sc_activity::ActivityEvent::Siege(event) = activity {
-                if self.shared.cfg.guild.enabled && !self.shared.cfg.guild.siege_zones.is_empty() {
-                    self.state.guild.mem().sieges.observe(event);
-                }
-            }
             if self.shared.cfg.guild.enabled
                 && !self.shared.cfg.guild.treasuries.is_empty()
                 && guild::treasury::is_mail(activity)

@@ -1,8 +1,9 @@
 //! Dominion snapshots and confirmed siege enrollment from the current game connection.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use aa_proto::sc_siege::{self, Event, Siege, Team};
+use aa_proto::sc_world::UnitInfo;
 
 use crate::bot::{ctx::Ctx, state::dist2d};
 
@@ -22,7 +23,11 @@ struct Site {
 }
 
 #[derive(Debug, Default)]
-pub struct Book(BTreeMap<u16, Site>);
+pub struct Book {
+    sites: BTreeMap<u16, Site>,
+    /// Nearby houses announced before the castle snapshot arrives. Absent with sieges disabled.
+    pub(in crate::bot) pending_houses: Option<VecDeque<UnitInfo>>,
+}
 
 impl Book {
     pub fn observe(&mut self, event: &Event) {
@@ -36,13 +41,13 @@ impl Book {
             | Event::Deleted(group) => *group,
         };
         if matches!(event, Event::Deleted(_)) {
-            self.0.remove(&group);
+            self.sites.remove(&group);
             return;
         }
-        if !self.0.contains_key(&group) && self.0.len() >= MAX_GROUPS {
+        if !self.sites.contains_key(&group) && self.sites.len() >= MAX_GROUPS {
             return;
         }
-        let site = self.0.entry(group).or_default();
+        let site = self.sites.entry(group).or_default();
         match event {
             Event::Territory {
                 owner,
@@ -112,19 +117,19 @@ impl Book {
     }
 
     pub fn knows_tower(&self, object: u32) -> bool {
-        self.0.values().any(|site| site.tower == object)
+        self.sites.values().any(|site| site.tower == object)
     }
 
     pub fn engravable(&self, group: u16) -> bool {
-        self.0.get(&group).is_some_and(|site| site.engravable)
+        self.sites.get(&group).is_some_and(|site| site.engravable)
     }
 
     pub fn engraving(&self, group: u16) -> bool {
-        self.0.get(&group).is_some_and(|site| site.engraving)
+        self.sites.get(&group).is_some_and(|site| site.engraving)
     }
 
     pub fn note_tower_buff(&mut self, tower: u32, buff: u32) {
-        if let Some(site) = self.0.values_mut().find(|site| site.tower == tower) {
+        if let Some(site) = self.sites.values_mut().find(|site| site.tower == tower) {
             match buff {
                 ENGRAVABLE_BUFF => site.engravable = true,
                 ENGRAVING_BUFF => site.engraving = true,
@@ -134,7 +139,7 @@ impl Book {
     }
 
     pub fn enemy(&self, order: Order, character: u32) -> bool {
-        self.0.get(&order.group).is_some_and(|site| {
+        self.sites.get(&order.group).is_some_and(|site| {
             let team = match order.side {
                 Side::Attack => &site.siege.defenders,
                 Side::Defend => &site.siege.attackers,
@@ -221,7 +226,7 @@ pub fn available(ctx: &Ctx<'_>, group: Option<u16>) -> Option<Order> {
         .copied()
         .filter(|&z| group.is_none_or(|want| want == z))
         .filter_map(|z| {
-            let site = guild.sieges.0.get(&z)?;
+            let site = guild.sieges.sites.get(&z)?;
             let order = order(z, site, guild.log.id, ctx.state.me.char_id)?;
             let dist = dist2d(ctx.pos(), order.position);
             (dist <= MAX_WALK_M || ctx.would_teleport(dist)).then_some((order, dist))
@@ -235,7 +240,7 @@ pub fn owner(ctx: &Ctx<'_>, group: u16) -> Option<u32> {
         .guild
         .get()?
         .sieges
-        .0
+        .sites
         .get(&group)
         .map(|site| site.owner)
 }
@@ -244,7 +249,7 @@ pub fn battle_finished(ctx: &Ctx<'_>, group: u16) -> bool {
     ctx.state
         .guild
         .get()
-        .and_then(|guild| guild.sieges.0.get(&group))
+        .and_then(|guild| guild.sieges.sites.get(&group))
         .is_some_and(|site| site.siege.period != sc_siege::BATTLE)
 }
 
@@ -322,7 +327,7 @@ fn holding_guild(ctx: &Ctx<'_>) -> Option<String> {
         zones.iter().any(|group| {
             guild
                 .sieges
-                .0
+                .sites
                 .get(group)
                 .is_some_and(|site| site.owner == log.id)
         })
@@ -355,11 +360,11 @@ mod tests {
             position: [5000.0, 6000.0, 120.0],
             siege,
         });
-        let attacker = |b: &Book| order(33, &b.0[&33], 43, 7).unwrap();
+        let attacker = |b: &Book| order(33, &b.sites[&33], 43, 7).unwrap();
         assert_eq!(attacker(&book).side, Side::Attack);
         assert!(!attacker(&book).enrolled);
         assert!(book.enemy(attacker(&book), 9));
-        assert!(order(33, &book.0[&33], 45, 7).is_none());
+        assert!(order(33, &book.sites[&33], 45, 7).is_none());
         book.observe(&Event::Member {
             group: 33,
             expedition: 43,
@@ -372,14 +377,14 @@ mod tests {
             alert: sc_siege::ENGRAVABLE,
         });
         assert!(book.engravable(33));
-        assert_eq!(book.0[&33].owner, 44);
+        assert_eq!(book.sites[&33].owner, 44);
         book.observe(&Event::Phase {
             group: 33,
             owner: Some(43),
             siege: Siege::default(),
         });
         assert!(!book.engravable(33));
-        assert!(order(33, &book.0[&33], 43, 7).is_none());
-        assert_eq!(book.0[&33].owner, 43);
+        assert!(order(33, &book.sites[&33], 43, 7).is_none());
+        assert_eq!(book.sites[&33].owner, 43);
     }
 }

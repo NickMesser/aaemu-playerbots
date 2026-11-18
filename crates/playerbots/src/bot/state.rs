@@ -12,8 +12,11 @@
 //! [`SmallVec`]s with hard limits, strings are kept only where something reads them (character
 //! names).
 
+use std::collections::VecDeque;
+
 use aa_proto::sc::ServerEvent;
 use aa_proto::sc_activity::{quest_status, ActivityEvent, QuestRow};
+use aa_proto::sc_siege;
 use aa_proto::sc_world::{unit_type, EquipSlot, ItemChange, ItemTaskInfo, UnitInfo, WorldEvent};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -29,6 +32,7 @@ use super::zones::ZoneStates;
 
 /// Most units kept in the view.
 pub const MAX_UNITS: usize = 1024;
+const MAX_PENDING_HOUSES: usize = 32;
 /// Most doodads kept in the view.
 pub const MAX_DOODADS: usize = 2048;
 /// `SlotType` of the equipment container in item tasks.
@@ -551,6 +555,14 @@ impl BotState {
         BotState::default()
     }
 
+    pub fn enable_sieges(&mut self) {
+        self.guild.mem().sieges.pending_houses = Some(VecDeque::new());
+    }
+
+    fn pending_siege_houses(&mut self) -> Option<&mut VecDeque<UnitInfo>> {
+        self.guild.get_mut()?.sieges.pending_houses.as_mut()
+    }
+
     /// Forgets everything about the world (a new connection starts from scratch) and frees the
     /// memory of the collections.
     pub fn reset(&mut self) {
@@ -566,7 +578,11 @@ impl BotState {
         // (a pack dropped at a death spot is a doodad in the world, not a connection fact: the
         // bot still has to go back for it after a reconnect)
         let lost_pack = self.econ.lost_pack();
+        let sieges_enabled = self.pending_siege_houses().is_some();
         *self = BotState::default();
+        if sieges_enabled {
+            self.enable_sieges();
+        }
         self.vehicle.restore_trip_log(trips);
         self.gear = gear;
         if let Some(lost) = lost_pack {
@@ -792,6 +808,9 @@ impl BotState {
             }
             WorldEvent::UnitState(info) => self.apply_unit_state(info),
             WorldEvent::UnitsRemoved { objs } => {
+                if let Some(pending) = self.pending_siege_houses() {
+                    pending.retain(|house| !objs.contains(&house.obj));
+                }
                 for o in objs {
                     self.units.remove(o);
                     if self.fish_cue.as_ref().is_some_and(|cue| cue.object == *o) {
@@ -874,6 +893,12 @@ impl BotState {
                     if *hp <= 0 {
                         u.flags |= U_DEAD;
                     }
+                } else if let Some(house) = self
+                    .pending_siege_houses()
+                    .and_then(|pending| pending.iter_mut().find(|house| house.obj == *obj))
+                {
+                    house.hp = *hp;
+                    house.dead = *hp <= 0;
                 }
             }
             WorldEvent::UnitDamaged { caster, target } => {
@@ -1147,6 +1172,9 @@ impl BotState {
     /// ([`Reactions::world_changed`]).
     fn clear_view(&mut self) {
         self.units = FxHashMap::default();
+        if let Some(pending) = self.pending_siege_houses() {
+            pending.clear();
+        }
         self.fish_cue = None;
         self.doodads = FxHashMap::default();
         self.threats.clear();
@@ -1248,6 +1276,13 @@ impl BotState {
                 .get_mut()
                 .filter(|g| g.sieges.knows_tower(info.obj))
             else {
+                if let Some(pending) = self.pending_siege_houses() {
+                    pending.retain(|house| house.obj != info.obj);
+                    if pending.len() == MAX_PENDING_HOUSES {
+                        pending.pop_front();
+                    }
+                    pending.push_back(info.clone());
+                }
                 return;
             };
             for buff in &info.buffs {
@@ -1724,6 +1759,25 @@ impl BotState {
                     h.build_left = (*all - *cur).max(0);
                 }
             }
+            ActivityEvent::Siege(event) => {
+                if let Some(guild) = self.guild.get_mut() {
+                    let book = &mut guild.sieges;
+                    if book.pending_houses.is_some() {
+                        book.observe(event);
+                    }
+                    if let (Some(pending), sc_siege::Event::Territory { tower, .. }) =
+                        (book.pending_houses.as_mut(), event.as_ref())
+                    {
+                        let house = pending
+                            .iter()
+                            .position(|house| house.obj == *tower)
+                            .and_then(|index| pending.remove(index));
+                        if let Some(house) = house {
+                            self.apply_unit_state(&house);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1873,6 +1927,43 @@ mod tests {
             500,
         )))));
         s
+    }
+
+    #[test]
+    fn a_siege_snapshot_identifies_a_tower_already_announced_in_view() {
+        let mut s = in_world();
+        s.enable_sieges();
+        s.reset();
+        for object in [700, 701] {
+            s.apply(&world(WorldEvent::UnitState(Box::new(unit_info(
+                object,
+                unit_type::HOUSING,
+                192,
+            )))));
+        }
+        assert!(s.units.is_empty());
+        s.apply(&world(WorldEvent::UnitsRemoved {
+            objs: [701].into_iter().collect(),
+        }));
+        s.apply(&world(WorldEvent::UnitPoints {
+            obj: 700,
+            hp: 8,
+            mp: 0,
+        }));
+        for (group, tower) in [(33, 700), (34, 701)] {
+            s.apply(&ServerEvent::Activity(ActivityEvent::Siege(Box::new(
+                sc_siege::Event::Territory {
+                    group,
+                    tower,
+                    owner: 44,
+                    position: [15010.0, 15100.0, 126.0],
+                    siege: Default::default(),
+                },
+            ))));
+        }
+        assert_eq!(s.unit(700).unwrap().kind, UnitKind::Tower);
+        assert_eq!(s.unit(700).unwrap().hp, 8);
+        assert!(s.unit(701).is_none());
     }
 
     #[test]
