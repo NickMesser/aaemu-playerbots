@@ -640,6 +640,8 @@ pub struct PartyCfg {
     pub follow_into_dungeons: bool,
     /// Adventurer guild members take trade-pack escort requests from their party leader.
     pub trade_escorts: bool,
+    /// Companions ask a player loot master for a share of dungeon and combat loot.
+    pub loot_share_requests: bool,
     /// A bot declines the invitation of a player whose level (when it is known) differs from its
     /// own by more than this.
     pub max_level_gap: u8,
@@ -657,6 +659,7 @@ impl Default for PartyCfg {
             chat_commands: false,
             follow_into_dungeons: false,
             trade_escorts: false,
+            loot_share_requests: false,
             max_level_gap: 10,
             max_companions: 8,
             max_per_player: 4,

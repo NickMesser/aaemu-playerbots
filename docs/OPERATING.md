@@ -419,6 +419,12 @@ nearby hostile character after seeing it land a hit.
 The escort uses professional work time and ends if the pack is lost, the party breaks up, or 20
 minutes elapse. The leader can whisper `escort cancel`. Agents can read `escorts_completed`.
 
+Set `[party] loot_share_requests = true` to let a companion ask a player loot master for
+a share. The bot asks by whisper once per party after the server reports the Master Looter rule.
+The player can assign items through the game's loot controls.
+Bots also remember seeing a party member enable Bloodlust. Lawful personalities lose more
+trust, and repeated toggles have a 15-minute cooldown for each relationship.
+
 ### Open-world bot parties
 
 Set `[behavior] field_parties = true` to offer the `field_party` goal. The coordinator gathers

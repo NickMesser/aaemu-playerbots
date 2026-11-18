@@ -763,6 +763,7 @@ impl Bot {
             }
         }
         self.record_hostile_death(&ev);
+        self.record_companion_bloodlust(&ev);
         self.state.apply(&ev);
         if let ServerEvent::Activity(activity) = &ev {
             if self.shared.cfg.guild.enabled && !self.shared.cfg.guild.treasuries.is_empty() {
@@ -821,6 +822,43 @@ impl Bot {
         self.shared.hub.journal.update(self.entry.id, |j| {
             j.relationships
                 .update(attacker.id, |r| r.change_trust(loss));
+        });
+    }
+
+    fn record_companion_bloodlust(&self, event: &ServerEvent) {
+        const BLOODLUST: u32 = 1482;
+        let ServerEvent::World(WorldEvent::BuffCreated {
+            obj,
+            buff_id: BLOODLUST,
+            ..
+        }) = event
+        else {
+            return;
+        };
+        let Some(unit) = self.state.units.get(obj).filter(|u| {
+            u.kind == UnitKind::Character
+                && u.id != self.state.me.char_id
+                && self.state.team().is_some_and(|team| {
+                    team.in_team() && team.members.iter().any(|member| member.char_id == u.id)
+                })
+        }) else {
+            return;
+        };
+        let Some(name) = unit.name.as_deref() else {
+            return;
+        };
+        let at = crate::hub::unix_ms() / 1_000;
+        self.shared.hub.journal.update(self.entry.id, |j| {
+            let mut seen = false;
+            j.relationships.update(unit.id, |r| {
+                seen = r.witnessed_bloodlust(at, self.persona.profile.outlaw);
+            });
+            if seen {
+                j.notes.push_clean(
+                    at,
+                    &format!("Saw {name} turn on Bloodlust while in my party."),
+                );
+            }
         });
     }
 

@@ -17,7 +17,7 @@ use aa_proto::sc_activity::{ActivityEvent, TeamMemberBrief, TeamPerson};
 
 use super::TeamLog;
 
-/// The loot rule of the team (`SCTeamLootingRuleChanged`); bots only note it.
+/// The loot rule of the team (`SCTeamLootingRuleChanged`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LootRule {
     /// Loot method.
@@ -28,6 +28,14 @@ pub struct LootRule {
     pub master: u32,
     /// Bind-on-pickup items are rolled for.
     pub roll_bop: bool,
+}
+
+impl LootRule {
+    /// The member who assigns loot when the team uses Master Looter.
+    pub fn assigning_member(self) -> Option<u32> {
+        const MASTER_LOOTER: u8 = 2;
+        (self.method == MASTER_LOOTER && self.master != 0).then_some(self.master)
+    }
 }
 
 /// What the bot knows of one team member. See the module docs.

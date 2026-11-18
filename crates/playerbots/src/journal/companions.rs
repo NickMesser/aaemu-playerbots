@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 const MAX_COMPANIONS: usize = 32;
 const SESSION_GAP_SECS: u64 = 30 * 60;
+const BLOODLUST_MEMORY_GAP_SECS: u64 = 15 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +48,8 @@ pub struct Relationship {
     pub trust: i8,
     pub preference: Option<Preference>,
     last_party: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_bloodlust: Option<u64>,
 }
 
 impl Relationship {
@@ -63,6 +66,19 @@ impl Relationship {
 
     pub fn change_trust(&mut self, delta: i8) {
         self.trust = self.trust.saturating_add(delta).clamp(-100, 100);
+    }
+
+    pub fn witnessed_bloodlust(&mut self, now: u64, outlaw: f32) -> bool {
+        if self
+            .last_bloodlust
+            .is_some_and(|at| now.saturating_sub(at) < BLOODLUST_MEMORY_GAP_SECS)
+        {
+            return false;
+        }
+        self.last_bloodlust = Some(now);
+        let loss = ((1.0 - outlaw.clamp(0.0, 1.0)) * 15.0).round() as i8;
+        self.change_trust(-loss);
+        true
     }
 }
 
@@ -100,6 +116,20 @@ impl Relationships {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn witnessed_bloodlust_respects_personality_and_survives_reconnect() {
+        let mut lawful = Relationship::default();
+        assert!(lawful.witnessed_bloodlust(100, 0.0));
+        assert_eq!(lawful.trust, -15);
+
+        let json = serde_json::to_string(&lawful).unwrap();
+        let mut lawful: Relationship = serde_json::from_str(&json).unwrap();
+        assert!(!lawful.witnessed_bloodlust(101, 0.0));
+        assert_eq!(lawful.trust, -15);
+        assert!(lawful.witnessed_bloodlust(100 + BLOODLUST_MEMORY_GAP_SECS, 1.0));
+        assert_eq!(lawful.trust, -15);
+    }
 
     #[test]
     fn meetings_and_preferences_survive_serialization_without_inflating_trust() {

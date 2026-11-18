@@ -330,6 +330,7 @@ fn upkeep(ctx: &mut Ctx<'_>, running: Option<GoalKind>) {
                 let was = m.registered != 0;
                 m.registered = 0;
                 m.hand = (0, 0);
+                m.loot_request_team = 0;
                 m.gone_since_ms = 0;
                 m.leave = false;
                 m.leave_sent_ms = 0;
@@ -417,6 +418,9 @@ fn upkeep(ctx: &mut Ctx<'_>, running: Option<GoalKind>) {
         ctx.send(cs::set_team_member_role(team_id, me, role));
         ctx.log.debug(format!("party: role {role}"));
     }
+    if running == Some(GoalKind::Companion) && ctx.cfg.party.loot_share_requests {
+        request_loot_share(ctx, team_id);
+    }
     if let Some(target) = plan.hand_over {
         let m = mem_of(ctx.state);
         m.hand = (m.hand.0 + 1, now.max(1));
@@ -426,6 +430,29 @@ fn upkeep(ctx: &mut Ctx<'_>, running: Option<GoalKind>) {
     if let Some(why) = plan.leave {
         leave_team(ctx, team_id, why, running);
     }
+}
+
+fn request_loot_share(ctx: &mut Ctx<'_>, team_id: u32) {
+    if peek(ctx.state).is_some_and(|m| m.loot_request_team == team_id) {
+        return;
+    }
+    let Some(master) = team_of(ctx).and_then(|team| {
+        let char_id = team.loot?.assigning_member()?;
+        if ctx.hub.is_bot_char(char_id) {
+            return None;
+        }
+        team.remote_of(char_id).filter(|member| member.online)
+    }) else {
+        return;
+    };
+    let Some(packet) = whisper_packet(
+        &master.name,
+        "Could you set aside a share of the loot for me when we fight together?",
+    ) else {
+        return;
+    };
+    mem_of(ctx.state).loot_request_team = team_id;
+    ctx.send(packet);
 }
 
 /// The party role of a class: tank, healer, or attacker.

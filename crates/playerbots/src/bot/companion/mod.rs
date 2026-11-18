@@ -106,6 +106,8 @@ pub struct Mem {
     pub declined: SmallVec<[(u64, u64); 3]>,
     /// The team the bot announced its role in.
     pub role_sent: u32,
+    /// The current team in which the bot negotiated a share with the loot master.
+    pub loot_request_team: u32,
     /// Attempts to hand the lead over and the bot clock of the last.
     pub hand: (u8, u64),
     /// The team the hand-over was counted for.
