@@ -14,6 +14,9 @@ use crate::bot::state::{dist3d, UnitKind, U_MY_SUMMON};
 
 const CAST: u32 = 21578;
 const LURE: u32 = 27319;
+const FRESHWATER_SCHOOL: u32 = 6447;
+const FRESHWATER_CHUM: u32 = 27313;
+const BANK_SEARCH_M: f32 = 450.0;
 // The sport-cast plot channels for up to 220 seconds and rolls for a bite every 20 seconds.
 const HOOK_WAIT_MS: u64 = 230_000;
 // Hooked fish can stay in the fight for up to ten minutes. Their escape removes them from view.
@@ -117,15 +120,14 @@ fn cast_point(ctx: &Ctx<'_>) -> Option<[f32; 3]> {
         .values()
         .filter(|d| !ctx.world.school_fish(d.phase).is_empty() && dist3d(me, d.pos) < 95.0)
         .filter_map(|school| {
-            let at = water_towards(ctx, school.pos)?;
+            let at = water_towards(ctx, me, school.pos)?;
             Some((dist3d(me, school.pos), at))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, at)| at)
 }
 
-fn water_towards(ctx: &Ctx<'_>, school: [f32; 3]) -> Option<[f32; 3]> {
-    let me = ctx.pos();
+fn water_towards(ctx: &Ctx<'_>, me: [f32; 3], school: [f32; 3]) -> Option<[f32; 3]> {
     let dx = school[0] - me[0];
     let dy = school[1] - me[1];
     let distance = dx.hypot(dy);
@@ -151,7 +153,7 @@ fn chum_target(ctx: &Ctx<'_>) -> Option<(u32, [f32; 3], FishChum, u64)> {
             return None;
         }
         // The chum affects a 25 m circle at the cast point.
-        let at = water_towards(ctx, school.pos)?;
+        let at = water_towards(ctx, ctx.pos(), school.pos)?;
         if dist3d(at, school.pos) > 24.0 {
             return None;
         }
@@ -170,6 +172,35 @@ fn chum_target(ctx: &Ctx<'_>) -> Option<(u32, [f32; 3], FishChum, u64)> {
     })
 }
 
+fn bank_near_school(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
+    if ctx.state.item_count(FRESHWATER_CHUM) == 0 {
+        return None;
+    }
+    let [x, y, z] = ctx.pos();
+    let from = Vec3::new(x, y, z);
+    let school = ctx.world.nearest_doodad_spawn(FRESHWATER_SCHOOL, from)?;
+    if school.z <= super::super::motion::SEA_LEVEL
+        || school.dist2d(from) > BANK_SEARCH_M
+        || ctx.in_war_zone(school.x, school.y)
+    {
+        return None;
+    }
+    (0..32)
+        .filter_map(|index| {
+            let angle = index as f32 * std::f32::consts::TAU / 32.0;
+            let (sin, cos) = angle.sin_cos();
+            let (x, y) = (school.x + 43.0 * cos, school.y + 43.0 * sin);
+            let z = ctx.world.ground_z(x, y)?;
+            if !(school.z + 0.25..=school.z + 6.0).contains(&z) || ctx.in_war_zone(x, y) {
+                return None;
+            }
+            water_towards(ctx, [x, y, z], [school.x, school.y, school.z])?;
+            Some(([x, y], Vec3::new(x, y, z).dist2d_sq(from)))
+        })
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(pos, _)| pos)
+}
+
 pub fn score(ctx: &Ctx<'_>) -> f32 {
     if !ctx.cfg.behavior.sport_fishing || ctx.state.place.in_instance() || ctx.state.place.loading()
     {
@@ -178,11 +209,13 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     if carries_catch(ctx) || nearby_owned_catch(ctx).is_some() {
         return 8.0;
     }
-    if ctx.state.me.hp_pct() >= 60
-        && has_supplies(ctx)
-        && (cast_point(ctx).is_some() || chum_target(ctx).is_some())
-    {
+    if ctx.state.me.hp_pct() < 60 || !has_supplies(ctx) {
+        return 0.0;
+    }
+    if cast_point(ctx).is_some() || chum_target(ctx).is_some() {
         1.0
+    } else if bank_near_school(ctx).is_some() {
+        0.4
     } else {
         0.0
     }
@@ -208,6 +241,10 @@ fn nearby_owned_catch(ctx: &Ctx<'_>) -> Option<u32> {
 enum Step {
     #[default]
     Start,
+    Seek {
+        bank: [f32; 2],
+        deadline: u64,
+    },
     Equipping {
         deadline: u64,
     },
@@ -282,6 +319,18 @@ impl Fish {
                 if !has_supplies(ctx) {
                     return GoalStatus::Failed(FailReason::NoTarget);
                 }
+                let cast_at = cast_point(ctx);
+                let chum_at = chum_target(ctx);
+                if cast_at.is_none() && chum_at.is_none() {
+                    let Some(bank) = bank_near_school(ctx) else {
+                        return GoalStatus::Failed(FailReason::NoTarget);
+                    };
+                    self.step = Seek {
+                        bank,
+                        deadline: now + 150_000,
+                    };
+                    return GoalStatus::Running;
+                }
                 if !mainhand(ctx).is_some_and(|item| RODS.contains(&item.template)) {
                     let Some((slot, rod)) = bag_rod(ctx) else {
                         return GoalStatus::Failed(FailReason::NoTarget);
@@ -306,9 +355,9 @@ impl Fish {
                     };
                     return GoalStatus::Running;
                 }
-                if let Some(at) = cast_point(ctx) {
+                if let Some(at) = cast_at {
                     self.cast(ctx, at);
-                } else if let Some((object, [x, y, z], chum, item)) = chum_target(ctx) {
+                } else if let Some((object, [x, y, z], chum, item)) = chum_at {
                     ctx.motion.stop();
                     ctx.motion.face(x, y);
                     ctx.send(cs::start_skill_item_at(
@@ -326,6 +375,22 @@ impl Fish {
                     };
                 } else {
                     return GoalStatus::Failed(FailReason::NoTarget);
+                }
+            }
+            Seek { bank, deadline } => {
+                if now >= deadline {
+                    return timeout;
+                }
+                if cast_point(ctx).is_some() || chum_target(ctx).is_some() {
+                    ctx.motion.stop();
+                    self.walker.reset();
+                    self.step = Start;
+                } else {
+                    return match self.walker.step(ctx, bank, 1.0) {
+                        Walk::Going => GoalStatus::Running,
+                        Walk::There => GoalStatus::Failed(FailReason::NoTarget),
+                        Walk::Stuck => GoalStatus::Failed(FailReason::Stuck),
+                    };
                 }
             }
             Equipping { deadline } => {
@@ -362,7 +427,7 @@ impl Fish {
                     .get(&object)
                     .filter(|d| d.phase == expected)
                 {
-                    let Some(at) = water_towards(ctx, school.pos) else {
+                    let Some(at) = water_towards(ctx, ctx.pos(), school.pos) else {
                         return GoalStatus::Failed(FailReason::NoTarget);
                     };
                     self.cast(ctx, at);
@@ -619,6 +684,7 @@ impl Fish {
 
     pub fn describe(&self, out: &mut String) {
         out.push_str(match self.step {
+            Step::Seek { .. } => "Looking for a fishing bank",
             Step::Equipping { .. } => "Equipping a sport fishing rod",
             Step::SettlingRod { .. } => "Waiting to use the fishing rod",
             Step::Chumming { .. } => "Chumming a sport fishing school",

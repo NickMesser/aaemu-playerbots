@@ -394,6 +394,9 @@ expected payment. Agents can read `fish_turn_ins` and `fish_sale_copper` in `obs
 A bot within casting range of an inactive school can apply a compatible chum item from its bag.
 It waits for the rod-change lockout and for the server's school phase update before casting a lure,
 then matches the reel actions to the hooked fish's movement.
+With freshwater chum, a bot within 450 metres of a known freshwater school can walk to a
+nearby bank. The route requires baked terrain and a point where both the chum and lure can reach
+the water.
 
 ### Message deliveries
 
