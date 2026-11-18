@@ -393,6 +393,14 @@ a projected margin after listing fees and the auction tax. It relists the purcha
 the item arrives by mail. When the sale proceeds arrive, the confirmed profit goes into the
 member's next guild contribution.
 
+Set `[guild] siege_zones = { "43" = [33] }` and enable PvP to let a bot-led guild participate
+in announced castle sieges. Use server guild IDs and dominion zone group IDs. Bots register
+during warmup from outside the castle and wait for the battle phase before approaching the
+tower. Attackers fight the tower and use the game's engraving skill when it is exposed.
+Defenders can engage enrolled attackers under the existing PvP target settings. Only the
+server's territory update counts as a capture or successful defense, and the director remembers
+those results. This goal requires a server with an active siege and access to that castle zone.
+
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
 auctioneer and stroll around the market. Add places such as taverns or campfires to
 `settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and

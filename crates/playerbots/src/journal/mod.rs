@@ -106,6 +106,8 @@ pub struct Journal {
     pub bounties_completed: u32,
     /// Confirmed feed, treatment and collection actions on guild livestock.
     pub livestock_actions: u32,
+    pub sieges_won: u32,
+    pub sieges_held: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

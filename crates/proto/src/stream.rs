@@ -128,6 +128,10 @@ impl PacketStream {
         Ok(self.take(N)?.try_into().unwrap())
     }
 
+    pub fn skip(&mut self, n: usize) -> Result<()> {
+        self.take(n).map(|_| ())
+    }
+
     pub fn read_bool(&mut self) -> Result<bool> {
         Ok(self.read_u8()? == 1)
     }

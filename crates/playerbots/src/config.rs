@@ -502,6 +502,8 @@ pub struct GuildCfg {
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
+    /// Guild ids and the dominion zone groups they may help attack or defend.
+    pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Long-run percentage of play that can go to professional goals.
     pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
@@ -532,6 +534,7 @@ impl Default for GuildCfg {
             auction_flips: false,
             production_orders: Default::default(),
             treasuries: Default::default(),
+            siege_zones: Default::default(),
             work_percent: 60,
             enabled: false,
             found: true,
@@ -1415,6 +1418,16 @@ impl Config {
                     .iter()
                     .all(|(id, terms)| { g.professions.contains_key(id) && terms.valid() }),
             "guild.treasuries must name up to 16 configured guilds with valid contributions"
+        );
+        ensure!(
+            g.siege_zones.len() <= 16
+                && g.siege_zones.iter().all(|(guild, zones)| {
+                    guild.parse::<u32>().is_ok_and(|id| id > 0)
+                        && !zones.is_empty()
+                        && zones.len() <= 16
+                        && zones.iter().all(|&zone| zone > 0)
+                }),
+            "guild.siege_zones must name nonzero guild and zone group ids"
         );
         ensure!(
             (50..=75).contains(&g.work_percent),

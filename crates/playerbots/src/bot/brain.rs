@@ -140,7 +140,7 @@ fn own_scores(
         super::goals::market::score(ctx, base[market])
     });
     // (the wave-one goals that are not built yet are stubs: 0 until their features exist)
-    let wave_one: [(GoalKind, OwnScore); 8] = [
+    let wave_one: [(GoalKind, OwnScore); 9] = [
         (GoalKind::Guild, super::goals::guild::score),
         (GoalKind::Gank, super::goals::gank::score),
         (GoalKind::Warzone, super::goals::warzone::score),
@@ -149,6 +149,7 @@ fn own_scores(
         (GoalKind::Farm, super::goals::farm::score),
         (GoalKind::Explore, super::goals::explore::score),
         (GoalKind::Gear, super::goals::gear::score),
+        (GoalKind::Siege, super::goals::siege::score),
     ];
     for (kind, score) in wave_one {
         let i = kind.index();
@@ -251,10 +252,13 @@ struct Chat {
     guild_service: ServiceTime,
 }
 
+// The goals after Gear score themselves entirely from the live situation.
+const STORED_BASE_WEIGHTS: usize = GoalKind::Gear as usize + 1;
+
 /// Chooses and runs goals for one bot. See the module docs.
 #[derive(Debug)]
 pub struct Brain {
-    base: [f32; GoalKind::COUNT],
+    base: [f32; STORED_BASE_WEIGHTS],
     goal: Option<Goal>,
     choice: GoalChoice,
     last: Option<GoalKind>,
@@ -282,8 +286,11 @@ pub struct Brain {
 impl Brain {
     /// A brain with the goal weights of `behavior` scaled by the bot's `temper`.
     pub fn new(behavior: &BehaviorCfg, temper: &Temperament) -> Brain {
+        let weights = base_weights(behavior, temper);
+        let mut base = [0.0; STORED_BASE_WEIGHTS];
+        base.copy_from_slice(&weights[..STORED_BASE_WEIGHTS]);
         Brain {
-            base: base_weights(behavior, temper),
+            base,
             goal: None,
             choice: GoalChoice::Auto,
             last: None,
@@ -598,13 +605,14 @@ impl Brain {
             Some(why) => ctx.log.say(format!("goal: {} ({why})", kind.name())),
             None => ctx.log.say(format!("goal: {}", kind.name())),
         }
-        if let Some((_, profession, false)) = profession::membership(ctx) {
-            if profession.goals().contains(&kind)
-                || (kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx))
-            {
-                let interval = ctx.cfg.llm.director_interval_secs;
-                self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
-            }
+        let professional = profession::membership(ctx).is_some_and(|(_, profession, master)| {
+            !master
+                && (profession.goals().contains(&kind)
+                    || kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx))
+        });
+        if professional || kind == GoalKind::Siege {
+            let interval = ctx.cfg.llm.director_interval_secs;
+            self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
         }
         self.goal = Some(goal);
     }
@@ -713,6 +721,9 @@ impl Brain {
         if fish_busy {
             blocked |= !(1 << GoalKind::Fish.index());
         }
+        if !self.guild_service_available(ctx.now_ms) {
+            blocked |= 1 << GoalKind::Siege.index();
+        }
         for g in GoalKind::ALL {
             if self.cooldown_until.active(g, ctx.now_ms) {
                 blocked |= 1 << g.index();
@@ -725,8 +736,10 @@ impl Brain {
             last: self.last,
             blocked,
         };
-        let mut s = scores(&self.base, &input);
-        own_scores(ctx, &self.base, blocked, &mut s);
+        let mut base = [0.0; GoalKind::COUNT];
+        base[..STORED_BASE_WEIGHTS].copy_from_slice(&self.base);
+        let mut s = scores(&base, &input);
+        own_scores(ctx, &base, blocked, &mut s);
         let work = GoalKind::Work.index();
         s[work] = own_score(blocked, work, || super::goals::work::score(ctx));
         let fish = GoalKind::Fish.index();
@@ -780,6 +793,9 @@ impl Brain {
         if kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx) {
             return self.guild_service_available(ctx.now_ms);
         }
+        if kind == GoalKind::Siege {
+            return self.guild_service_available(ctx.now_ms);
+        }
         profession::membership(ctx).is_none_or(|(_, profession, master)| {
             !profession.goals().contains(&kind)
                 || (!master && self.guild_service_available(ctx.now_ms))
@@ -787,7 +803,10 @@ impl Brain {
     }
 
     fn guild_work_context(&self, ctx: &Ctx<'_>) -> Option<String> {
-        let (id, role, master) = profession::membership(ctx)?;
+        let siege = super::guild::siege::context(ctx);
+        let Some((id, role, master)) = profession::membership(ctx) else {
+            return siege;
+        };
         let state = if master {
             "guildmaster"
         } else if self
@@ -802,6 +821,10 @@ impl Brain {
             "personal time"
         };
         let mut context = format!("Guild {id}, {} profession, {state}.", role.title());
+        if let Some(siege) = siege {
+            context.push(' ');
+            context.push_str(&siege);
+        }
         if let Some(item) = profession::farm_order(ctx) {
             context.push_str(&format!(
                 " The farm goal tends ripe crops and plants item {item}."

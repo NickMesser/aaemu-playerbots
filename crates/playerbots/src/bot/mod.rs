@@ -766,6 +766,11 @@ impl Bot {
         self.record_companion_bloodlust(&ev);
         self.state.apply(&ev);
         if let ServerEvent::Activity(activity) = &ev {
+            if let aa_proto::sc_activity::ActivityEvent::Siege(event) = activity {
+                if self.shared.cfg.guild.enabled && !self.shared.cfg.guild.siege_zones.is_empty() {
+                    self.state.guild.mem().sieges.observe(event);
+                }
+            }
             if self.shared.cfg.guild.enabled
                 && !self.shared.cfg.guild.treasuries.is_empty()
                 && guild::treasury::is_mail(activity)

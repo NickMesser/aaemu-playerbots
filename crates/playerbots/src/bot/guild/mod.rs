@@ -46,6 +46,7 @@ pub mod plan;
 pub mod prices;
 pub mod profession;
 pub mod report;
+pub mod siege;
 pub mod treasury;
 
 use aa_proto::guild::GuildEvent;
@@ -63,6 +64,7 @@ pub struct Mem {
     /// The duty's clocks and plans.
     pub t: Timers,
     pub treasury: treasury::Treasury,
+    pub sieges: siege::Book,
 }
 
 /// What a bot knows about its guild (one pointer until the first guild packet or duty tick).

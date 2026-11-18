@@ -84,7 +84,7 @@ pub enum TagOwner {
     Other,
 }
 
-/// What kind of unit the server shows. Houses, transfers, mates and shipyards are not tracked.
+/// What kind of unit the server shows. Only announced siege towers are tracked as housing units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
     /// A player character (a bot or a real player).
@@ -93,6 +93,7 @@ pub enum UnitKind {
     Npc,
     /// A vehicle (cart, boat).
     Slave,
+    Tower,
 }
 
 impl UnitKind {
@@ -102,6 +103,7 @@ impl UnitKind {
             unit_type::CHARACTER => Some(UnitKind::Character),
             unit_type::NPC => Some(UnitKind::Npc),
             unit_type::SLAVE => Some(UnitKind::Slave),
+            unit_type::HOUSING => Some(UnitKind::Tower),
             _ => None,
         }
     }
@@ -1074,6 +1076,14 @@ impl BotState {
                         self.note_fish_cue(*obj, *index, skill);
                     }
                 }
+                if matches!(
+                    *buff_id,
+                    super::guild::siege::ENGRAVABLE_BUFF | super::guild::siege::ENGRAVING_BUFF
+                ) {
+                    if let Some(guild) = self.guild.get_mut() {
+                        guild.sieges.note_tower_buff(*obj, *buff_id);
+                    }
+                }
             }
             WorldEvent::BuffRemoved { obj, index } => {
                 if *obj == self.me.obj {
@@ -1232,6 +1242,18 @@ impl BotState {
         let Some(kind) = UnitKind::from_wire(info.unit_type) else {
             return;
         };
+        if kind == UnitKind::Tower {
+            let Some(guild) = self
+                .guild
+                .get_mut()
+                .filter(|g| g.sieges.knows_tower(info.obj))
+            else {
+                return;
+            };
+            for buff in &info.buffs {
+                guild.sieges.note_tower_buff(info.obj, buff.buff_id);
+            }
+        }
         if self.units.len() >= MAX_UNITS && !self.units.contains_key(&info.obj) {
             self.dropped = self.dropped.saturating_add(1);
             return;

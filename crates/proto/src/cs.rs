@@ -1050,6 +1050,11 @@ pub fn gm_command(line: &str) -> Option<Out> {
     ok.then(|| chat_packet(chat_type::SAY, "", line))
 }
 
+/// An ordinary guild member's server-side siege registration.
+pub fn join_siege(zone_group: u16) -> Out {
+    chat_packet(chat_type::SAY, "", &format!("/joinsiege {zone_group}"))
+}
+
 // ---- quests ---------------------------------------------------------------------------------
 
 /// `CSStartQuestContextPacket`: accepts a quest from an NPC, a doodad or a sign sphere (the

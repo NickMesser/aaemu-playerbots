@@ -857,6 +857,7 @@ pub enum ActivityEvent {
     /// A packet about guilds (expeditions): the member list, an invitation, a join or leave, a
     /// role change; see [`crate::guild`].
     Guild(Box<crate::guild::GuildEvent>),
+    Siege(Box<crate::sc_siege::Event>),
 }
 
 type Reader = fn(&mut PacketStream) -> Result<ActivityEvent, MarshalError>;
@@ -1238,6 +1239,9 @@ pub fn parse(level: u8, opcode: u16, body: &[u8]) -> Result<Option<ActivityEvent
         _ => {
             if let Some(a) = crate::auction::parse(level, opcode, body)? {
                 return Ok(Some(E::Auction(Box::new(a))));
+            }
+            if let Some(event) = crate::sc_siege::parse(level, opcode, body)? {
+                return Ok(Some(E::Siege(Box::new(event))));
             }
             return Ok(crate::guild::parse(level, opcode, body)?.map(|g| E::Guild(Box::new(g))));
         }

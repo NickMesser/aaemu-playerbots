@@ -42,6 +42,7 @@ pub mod market;
 pub mod quest;
 pub mod rest;
 pub mod sail;
+pub mod siege;
 pub mod social;
 pub mod trade;
 pub mod trade_run;
@@ -155,6 +156,8 @@ pub enum Goal {
     Delivery(delivery::Delivery),
     /// Explore or grind with a bot party.
     FieldParty(Box<field::Field>),
+    /// Fight for the guild's announced siege territory.
+    Siege(siege::Goal),
 }
 
 impl Goal {
@@ -206,6 +209,7 @@ impl Goal {
             GoalKind::Fish => Goal::Fish(fish::Fish::default()),
             GoalKind::Delivery => Goal::Delivery(delivery::Delivery::default()),
             GoalKind::FieldParty => Goal::FieldParty(field::Field::new(party)),
+            GoalKind::Siege => Goal::Siege(siege::Goal::default()),
         }
     }
 
@@ -236,6 +240,7 @@ impl Goal {
             Goal::Fish(_) => GoalKind::Fish,
             Goal::Delivery(_) => GoalKind::Delivery,
             Goal::FieldParty(_) => GoalKind::FieldParty,
+            Goal::Siege(_) => GoalKind::Siege,
         }
     }
 
@@ -247,7 +252,8 @@ impl Goal {
             | Goal::Quest(_)
             | Goal::Duel(_)
             | Goal::Fish(_)
-            | Goal::FieldParty(_) => true,
+            | Goal::FieldParty(_)
+            | Goal::Siege(_) => true,
             Goal::Dungeon(g) => g.owns_combat(),
             Goal::Sail(g) => g.owns_combat(),
             Goal::Auction(g) => g.owns_combat(),
@@ -290,6 +296,7 @@ impl Goal {
             Goal::Gear(g) => g.start(ctx),
             Goal::Work(g) => g.start(ctx),
             Goal::FieldParty(g) => g.start(ctx),
+            Goal::Siege(g) => g.start(ctx),
             Goal::Fish(_) | Goal::Delivery(_) => {}
         }
     }
@@ -327,6 +334,7 @@ impl Goal {
             Goal::Fish(g) => return g.tick(ctx),
             Goal::Delivery(g) => return g.tick(ctx),
             Goal::FieldParty(g) => return g.tick(ctx, combat),
+            Goal::Siege(g) => return g.tick(ctx),
         };
         if !resume {
             return GoalStatus::Done;
@@ -365,6 +373,7 @@ impl Goal {
             Goal::Gear(g) => g.stop(ctx),
             Goal::Work(g) => g.stop(ctx),
             Goal::FieldParty(g) => g.stop(ctx),
+            Goal::Siege(g) => g.stop(ctx),
             Goal::Fish(g) => g.stop(ctx),
             Goal::Delivery(_) => ctx.motion.stop(),
         }
@@ -405,8 +414,12 @@ impl Goal {
             Goal::Farm(g) => g.activity(moving, fighting),
             Goal::Explore(g) => g.activity(moving, fighting),
             Goal::Gear(g) => g.activity(moving, fighting),
-            Goal::Work(_) if fighting => Activity::Fighting,
-            Goal::Fish(_) | Goal::Work(_) | Goal::Delivery(_) | Goal::FieldParty(_) => {
+            Goal::Work(_) | Goal::Siege(_) if fighting => Activity::Fighting,
+            Goal::Fish(_)
+            | Goal::Work(_)
+            | Goal::Delivery(_)
+            | Goal::FieldParty(_)
+            | Goal::Siege(_) => {
                 if moving {
                     Activity::Traveling
                 } else {
@@ -443,6 +456,7 @@ impl Goal {
             Goal::Fish(g) => g.describe(out),
             Goal::Delivery(g) => g.describe(out),
             Goal::FieldParty(g) => g.describe(out),
+            Goal::Siege(g) => g.describe(out),
         }
     }
 }

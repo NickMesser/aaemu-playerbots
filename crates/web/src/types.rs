@@ -446,7 +446,7 @@ pub enum Command {
 
 impl Command {
     /// Values accepted by [`Command::Goal`].
-    pub const GOALS: [&'static str; 25] = [
+    pub const GOALS: [&'static str; 26] = [
         "quest",
         "grind",
         "duel",
@@ -469,6 +469,7 @@ impl Command {
         "fish",
         "delivery",
         "field_party",
+        "siege",
         "rest",
         "wander",
         "auto",
