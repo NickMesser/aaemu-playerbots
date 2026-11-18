@@ -194,8 +194,29 @@ pub fn heuristic_unit(facts: Facts) -> u32 {
 pub enum Why {
     /// It costs far less than a vendor pays for it.
     Bargain,
+    /// A recent record of completed sales supports buying it for resale.
+    Resale,
     /// The bot can use the item and the lot costs no more than a shop would.
     Useful,
+}
+
+/// Use a discount from observed sales to leave room for competition on the resale.
+pub(crate) fn resale_ask(unit: f32, count: u32, cost: i64) -> Option<Ask> {
+    if !unit.is_finite() || unit <= 0.0 || count == 0 || cost <= 0 {
+        return None;
+    }
+    let buyout = (f64::from(unit) * f64::from(count) * 0.9).floor() as i64;
+    let buyout = i32::try_from(buyout).ok().filter(|&price| price > 0)?;
+    let fee = listing_fee(buyout, aa_proto::auction::duration::H48);
+    let net = net_of(i64::from(buyout), aa_proto::auction::duration::H48);
+    // Fixed-price listings protect the margin even when someone places the minimum bid.
+    (net >= cost + (cost / 5).max(50)).then_some(Ask {
+        start: buyout,
+        buyout,
+        unit: buyout as u32 / count,
+        fee,
+        net,
+    })
 }
 
 /// Whether the bot should buy `lot` out for its buyout price. `facts` are the item's, `useful`
@@ -242,6 +263,17 @@ mod tests {
             client_id: client,
             ..Lot::default()
         }
+    }
+
+    #[test]
+    fn resale_includes_the_listing_fee_and_requires_a_margin() {
+        let ask = resale_ask(200.0, 10, 1000).unwrap();
+        assert_eq!(
+            (ask.start, ask.buyout, ask.fee, ask.net),
+            (1800, 1800, 72, 1548)
+        );
+        assert!(resale_ask(200.0, 10, 1450).is_none());
+        assert!(resale_ask(f32::NAN, 10, 1000).is_none());
     }
 
     #[test]

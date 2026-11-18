@@ -45,6 +45,7 @@
 
 mod machine;
 pub mod report;
+pub(crate) mod resale;
 #[cfg(test)]
 mod tests;
 
@@ -55,7 +56,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::bot::ctx::Ctx;
-use crate::bot::market::auction::price::{self, Facts};
+use crate::bot::market::auction::price::{self, Ask, Facts};
 use crate::bot::market::auction::{AuctionMemory, Fault, Kind, Settled, WinWait};
 use crate::bot::market::needs::QuestNeeds;
 use crate::bot::motion::{MotionStatus, Pace};
@@ -143,6 +144,17 @@ pub trait Env {
     fn sell_stacks(&mut self, max: usize) -> SmallVec<[Stack; MAX_LISTINGS]>;
     /// How much the bot may spend on a purchase; `None` when it may not buy at all.
     fn buy_budget(&self) -> Option<i64>;
+    fn resale_candidate(&self, _lot: &aa_proto::auction::Lot, _budget: i64) -> bool {
+        false
+    }
+    fn note_resale_buy(&mut self, _lot: &aa_proto::auction::Lot, _cost: i64) {}
+    fn resale_ask(&self, _stack: Stack) -> Option<Option<Ask>> {
+        None
+    }
+    fn listed_for_resale(&self, _item_id: u64) -> bool {
+        false
+    }
+    fn note_resale_post(&mut self, _stack: Stack, _name: &str, _ask: Ask) {}
     /// The last refusal the server sent at or after bot clock `since_ms`: `(error, reason)`.
     fn error_since(&self, since_ms: u64) -> Option<(i16, u32)>;
 }
@@ -255,6 +267,26 @@ impl Env for Live<'_, '_> {
         buy_budget_of(self.0)
     }
 
+    fn resale_candidate(&self, lot: &aa_proto::auction::Lot, budget: i64) -> bool {
+        resale::candidate(self.0, lot, budget)
+    }
+
+    fn note_resale_buy(&mut self, lot: &aa_proto::auction::Lot, cost: i64) {
+        resale::bought(self.0, lot, cost);
+    }
+
+    fn resale_ask(&self, stack: Stack) -> Option<Option<Ask>> {
+        resale::listing_ask(self.0, stack)
+    }
+
+    fn listed_for_resale(&self, item_id: u64) -> bool {
+        resale::is_listed(self.0, item_id)
+    }
+
+    fn note_resale_post(&mut self, stack: Stack, name: &str, ask: Ask) {
+        resale::posted(self.0, stack, name, ask);
+    }
+
     fn error_since(&self, since_ms: u64) -> Option<(i16, u32)> {
         self.0.state.econ.error_since(since_ms)
     }
@@ -290,7 +322,7 @@ fn buy_budget_of(ctx: &Ctx<'_>) -> Option<i64> {
 fn sell_stacks_of(ctx: &Ctx<'_>, max: usize) -> SmallVec<[Stack; MAX_LISTINGS]> {
     let (now, mem) = (ctx.now_ms, ctx.state.market.get());
     let needs = QuestNeeds::of(ctx.world, &ctx.state.quests);
-    let picked = pick_stacks(
+    let mut picked = pick_stacks(
         ctx.state
             .market
             .sellable_surplus(ctx.world, &ctx.state.bag, &needs),
@@ -299,6 +331,13 @@ fn sell_stacks_of(ctx: &Ctx<'_>, max: usize) -> SmallVec<[Stack; MAX_LISTINGS]> 
         |t| mem.is_some_and(|m| m.auction.skipped(t, now) || m.auction.has_lot_of(t)),
         max,
     );
+    if let Some(resale) = resale::stack(ctx) {
+        picked.retain(|stack| stack.template != resale.template);
+        let mut visited = affordable(picked, ctx.state.me.money, |t| facts_of(ctx.world, t));
+        visited.insert(0, resale);
+        visited.truncate(max);
+        return visited;
+    }
     affordable(picked, ctx.state.me.money, |t| facts_of(ctx.world, t))
 }
 
@@ -496,7 +535,9 @@ pub fn score(ctx: &Ctx<'_>, _base: f32) -> f32 {
     }
     let stacks = sell_stacks_of(ctx, MAX_LISTINGS);
     let value = stacks_value(&stacks, |t| facts_of(ctx.world, t));
-    let weight = if value >= price::MIN_TOTAL_VALUE {
+    let weight = if resale::stack(ctx).is_some() {
+        0.85
+    } else if value >= price::MIN_TOTAL_VALUE {
         weight_for(value, &ctx.persona.temper)
     } else if buy_budget_of(ctx).is_some() {
         BUY_ONLY_WEIGHT
@@ -554,7 +595,12 @@ pub fn duty(ctx: &mut Ctx<'_>) {
     let found = duty_step(&mut inner.auction, now, ctx.out);
     let counts = inner.auction.mail.counts;
     if let Some(s) = found.settled {
-        if s.kind == Kind::Sold {
+        if s.kind == Kind::Sold
+            && !s
+                .sale
+                .as_deref()
+                .is_some_and(|sale| resale::settle(ctx, sale, i64::from(s.money)))
+        {
             use crate::bot::{cmd::GoalKind, guild::treasury};
             treasury::note_receipt(ctx, GoalKind::Auction, s.money.max(0) as u64);
         }

@@ -173,6 +173,8 @@ pub struct Observation {
     pub escorts_completed: u32,
     /// Copper collected in the guildmaster's purse from member dues and commissions.
     pub guild_copper_received: u64,
+    /// Auction resale after acquisition and listing costs, counted on receipt of sale proceeds.
+    pub auction_resale_profit: i64,
     /// Zones it has been in.
     pub zones_seen: u32,
     /// Seconds since the bot last filled in `eligible`, `plan`, `nearby` and `mp_pct` (`None`:

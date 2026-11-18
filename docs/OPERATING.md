@@ -366,6 +366,12 @@ stand receipts for Gatherers, and sales through the market for members doing mar
 commission. The guildmaster claims the coins from express
 mail sent by members. `observe` reports the total claimed as `guild_copper_received`.
 
+Set `[guild] auction_flips = true` to let Trader members buy and relist one auction lot at a time.
+The bot uses recent confirmed market sales, keeps its configured copper reserve, and requires
+a projected margin after listing fees and the auction tax. It relists the purchased stack when
+the item arrives by mail. When the sale proceeds arrive, the confirmed profit goes into the
+member's next guild contribution.
+
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
 auctioneer and stroll around the market. Add places such as taverns or campfires to
 `settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and

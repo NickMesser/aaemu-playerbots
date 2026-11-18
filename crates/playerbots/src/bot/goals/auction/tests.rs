@@ -231,6 +231,8 @@ struct Fake {
     spot: Option<Spot>,
     stacks: SmallVec<[Stack; MAX_LISTINGS]>,
     budget: Option<i64>,
+    resale_buyout: Option<i32>,
+    resale_cost: Option<(u64, i64)>,
     err: Option<(u64, i16)>,
     dest: Option<[f32; 3]>,
     // the server
@@ -284,6 +286,8 @@ impl Fake {
             }),
             stacks: SmallVec::new(),
             budget: None,
+            resale_buyout: None,
+            resale_cost: None,
             err: None,
             dest: None,
             market: Vec::new(),
@@ -584,6 +588,12 @@ impl Env for Fake {
     }
     fn buy_budget(&self) -> Option<i64> {
         self.budget
+    }
+    fn resale_candidate(&self, lot: &Lot, _budget: i64) -> bool {
+        self.resale_cost.is_none() && self.resale_buyout == Some(lot.buyout)
+    }
+    fn note_resale_buy(&mut self, lot: &Lot, cost: i64) {
+        self.resale_cost = Some((lot.item_id, cost));
     }
     fn error_since(&self, since_ms: u64) -> Option<(i16, u32)> {
         self.err.filter(|e| e.0 >= since_ms).map(|e| (e.1, 0))
@@ -951,6 +961,19 @@ fn a_bargain_in_the_list_is_bought_out_and_its_mail_expected() {
     assert_eq!((f.mem.stats.bought, f.mem.stats.spent), (1, 900));
     assert_eq!(f.mem.waiting_wins(), 1, "the win mail is due");
     assert!(f.reports.is_empty(), "{:?}", f.reports);
+}
+
+#[test]
+fn a_guild_resale_records_the_actual_buyer_debit_against_the_purchased_item() {
+    let mut f = buyer();
+    let lot = f.lot(ORE, 5, 550, 77);
+    let item = lot.item_id;
+    f.resale_buyout = Some(lot.buyout);
+    f.market.push(lot);
+    let (_, status) = run_visit(&mut f, 3_000);
+    assert_eq!(status, GoalStatus::Done);
+    assert_eq!(f.resale_cost, Some((item, 550)));
+    assert_eq!(f.st.me.money, 50_000 - 550);
 }
 
 #[test]

@@ -67,7 +67,7 @@ impl Kind {
 }
 
 /// A mail that was collected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settled {
     /// Mail id.
     pub mail_id: i64,
@@ -77,6 +77,69 @@ pub struct Settled {
     pub money: i32,
     /// Items in it.
     pub items: u8,
+    pub sale: Option<Box<SaleDetails>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaleDetails {
+    pub item: String,
+    pub quantity: u32,
+    pub paid: i32,
+    pub buyout: i32,
+    pub fee: i32,
+}
+
+impl SaleDetails {
+    fn parse(text: &str) -> Option<Self> {
+        // Sale mail is authored by the auction service as body('name', count, share, buyout,
+        // tax, fee). Split off the numeric fields first since item names can contain commas.
+        let text = text.strip_prefix("body(")?.strip_suffix(')')?;
+        let mut fields = text.rsplitn(6, ',').map(str::trim);
+        let fee = fields.next()?.parse().ok()?;
+        let _tax: i32 = fields.next()?.parse().ok()?;
+        let buyout = fields.next()?.parse().ok()?;
+        let paid = fields.next()?.parse().ok()?;
+        let quantity = fields.next()?.parse().ok()?;
+        let item = fields.next()?.strip_prefix('\'')?.strip_suffix('\'')?;
+        let mut chars = item.chars();
+        let mut name = String::new();
+        while let Some(c) = chars.next() {
+            name.push(if c != '\\' {
+                c
+            } else {
+                match chars.next()? {
+                    c @ ('\\' | '\'') => c,
+                    '0' if chars.next()? == '4' => match chars.next()? {
+                        '0' => '(',
+                        '1' => ')',
+                        _ => return None,
+                    },
+                    _ => return None,
+                }
+            });
+        }
+        (fee >= 0 && buyout > 0 && paid > 0 && quantity > 0).then_some(Self {
+            item: name,
+            quantity,
+            paid,
+            buyout,
+            fee,
+        })
+    }
+}
+
+#[test]
+fn auction_receipt_preserves_names_with_commas_and_lua_escapes() {
+    let sale = SaleDetails::parse(
+        r"body('Miner\'s Ore, Refined \040Grade 1\041', 10, 1620, 1800, 180, 72)",
+    )
+    .unwrap();
+    assert_eq!(sale.item, "Miner's Ore, Refined (Grade 1)");
+    assert_eq!(
+        (sale.quantity, sale.paid, sale.buyout, sale.fee),
+        (10, 1620, 1800, 72)
+    );
+    assert!(SaleDetails::parse("body('Ore', 10, 1620, 1800, 180)").is_none());
 }
 
 /// Why a mail had to be given up on.
@@ -100,7 +163,7 @@ enum Stage {
     TakeSent,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct Due {
     mail_id: i64,
     kind: Kind,
@@ -112,6 +175,7 @@ struct Due {
     tries: u8,
     items: u8,
     money: i32,
+    sale: Option<Box<SaleDetails>>,
     /// Attachments still to take (items and the money count one each).
     left: u8,
     /// Bot clock of the last request.
@@ -227,6 +291,9 @@ impl MailTracker {
                     d.money = body.money;
                     d.items = u8::try_from(body.items.len()).unwrap_or(u8::MAX);
                     d.left = d.items.saturating_add(u8::from(body.money > 0));
+                    if d.kind == Kind::Sold && body.mail_type == mail_type::OFF_SUCCESS {
+                        d.sale = SaleDetails::parse(&body.text).map(Box::new);
+                    }
                 }
             }
             ActivityEvent::AttachmentTaken {
@@ -288,6 +355,7 @@ impl MailTracker {
             tries: 0,
             items: 0,
             money: 0,
+            sale: None,
             left: 0,
             at_ms: now_ms,
         });
@@ -311,6 +379,7 @@ impl MailTracker {
             kind: d.kind,
             money: d.money,
             items: d.items,
+            sale: d.sale,
         });
     }
 

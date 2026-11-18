@@ -824,6 +824,12 @@ impl Brain {
         }
         if role == profession::Profession::Trader {
             ctx.hub.journal.read(ctx.persona.id, |j| {
+                if ctx.cfg.guild.auction_flips {
+                    context.push_str(&format!(
+                        " Collected auction resale profit: {} copper.",
+                        j.auction_resale_profit
+                    ));
+                }
                 let mut shown = smallvec::SmallVec::<[u32; 4]>::new();
                 let now = crate::hub::unix_ms();
                 for sale in &j.market_sales {

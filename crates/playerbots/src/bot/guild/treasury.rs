@@ -59,12 +59,16 @@ pub fn note_receipt(ctx: &Ctx<'_>, work: GoalKind, copper: u64) {
     };
     let commission = copper.saturating_mul(u64::from(terms.commission_percent)) / 100;
     if role.goals().contains(&work) && commission > 0 {
-        ctx.hub.journal.update(ctx.persona.id, |j| {
-            if j.guild_treasury.len() < 16 || j.guild_treasury.contains_key(&guild) {
-                let account = j.guild_treasury.entry(guild).or_default();
-                account.unpaid_commission = account.unpaid_commission.saturating_add(commission);
-            }
-        });
+        ctx.hub
+            .journal
+            .update(ctx.persona.id, |j| queue_copper(j, guild, commission));
+    }
+}
+
+pub fn queue_copper(journal: &mut crate::journal::Journal, guild: u32, copper: u64) {
+    if journal.guild_treasury.len() < 16 || journal.guild_treasury.contains_key(&guild) {
+        let account = journal.guild_treasury.entry(guild).or_default();
+        account.unpaid_commission = account.unpaid_commission.saturating_add(copper);
     }
 }
 

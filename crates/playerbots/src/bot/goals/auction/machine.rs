@@ -188,6 +188,7 @@ pub struct Run {
     best: Option<(Why, Lot)>,
     /// The lot being bought, or cancelled.
     lot: Option<Lot>,
+    buying_for_resale: bool,
     budget: i64,
     bought: u8,
     posted: u8,
@@ -230,6 +231,7 @@ impl Run {
             bargain: None,
             best: None,
             lot: None,
+            buying_for_resale: false,
             budget: 0,
             bought: 0,
             posted: 0,
@@ -686,6 +688,7 @@ impl Run {
         let known: SmallVec<[OwnLot; 8]> = env.mem().own().iter().copied().collect();
         let lot = self.own_lots.iter().find(|l| {
             !l.has_bid()
+                && !env.listed_for_resale(l.item_id)
                 && known
                     .iter()
                     .any(|k| k.id == l.id && now.saturating_sub(k.posted_ms) >= CANCEL_AFTER_MS)
@@ -786,7 +789,7 @@ impl Run {
                     .seen
                     .iter()
                     .filter_map(|l| {
-                        price::worth_buying(l, cur.facts, useful, me, money, budget).map(|w| (w, l))
+                        buy_reason(env, l, cur.facts, useful, me, money, budget).map(|w| (w, l))
                     })
                     .min_by_key(|(w, l)| (*w as u8, l.buyout))
                     .map(|(w, l)| (w, l.clone()));
@@ -874,7 +877,10 @@ impl Run {
         let pct = env.rng().u32(95..=99);
         let (template, count) = (cur.stack.template, cur.stack.count);
         cur.quote = quote;
-        let ask = price::ask(cur.facts, count, quote, pct, duration::H48);
+        let ask = match env.resale_ask(cur.stack) {
+            Some(ask) => ask.ok_or(Skip::BelowVendor),
+            None => price::ask(cur.facts, count, quote, pct, duration::H48),
+        };
         let name = cur.name.clone();
         let ask = match ask {
             Ok(a) => a,
@@ -952,6 +958,9 @@ impl Run {
                 }
                 self.posted += 1;
                 self.posted_ids.push((lot.id, stack.template));
+                if lot.item_id == stack.item_id && lot.buyout == ask.buyout {
+                    env.note_resale_post(stack, &name, ask);
+                }
                 let vendor = u64::from(facts.refund) * u64::from(stack.count);
                 env.say(&format!(
                     "auction: posted {name} x{} for {} (start {}, fee {}, net {}, vendor {vendor}; market {})",
@@ -1125,7 +1134,7 @@ impl Run {
                 continue;
             };
             let useful = env.useful(lot.template);
-            let Some(why) = price::worth_buying(lot, facts, useful, me, money, self.budget) else {
+            let Some(why) = buy_reason(env, lot, facts, useful, me, money, self.budget) else {
                 continue;
             };
             let better = match &self.best {
@@ -1139,6 +1148,10 @@ impl Run {
     }
 
     fn buy(&mut self, env: &mut dyn Env, why: Why, lot: Lot) -> GoalStatus {
+        if why == Why::Resale && !env.resale_candidate(&lot, self.budget) {
+            return self.start_verify(env);
+        }
+        self.buying_for_resale = why == Why::Resale;
         let (me, name) = Self::me(env);
         let item = env
             .item_name(lot.template)
@@ -1149,6 +1162,7 @@ impl Run {
             lot.buyout,
             match why {
                 Why::Bargain => "a bargain",
+                Why::Resale => "guild resale",
                 Why::Useful => "useful, no dearer than a shop",
             }
         ));
@@ -1179,6 +1193,9 @@ impl Run {
                 }
                 self.bought += 1;
                 self.budget -= i64::from(done.money);
+                if self.buying_for_resale && done.buyout {
+                    env.note_resale_buy(&lot, i64::from(done.money));
+                }
                 let name = env
                     .item_name(done.template)
                     .unwrap_or_else(|| format!("#{}", done.template));
@@ -1208,6 +1225,9 @@ impl Run {
         if paid >= i64::from(lot.buyout) {
             env.report(report::bid_without_answer(&item, lot.template, lot.buyout));
             env.mem().expect_win(lot.id, lot.template, now);
+            if self.buying_for_resale {
+                env.note_resale_buy(&lot, i64::from(lot.buyout));
+            }
             env.say(&format!(
                 "auction: the money for {item} was taken but no answer came"
             ));
@@ -1269,6 +1289,22 @@ impl Run {
             self.posted, self.bought
         ));
         GoalStatus::Done
+    }
+}
+
+fn buy_reason(
+    env: &dyn Env,
+    lot: &Lot,
+    facts: Facts,
+    useful: bool,
+    me: u32,
+    money: i64,
+    budget: i64,
+) -> Option<Why> {
+    if env.resale_candidate(lot, budget) {
+        Some(Why::Resale)
+    } else {
+        price::worth_buying(lot, facts, useful, me, money, budget)
     }
 }
 

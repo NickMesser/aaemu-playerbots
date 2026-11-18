@@ -193,6 +193,7 @@ work_percent = 60
 # professions = { "42" = "potato", "43" = "trader" }
 # farm_orders = { "42" = 12345 }  # seed or produce item template
 # farm_choices = { "42" = [12345, 12346] }  # seed templates compared using recent sales
+auction_flips = false
 # treasuries = { "42" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }
 # Bots may found guilds. false = they only join existing ones.
 found = true

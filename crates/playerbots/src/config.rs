@@ -496,6 +496,8 @@ pub struct GuildCfg {
     pub farm_orders: std::collections::BTreeMap<String, u32>,
     /// Seed items a Potato guild compares using confirmed market prices.
     pub farm_choices: std::collections::BTreeMap<String, Vec<u32>>,
+    /// Trader guild members may buy one lot for resale against confirmed market prices.
+    pub auction_flips: bool,
     /// Repeatable crafting and gathering orders by guild ID.
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
@@ -527,6 +529,7 @@ impl Default for GuildCfg {
             professions: Default::default(),
             farm_orders: Default::default(),
             farm_choices: Default::default(),
+            auction_flips: false,
             production_orders: Default::default(),
             treasuries: Default::default(),
             work_percent: 60,

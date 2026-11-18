@@ -96,6 +96,9 @@ pub struct Journal {
     pub guild_copper_received: u64,
     /// Recent sales whose items and copper changed as agreed.
     pub market_sales: Vec<crate::bot::guild::prices::Receipt>,
+    /// Unsettled resale, including the purchase cost and any confirmed posting fee.
+    pub auction_resale: Option<crate::bot::goals::auction::resale::Resale>,
+    pub auction_resale_profit: i64,
     /// Places where this bot recovered a pack after a guild ambush.
     pub raid_sites: Vec<RaidSite>,
 }

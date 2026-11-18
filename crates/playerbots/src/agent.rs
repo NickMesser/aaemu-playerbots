@@ -279,6 +279,7 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
     o.deliveries_completed = journal.deliveries_completed;
     o.escorts_completed = journal.escorts_completed;
     o.guild_copper_received = journal.guild_copper_received;
+    o.auction_resale_profit = journal.auction_resale_profit;
     o.relationships = journal
         .relationships
         .entries
