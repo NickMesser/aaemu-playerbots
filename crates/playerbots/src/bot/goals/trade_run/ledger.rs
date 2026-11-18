@@ -10,7 +10,7 @@
 
 use aa_proto::cs::{self, Out};
 use aa_proto::sc::ServerEvent;
-use aa_proto::sc_activity::{mail_type, ActivityEvent};
+use aa_proto::sc_activity::{mail_type, ActivityEvent, MailHeader};
 use aa_proto::sc_world::WorldEvent;
 use smallvec::SmallVec;
 
@@ -189,10 +189,11 @@ pub struct Paid {
 #[derive(Debug, Clone, Default)]
 struct Cold {
     due: SmallVec<[Due; 2]>,
+    relist: bool,
     /// Mail ids that were collected (a repeated announcement is ignored).
     done: SmallVec<[i64; 4]>,
     skips: SmallVec<[Skip; 4]>,
-    paid: Option<Paid>,
+    paid: std::collections::VecDeque<Paid>,
     /// The pack waiting at the spot the bot died at.
     lost: Option<LostPack>,
     proficiency: Option<rustc_hash::FxHashMap<u32, u32>>,
@@ -225,12 +226,12 @@ pub struct Ledger {
     pub packs_sold: u32,
     /// Packs that were dropped at a death and never recovered.
     pub packs_lost: u32,
-    /// Unread received mail according to the server's counters.
-    unread: i32,
+    /// The server has sent the login mail counters or delivered a new mail.
+    mail_ready: bool,
     /// Packs sold whose payment has not been collected.
     awaiting: u8,
-    /// The mailbox was listed because of unread mail at login.
-    listed_for_unread: bool,
+    /// The mailbox was listed after login to recover outstanding receipts.
+    listed_at_login: bool,
     /// Bot clock at which a trade run that carried a pack was interrupted, see
     /// [`Ledger::note_interrupted_run`].
     run_interrupted_ms: Option<u64>,
@@ -302,14 +303,11 @@ impl Ledger {
 
     fn observe_mail(&mut self, ev: &ActivityEvent, now_ms: u64) {
         match ev {
-            ActivityEvent::CountUnreadMail { unread } => self.unread = unread_received(unread),
+            ActivityEvent::CountUnreadMail { .. } => self.mail_ready = true,
             ActivityEvent::MailReceived {
-                mail,
-                unread,
-                is_cancel,
-                ..
+                mail, is_cancel, ..
             } => {
-                self.unread = unread_received(unread);
+                self.mail_ready = true;
                 if mail.mail_type != mail_type::SYS_SELL_BACKPACK {
                     return;
                 }
@@ -317,20 +315,23 @@ impl Ledger {
                     if let Some(c) = self.cold.as_deref_mut() {
                         c.due.retain(|d| d.mail_id != mail.mail_id);
                     }
-                } else if !self.knows(mail.mail_id) {
-                    let due = &mut self.cold().due;
-                    if due.len() >= MAX_DUE {
-                        due.remove(0);
-                    }
-                    due.push(Due {
-                        mail_id: mail.mail_id,
-                        at_ms: now_ms,
-                        ..Due::default()
-                    });
+                } else {
+                    self.queue_payment(mail, now_ms);
                 }
             }
-            ActivityEvent::MailBody { body, unread, .. } => {
-                self.unread = unread_received(unread);
+            ActivityEvent::MailList {
+                is_sent: false,
+                mails,
+            } => {
+                for mail in mails {
+                    self.queue_payment(mail, now_ms);
+                }
+            }
+            ActivityEvent::MailBody {
+                body,
+                is_sent: false,
+                ..
+            } => {
                 if let Some(d) = self
                     .cold
                     .as_deref_mut()
@@ -341,25 +342,54 @@ impl Ledger {
                     d.items = u8::try_from(body.items.len()).unwrap_or(u8::MAX);
                 }
             }
-            ActivityEvent::AttachmentTaken { mail_id, .. } => {
+            ActivityEvent::AttachmentTaken {
+                mail_id,
+                money,
+                items,
+                ..
+            } if *money || !items.is_empty() => {
                 let taken = self.cold.as_deref_mut().and_then(|c| {
-                    let i = c.due.iter().position(|d| d.mail_id == *mail_id)?;
+                    let i = c
+                        .due
+                        .iter()
+                        .position(|d| d.mail_id == *mail_id && d.stage == Stage::TakeSent)?;
                     Some(c.due.remove(i))
                 });
-                if let Some(d) = taken {
+                if let Some(mut d) = taken {
+                    if !money {
+                        d.money = 0;
+                    }
+                    d.items = u8::try_from(items.len()).unwrap_or(u8::MAX);
                     self.finish(d);
                 }
             }
-            ActivityEvent::MailDeleted {
-                mail_id, unread, ..
-            } => {
-                self.unread = unread_received(unread);
+            ActivityEvent::MailDeleted { mail_id, .. } => {
                 if let Some(c) = self.cold.as_deref_mut() {
                     c.due.retain(|d| d.mail_id != *mail_id);
                 }
             }
             _ => {}
         }
+    }
+
+    fn queue_payment(&mut self, mail: &MailHeader, now_ms: u64) {
+        if mail.mail_type != mail_type::SYS_SELL_BACKPACK
+            || mail.returned
+            || mail.attachments == 0
+            || self.knows(mail.mail_id)
+        {
+            return;
+        }
+        let cold = self.cold();
+        if cold.due.len() >= MAX_DUE {
+            cold.relist = true;
+            return;
+        }
+        cold.due.push(Due {
+            mail_id: mail.mail_id,
+            at_ms: now_ms,
+            ..Due::default()
+        });
     }
 
     fn cold(&mut self) -> &mut Cold {
@@ -378,7 +408,7 @@ impl Ledger {
         self.payments += 1;
         let c = self.cold();
         c.remember(d.mail_id);
-        c.paid = Some(Paid {
+        c.paid.push_back(Paid {
             mail_id: d.mail_id,
             money: d.money,
             items: d.items,
@@ -494,7 +524,7 @@ impl Ledger {
     /// the first payment mail that needs a request through read and take. Returns a payment that
     /// was just collected (once).
     pub fn tick(&mut self, now_ms: u64, out: &mut Vec<Out>) -> Option<Paid> {
-        let paid = self.cold.as_deref_mut().and_then(|c| c.paid.take());
+        let paid = self.cold.as_deref_mut().and_then(|c| c.paid.pop_front());
         if self.collecting() == 0 {
             if self.should_list(now_ms) {
                 self.last_list_ms = now_ms;
@@ -565,8 +595,15 @@ impl Ledger {
     }
 
     fn should_list(&mut self, now_ms: u64) -> bool {
-        if !self.listed_for_unread && self.unread > 0 {
-            self.listed_for_unread = true;
+        if !self.listed_at_login && self.mail_ready {
+            self.listed_at_login = true;
+            return true;
+        }
+        if self
+            .cold
+            .as_deref_mut()
+            .is_some_and(|cold| std::mem::take(&mut cold.relist))
+        {
             return true;
         }
         self.awaiting > 0 && now_ms.saturating_sub(self.last_list_ms) >= LIST_EVERY_MS
@@ -577,15 +614,10 @@ fn skip_key(kind: SkipKind, id: u32) -> u64 {
     ((kind as u64) << 32) | u64::from(id)
 }
 
-/// Unread mail that was received (any category but sent mail).
-fn unread_received(unread: &[i32; 4]) -> i32 {
-    unread[1..].iter().map(|n| (*n).max(0)).sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_proto::sc_activity::{MailBodyInfo, MailHeader};
+    use aa_proto::sc_activity::MailBodyInfo;
 
     #[test]
     fn proficiency_snapshot_and_labor_updates_track_points() {
@@ -728,8 +760,11 @@ mod tests {
         let paid = l.tick(5_600, &mut out).unwrap();
         assert_eq!(paid.money, 33_000);
         assert_eq!((l.earned, l.payments), (33_000, 1));
-        assert!(out.is_empty());
+        // The initial inbox sync also checks for older payments once the live receipt clears.
+        assert_eq!(ops(&out), vec![op::CSListMailPacket]);
+        out.clear();
         assert_eq!(l.tick(5_700, &mut out), None);
+        assert!(out.is_empty());
         // the same announcement again (a listing) is ignored
         l.observe(&got(77, mail_type::SYS_SELL_BACKPACK), 6_000, 5);
         assert_eq!(l.collecting(), 0);
@@ -814,6 +849,43 @@ mod tests {
         out.clear();
         l.tick(40, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn reconnect_claims_a_read_payment_with_money_still_attached() {
+        use aa_proto::opcodes::cs as op;
+        let mut l = Ledger::default();
+        let mut out = Vec::new();
+        l.observe(
+            &ServerEvent::Activity(ActivityEvent::CountUnreadMail { unread: [0; 4] }),
+            50,
+            5,
+        );
+        l.tick(51, &mut out);
+        assert_eq!(ops(&out), vec![op::CSListMailPacket]);
+        let mut unpaid = *header(10, mail_type::SYS_SELL_BACKPACK);
+        unpaid.status = 1;
+        let mut empty = *header(11, mail_type::SYS_SELL_BACKPACK);
+        empty.attachments = 0;
+        let inbox = || {
+            ServerEvent::Activity(ActivityEvent::MailList {
+                is_sent: false,
+                mails: vec![unpaid.clone(), empty.clone()],
+            })
+        };
+        l.observe(&inbox(), 52, 5);
+        l.observe(&inbox(), 53, 5);
+        assert_eq!(l.collecting(), 1);
+        out.clear();
+        l.tick(54, &mut out);
+        assert_eq!(ops(&out), vec![op::CSReadMailPacket]);
+        l.observe(&body(10, 17_000), 55, 5);
+        l.tick(56, &mut out);
+        l.observe(&taken(10), 57, 5);
+        assert_eq!(l.tick(58, &mut out).unwrap().money, 17_000);
+        l.observe(&inbox(), 59, 5);
+        assert_eq!(l.collecting(), 0);
+        assert_eq!(l.payments, 1);
     }
 
     #[test]
