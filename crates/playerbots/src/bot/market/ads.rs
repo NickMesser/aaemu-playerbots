@@ -168,6 +168,21 @@ pub struct Need {
     pub template: u32,
     /// Units it wants.
     pub qty: u32,
+    /// Fixed price per unit for a guild order.
+    pub order_price: Option<u32>,
+}
+
+impl Need {
+    pub fn quote(self, prices: &dyn PriceSource) -> Option<Quote> {
+        match self.order_price {
+            Some(price) => Some(Quote {
+                ask: price,
+                floor: price,
+                ceiling: price,
+            }),
+            None => prices.quote(self.template),
+        }
+    }
 }
 
 /// The limits and switches of one step.
@@ -759,10 +774,20 @@ impl AdState {
             self.next_ad_ms = now + env.rules.ad_interval_ms.max(60_000) / 4;
             return;
         }
-        let spread = i32::try_from(env.rng.u32(0..21)).unwrap_or(10) - 10;
+        let fixed_price = side == Side::Buy
+            && env
+                .needs
+                .iter()
+                .any(|need| need.template == template && need.order_price.is_some());
+        let spread = if fixed_price {
+            0
+        } else {
+            i32::try_from(env.rng.u32(0..21)).unwrap_or(10) - 10
+        };
         let q = quote.spread(spread);
         let (quote, price) = match side {
             Side::Sell => (q, q.ask),
+            Side::Buy if fixed_price => (q, q.ask),
             // a wanted-ad names what the bot pays; it may go a little over when haggled
             Side::Buy => (
                 Quote {
@@ -817,9 +842,15 @@ impl AdState {
 
     /// What the bot would like to buy: `(template, units, quote)`.
     fn best_need(&self, env: &mut Env<'_>) -> Option<(u32, u32, Quote)> {
-        let pick = env.rng.usize(..env.needs.len().max(1));
-        let n = env.needs.get(pick)?;
-        let q = env.prices.quote(n.template)?;
+        let n = env
+            .needs
+            .iter()
+            .find(|need| need.order_price.is_some())
+            .or_else(|| {
+                let index = env.rng.usize(..env.needs.len().max(1));
+                env.needs.get(index)
+            })?;
+        let q = n.quote(env.prices)?;
         // never plan to spend more than a third of the purse
         let afford =
             u32::try_from((env.money / 3 / i64::from(q.ceiling.max(1))).max(0)).unwrap_or(u32::MAX);

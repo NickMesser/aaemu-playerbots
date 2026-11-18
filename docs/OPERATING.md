@@ -348,6 +348,10 @@ Crafting and gathering need compatible world templates, a nearby visible bench o
 sufficient labor. Set `{ "46" = { kind = "hunt", item = 789, count = 4 } }` for an Adventurer
 guild. Members look for nearby hostile monsters that can drop the tradeable material and
 replenish stock until the server confirms the requested quantity in their bags.
+With trade ads enabled, Gatherer and Adventurer orders can also request missing material from
+players and other bots. The order advertises a fixed price of 90 percent of recent confirmed
+sales when their average is at least 25 percent above the usual asking price. The normal trade
+checks and spending limits apply.
 Crafting reads proficiency from the server. Set `training_recipe` alongside `recipe` to practice a
 lower-tier recipe in the same vocation until the main recipe's requirement is met. Crafter members
 with trade-chat shopping enabled seek missing materials for their current recipe using the normal

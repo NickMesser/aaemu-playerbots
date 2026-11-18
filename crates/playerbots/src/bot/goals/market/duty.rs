@@ -21,7 +21,7 @@ use crate::bot::market::ads::names;
 use crate::bot::market::ads::price::{PriceSource, VendorPrices};
 use crate::bot::market::ads::talk::{Medium, PlaceQ};
 use crate::bot::market::ads::{Env, Need, Rules, Surplus};
-use crate::bot::market::ledger::Ledger;
+use crate::bot::market::ledger::{bag_count, Ledger};
 use crate::bot::market::needs::QuestNeeds;
 use crate::bot::state::{Item, StateError, UnitKind};
 use crate::hub::unix_ms;
@@ -109,6 +109,7 @@ pub fn wanted_goods(
             out.push(Need {
                 template,
                 qty: NEED_QTY,
+                order_price: None,
             });
         }
     }
@@ -173,7 +174,8 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let board = board::global();
     let real_near = ctx.real_player_near;
     let bot_id = persona.id;
-    let guild_recipe = match work::selected_order(ctx) {
+    let work_order = work::selected_order(ctx);
+    let guild_recipe = match work_order {
         Some((work::Order::Craft { recipe, .. }, _)) => world.craft(recipe),
         _ => None,
     };
@@ -223,14 +225,45 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                 if let Ok(qty) = u32::try_from(i64::from(quantity) - count) {
                     if qty > 0 {
                         needs.retain(|n| n.template != template);
-                        needs.insert(0, Need { template, qty });
+                        needs.insert(
+                            0,
+                            Need {
+                                template,
+                                qty,
+                                order_price: None,
+                            },
+                        );
                     }
                 }
             }
         }
     }
-    let audience = board.audience(name, group, unix) + usize::from(real_near);
     let prices = VendorPrices(world);
+    let requested = match work_order {
+        Some((work::Order::Gather { item, doodad }, _))
+            if world.gather_doodads(item).contains(&doodad) =>
+        {
+            Some((item, NEED_QTY))
+        }
+        Some((work::Order::Hunt { item, count }, _)) if !world.work_droppers(item).is_empty() => {
+            Some((item, u32::from(count)))
+        }
+        _ => None,
+    };
+    if let Some((item, target)) = requested.filter(|(item, _)| tradable(*item)) {
+        let count = bag_count(&st.bag, item);
+        if let Some(need) = material_request(
+            item,
+            target,
+            count,
+            &prices,
+            hub.market_prices.average(item, unix),
+        ) {
+            needs.retain(|n| n.template != item);
+            needs.insert(0, need);
+        }
+    }
+    let audience = board.audience(name, group, unix) + usize::from(real_near);
     let index = names::global(world);
     let units = &st.units;
     let item_name = |t: u32| world.item_name(t).unwrap_or("goods").to_owned();
@@ -253,7 +286,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     };
     let interest = |template: u32, qty: u32, ask: u32| {
         let need = needs.iter().find(|n| n.template == template)?;
-        let q = prices.quote(template)?;
+        let q = need.quote(&prices)?;
         let afford = u32::try_from(money / i64::from(ask.max(1))).unwrap_or(u32::MAX);
         let want = need.qty.min(qty).min(afford);
         (want > 0).then_some((want, q.ceiling))
@@ -294,7 +327,9 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                 if mirage {
                     mirage_ok.then_some(Meet::Mirage)
                 } else {
-                    board.meet_for(peer, name, unix)
+                    board
+                        .meet_for(peer, name, unix)
+                        .or_else(|| meet::local_town(me_side, peer_side(peer), town))
                 }
             }
         }
@@ -342,6 +377,27 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     say_due(ctx, now, unix);
     watch_chat_errors(ctx, now);
     pending && ready_for_meeting(ctx, running)
+}
+
+fn material_request(
+    item: u32,
+    target: u32,
+    count: i64,
+    prices: &dyn PriceSource,
+    recent: Option<f32>,
+) -> Option<Need> {
+    let recent = recent?;
+    let normal = prices.quote(item)?;
+    if recent < normal.ask as f32 * 1.25 {
+        return None;
+    }
+    let qty = u32::try_from(i64::from(target).saturating_sub(count)).ok()?;
+    let price = (recent * 0.9).floor() as u32;
+    (qty > 0 && price > 0).then_some(Need {
+        template: item,
+        qty,
+        order_price: Some(price),
+    })
 }
 
 /// Whether the bot may leave what it does for a meeting now.

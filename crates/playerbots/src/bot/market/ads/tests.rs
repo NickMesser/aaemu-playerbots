@@ -230,6 +230,7 @@ fn a_bot_that_needs_goods_posts_a_wanted_ad_it_can_pay() {
     r.needs = vec![Need {
         template: HAY,
         qty: 10,
+        order_price: None,
     }];
     let mut a = AdState::default();
     r.step(&mut a, 10_000);
@@ -248,11 +249,37 @@ fn a_bot_that_needs_goods_posts_a_wanted_ad_it_can_pay() {
     r2.needs = vec![Need {
         template: HAY,
         qty: 10,
+        order_price: None,
     }];
     r2.money = 100;
     let mut a = AdState::default();
     r2.step(&mut a, 10_000);
     assert!(a.listing().is_none());
+}
+
+#[test]
+fn a_guild_order_posts_the_agreed_price_without_a_random_spread() {
+    let mut r = Rig::new("Ann");
+    r.surplus.clear();
+    r.needs = vec![Need {
+        template: HAY,
+        qty: 3,
+        order_price: Some(90),
+    }];
+    let mut a = AdState::default();
+    r.step(&mut a, 10_000);
+    let listing = a.listing().expect("posted");
+    assert_eq!(listing.quote.ask, 90);
+    assert_eq!(listing.quote.ceiling, 90);
+    let speech = said(&mut a, 10_000);
+    assert!(matches!(
+        speech[0].speech,
+        Speech::AdBuy {
+            unit: 90,
+            qty: 3,
+            ..
+        }
+    ));
 }
 
 fn post(r: &mut Rig, a: &mut AdState) {

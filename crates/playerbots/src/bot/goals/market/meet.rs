@@ -25,6 +25,20 @@ fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+/// A town meeting both sides can reach and whose faction is known.
+pub fn local_town(me: Side, peer: Option<Side>, town: Option<[f32; 2]>) -> Option<Meet> {
+    let peer = peer?;
+    let point = town?;
+    (me.faction != 0
+        && me.faction == peer.faction
+        && dist(me.pos, point) <= NEAR_TOWN_M
+        && dist(peer.pos, point) <= NEAR_TOWN_M)
+        .then_some(Meet::Town {
+            x: point[0],
+            y: point[1],
+        })
+}
+
 /// The meeting place for a sale between `me` and `peer`.
 ///
 /// `town` is the town meeting point nearest to `me` (the auctioneer's spot), `mirage` whether the
@@ -40,23 +54,9 @@ pub fn choose(
     match cfg {
         MeetAt::Mirage => mirage.then_some(Meet::Mirage),
         MeetAt::Town => town.map(town_meet),
-        MeetAt::Auto => {
-            let together = match (town, peer) {
-                (Some(t), Some(p)) => {
-                    me.faction != 0
-                        && me.faction == p.faction
-                        && dist(me.pos, t) <= NEAR_TOWN_M
-                        && dist(p.pos, t) <= NEAR_TOWN_M
-                }
-                _ => false,
-            };
-            match (together, town, mirage) {
-                (true, Some(t), _) => Some(town_meet(t)),
-                (_, _, true) => Some(Meet::Mirage),
-                (_, Some(t), false) => Some(town_meet(t)),
-                _ => None,
-            }
-        }
+        MeetAt::Auto => local_town(me, peer, town)
+            .or_else(|| mirage.then_some(Meet::Mirage))
+            .or_else(|| town.map(town_meet)),
     }
 }
 
