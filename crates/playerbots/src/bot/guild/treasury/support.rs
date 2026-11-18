@@ -1,6 +1,6 @@
-//! Rank allowances paid from this week's confirmed contributions.
+//! Rank allowances and bounty rewards paid from this week's confirmed contributions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aa_proto::cs;
 use aa_proto::guild::role;
@@ -11,32 +11,64 @@ use crate::bot::{ctx::Ctx, state::dist3d};
 use crate::hub::unix_ms;
 
 const PREFIX: &str = "Guild allowance ";
+const BOUNTY_PREFIX: &str = "Guild bounty ";
+const COPPER_BITS: u32 = 19;
+const COPPER_MASK: u64 = (1 << COPPER_BITS) - 1;
+const MAX_BOUNTY_PAYMENT: u64 = 100_000;
+const MAX_SENT: usize = 512;
 
 #[derive(Debug, Default)]
 pub(super) struct Support {
     week: u64,
-    sent: BTreeMap<u32, u64>,
+    rank_sent: BTreeSet<u32>,
+    spent: BTreeMap<i64, u64>,
+    bounty_through: BTreeMap<u32, u32>,
     checked: bool,
     listing_until: Option<u64>,
     retry_at: u64,
 }
 
-pub(super) fn payment(mail: &MailHeader, guild: u32) -> Option<(u64, u32, u64)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Payment {
+    week: u64,
+    pub(super) recipient: u32,
+    pub(super) copper: u64,
+    /// Cumulative rewarded copper for the guild, present only in bounty mail.
+    pub(super) through: Option<u32>,
+}
+
+pub(super) fn payment(mail: &MailHeader, guild: u32) -> Option<Payment> {
     if mail.mail_type != mail_type::EXPRESS || mail.returned || mail.attachments > 1 {
         return None;
     }
-    let (group, rest) = mail.title.strip_prefix(PREFIX)?.split_once('/')?;
+    let (title, bounty) = if let Some(title) = mail.title.strip_prefix(BOUNTY_PREFIX) {
+        (title, true)
+    } else {
+        (mail.title.strip_prefix(PREFIX)?, false)
+    };
+    let (group, rest) = title.split_once('/')?;
     let (week, recipient) = rest.split_once('/')?;
     if group.parse::<u32>().ok()? != guild {
         return None;
     }
-    let copper = u64::try_from(mail.extra).ok()?;
+    let extra = u64::try_from(mail.extra).ok()?;
     let recipient = recipient.parse().ok()?;
-    (recipient != 0 && copper > 0 && copper <= 400_000).then_some((
-        week.parse().ok()?,
+    let (copper, through, max) = if bounty {
+        let copper = extra & COPPER_MASK;
+        let through = u32::try_from(extra >> COPPER_BITS).ok()?;
+        if u64::from(through) < copper {
+            return None;
+        }
+        (copper, Some(through), MAX_BOUNTY_PAYMENT)
+    } else {
+        (extra, None, 400_000)
+    };
+    (recipient != 0 && copper > 0 && copper <= max).then_some(Payment {
+        week: week.parse().ok()?,
         recipient,
         copper,
-    ))
+        through,
+    })
 }
 
 impl Support {
@@ -75,16 +107,25 @@ impl Support {
     }
 
     fn note_sent(&mut self, mail: &MailHeader, guild: u32) {
-        if let Some((week, recipient, copper)) = payment(mail, guild) {
-            if week == self.week && self.sent.len() < super::super::log::MAX_MEMBERS {
-                self.sent.entry(recipient).or_insert(copper);
+        if let Some(p) = payment(mail, guild).filter(|p| p.week <= self.week) {
+            if p.week == self.week && self.spent.len() < MAX_SENT {
+                self.spent.entry(mail.mail_id).or_insert(p.copper);
+                if p.through.is_none() {
+                    self.rank_sent.insert(p.recipient);
+                }
+            }
+            if let Some(through) = p.through {
+                if self.bounty_through.len() < MAX_SENT {
+                    let recorded = self.bounty_through.entry(p.recipient).or_default();
+                    *recorded = (*recorded).max(through);
+                }
             }
         }
     }
 
     fn remaining(&self, collected: u64) -> u64 {
         let spent: u64 = self
-            .sent
+            .spent
             .values()
             .map(|copper| copper + EXPRESS_FEE as u64)
             .sum();
@@ -134,7 +175,8 @@ pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
     }
     if now < support.retry_at
         || support.listing()
-        || support.sent.len() >= super::super::log::MAX_MEMBERS
+        || support.spent.len() >= MAX_SENT
+        || support.bounty_through.len() >= MAX_SENT
     {
         return;
     }
@@ -143,27 +185,58 @@ pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
         support.start_listing(week, now);
         return;
     }
-    let budget = support.remaining(confirmed).min(money as u64);
+    let budget = support
+        .remaining(confirmed)
+        .min(money as u64)
+        .saturating_sub(EXPRESS_FEE as u64);
     let candidate = mem
         .log
         .members
         .iter()
-        .filter(|m| {
-            m.char_id != ctx.state.me.char_id
-                && ctx.hub.is_bot_char(m.char_id)
-                && !support.sent.contains_key(&m.char_id)
-        })
+        .filter(|m| m.char_id != ctx.state.me.char_id && ctx.hub.is_bot_char(m.char_id))
         .filter_map(|m| {
+            if terms.bounty_reward_copper > 0 {
+                let (earned, received) = ctx.hub.bot_id_of(m.char_id).map_or((0, 0), |bot| {
+                    ctx.hub.journal.read(bot, |j| {
+                        j.guild_treasury
+                            .get(&guild)
+                            .map_or((0, 0), |a| (a.bounty_earned, a.bounty_paid))
+                    })
+                });
+                let mailed = support
+                    .bounty_through
+                    .get(&m.char_id)
+                    .copied()
+                    .unwrap_or_default();
+                let settled = received.max(mailed);
+                let copper = u64::from(earned.saturating_sub(settled))
+                    .min(budget)
+                    .min(MAX_BOUNTY_PAYMENT);
+                if copper > 0 {
+                    return Some((m, copper, Some(settled + copper as u32)));
+                }
+            }
+            if support.rank_sent.contains(&m.char_id) {
+                return None;
+            }
             let copper = u64::from(terms.weekly_support_copper) * rank_weight(m.role)?;
-            (copper + EXPRESS_FEE as u64 <= budget).then_some((m, copper))
+            (copper > 0 && copper <= budget).then_some((m, copper, None))
         })
-        .max_by_key(|(m, copper)| (*copper, std::cmp::Reverse(m.char_id)));
-    if let Some((member, copper)) = candidate {
+        .max_by_key(|(m, copper, through)| {
+            (through.is_some(), *copper, std::cmp::Reverse(m.char_id))
+        });
+    if let Some((member, copper, through)) = candidate {
+        let prefix = if through.is_some() {
+            BOUNTY_PREFIX
+        } else {
+            PREFIX
+        };
+        let extra = copper | through.map_or(0, |value| u64::from(value) << COPPER_BITS);
         ctx.out.push(cs::send_money_mail(
             &member.name,
-            &format!("{PREFIX}{guild}/{week}/{}", member.char_id),
+            &format!("{prefix}{guild}/{week}/{}", member.char_id),
             copper as i32,
-            copper as i64,
+            extra as i64,
             mailbox,
         ));
         support.checked = false;
@@ -211,10 +284,44 @@ mod tests {
             31,
         );
         assert!(support.checked);
-        assert!(support.sent.contains_key(&7));
+        assert!(support.rank_sent.contains(&7));
         assert_eq!(support.remaining(700), 300);
         support.for_week(32);
         assert!(!support.checked);
-        assert!(support.sent.is_empty());
+        assert!(support.spent.is_empty());
+    }
+
+    #[test]
+    fn past_bounty_mail_reconciles_the_debt_without_charging_this_week_again() {
+        let older = MailHeader {
+            mail_id: 5,
+            mail_type: mail_type::EXPRESS,
+            status: 1,
+            title: "Guild bounty 42/30/7".into(),
+            sender: "Master".into(),
+            attachments: 1,
+            receiver: "Tracker".into(),
+            open_date: 0,
+            returned: false,
+            extra: (500 << COPPER_BITS) | 200,
+        };
+        let current = MailHeader {
+            mail_id: 6,
+            title: "Guild bounty 42/31/7".into(),
+            extra: (600 << COPPER_BITS) | 100,
+            ..older.clone()
+        };
+        let mut support = Support::default();
+        support.observe(
+            &ActivityEvent::MailList {
+                is_sent: true,
+                mails: vec![current.clone(), older, current],
+            },
+            42,
+            31,
+        );
+        assert_eq!(support.bounty_through.get(&7), Some(&600));
+        assert_eq!(support.remaining(700), 500);
+        assert!(!support.rank_sent.contains(&7));
     }
 }

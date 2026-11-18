@@ -41,6 +41,8 @@ pub struct Terms {
     pub reserve_copper: u32,
     /// Rank-scaled weekly allowance, paid only from confirmed contributions.
     pub weekly_support_copper: u32,
+    /// Reward at the time the server confirms a guild bounty kill.
+    pub bounty_reward_copper: u32,
 }
 
 impl Default for Terms {
@@ -50,6 +52,7 @@ impl Default for Terms {
             commission_percent: 5,
             reserve_copper: 10_000,
             weekly_support_copper: 0,
+            bounty_reward_copper: 0,
         }
     }
 }
@@ -59,6 +62,11 @@ impl Terms {
         self.weekly_dues_copper <= 100_000
             && self.commission_percent <= 25
             && self.weekly_support_copper <= 100_000
+            && self.bounty_reward_copper <= 100_000
+    }
+
+    pub fn support_enabled(self) -> bool {
+        self.weekly_support_copper != 0 || self.bounty_reward_copper != 0
     }
 }
 
@@ -70,6 +78,8 @@ pub struct Account {
     pub contribution_week: u64,
     pub contributions_this_week: u64,
     pub support_received: u64,
+    pub bounty_earned: u32,
+    pub bounty_paid: u32,
 }
 
 impl Account {
@@ -112,16 +122,40 @@ pub fn queue_copper(journal: &mut crate::journal::Journal, guild: u32, copper: u
     }
 }
 
+pub fn note_bounty(journal: &mut crate::journal::Journal, guild: u32, reward: u32) {
+    if reward > 0 {
+        if let Some(account) = account_mut(journal, guild) {
+            account.bounty_earned = account.bounty_earned.saturating_add(reward);
+        }
+    }
+}
+
 fn account_mut(journal: &mut crate::journal::Journal, guild: u32) -> Option<&mut Account> {
     (journal.guild_treasury.len() < 16 || journal.guild_treasury.contains_key(&guild))
         .then(|| journal.guild_treasury.entry(guild).or_default())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
+struct Incoming {
+    id: i64,
+    payment: Option<support::Payment>,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum Claim {
-    Reading { id: i64, deadline: u64 },
-    Ready { id: i64, copper: u64 },
-    Taking { id: i64, copper: u64, deadline: u64 },
+    Reading {
+        mail: Incoming,
+        deadline: u64,
+    },
+    Ready {
+        mail: Incoming,
+        copper: u64,
+    },
+    Taking {
+        mail: Incoming,
+        copper: u64,
+        deadline: u64,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -132,10 +166,11 @@ pub struct Treasury {
     checking: Option<(u64, u64)>,
     list_ended: bool,
     sent: Option<(u64, u64)>,
-    incoming: VecDeque<i64>,
+    incoming: VecDeque<Incoming>,
     done: VecDeque<i64>,
     claim: Option<Claim>,
     received: u64,
+    bounty_received_through: u32,
     support: support::Support,
 }
 
@@ -176,6 +211,7 @@ impl Treasury {
         owner: bool,
         is_bot: impl Fn(u32) -> bool,
     ) {
+        let payment = (!owner).then(|| support::payment(mail, guild.id)).flatten();
         let guild_mail = if owner {
             contribution(mail, guild.id).is_some()
                 && guild
@@ -183,8 +219,8 @@ impl Treasury {
                     .iter()
                     .any(|m| m.name.eq_ignore_ascii_case(&mail.sender) && is_bot(m.char_id))
         } else {
-            support::payment(mail, guild.id).is_some_and(|(_, recipient, _)| {
-                guild.member(recipient).is_some_and(|m| {
+            payment.is_some_and(|p| {
+                guild.member(p.recipient).is_some_and(|m| {
                     is_bot(m.char_id) && m.name.eq_ignore_ascii_case(&mail.receiver)
                 })
             }) && guild
@@ -194,10 +230,13 @@ impl Treasury {
         if mail.attachments == 1
             && guild_mail
             && !self.done.contains(&mail.mail_id)
-            && !self.incoming.contains(&mail.mail_id)
+            && !self.incoming.iter().any(|m| m.id == mail.mail_id)
             && self.incoming.len() < 32
         {
-            self.incoming.push_back(mail.mail_id);
+            self.incoming.push_back(Incoming {
+                id: mail.mail_id,
+                payment,
+            });
         }
     }
 
@@ -241,16 +280,27 @@ impl Treasury {
                 is_sent: false,
                 body,
                 ..
-            } if matches!(self.claim, Some(Claim::Reading { id, .. }) if id == body.mail_id) => {
-                let id = body.mail_id;
-                if body.items.is_empty() && body.money > 0 && body.billing == 0 && body.money2 == 0
+            } => {
+                let Some(Claim::Reading { mail, .. }) = self.claim.filter(
+                    |claim| matches!(claim, Claim::Reading { mail, .. } if mail.id == body.mail_id),
+                ) else {
+                    return;
+                };
+                let amount_matches = mail
+                    .payment
+                    .is_none_or(|p| u64::try_from(body.money) == Ok(p.copper));
+                if body.items.is_empty()
+                    && body.money > 0
+                    && body.billing == 0
+                    && body.money2 == 0
+                    && amount_matches
                 {
                     self.claim = Some(Claim::Ready {
-                        id,
+                        mail,
                         copper: body.money as u64,
                     });
                 } else {
-                    self.finish_claim(id);
+                    self.finish_claim(mail.id);
                 }
             }
             ActivityEvent::AttachmentTaken {
@@ -258,10 +308,15 @@ impl Treasury {
                 money: true,
                 ..
             } => {
-                if let Some(Claim::Taking { id, copper, .. }) = self.claim {
-                    if id == *mail_id {
-                        self.received = self.received.saturating_add(copper);
-                        self.finish_claim(id);
+                if let Some(Claim::Taking { mail, copper, .. }) = self.claim {
+                    if mail.id == *mail_id {
+                        if let Some(through) = mail.payment.and_then(|payment| payment.through) {
+                            self.bounty_received_through =
+                                self.bounty_received_through.max(through);
+                        } else {
+                            self.received = self.received.saturating_add(copper);
+                        }
+                        self.finish_claim(mail.id);
                     }
                 }
             }
@@ -274,7 +329,7 @@ impl Treasury {
 
     fn finish_claim(&mut self, id: i64) {
         self.claim = None;
-        self.incoming.retain(|&mail| mail != id);
+        self.incoming.retain(|mail| mail.id != id);
         self.done.push_back(id);
         if self.done.len() > 128 {
             self.done.pop_front();
@@ -293,7 +348,7 @@ pub fn duty(ctx: &mut Ctx<'_>) {
         return;
     };
     ctx.state.guild.mem().treasury.for_guild(guild);
-    let support_enabled = terms.weekly_support_copper > 0;
+    let support_enabled = terms.support_enabled();
     if owner {
         if !collect(ctx, guild, true, support_enabled) && support_enabled {
             support::pay(ctx, guild, terms);
@@ -311,19 +366,20 @@ fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) ->
     let treasury = &mut ctx.state.guild.mem().treasury;
     let now = ctx.now_ms;
     let received = std::mem::take(&mut treasury.received);
+    let bounty_through = std::mem::take(&mut treasury.bounty_received_through);
     let mut listing = false;
-    if let Some(Claim::Ready { id, copper }) = treasury.claim {
-        ctx.out.push(cs::take_attachment_sequentially(id));
+    if let Some(Claim::Ready { mail, copper }) = treasury.claim {
+        ctx.out.push(cs::take_attachment_sequentially(mail.id));
         treasury.claim = Some(Claim::Taking {
-            id,
+            mail,
             copper,
             deadline: now + 8_000,
         });
     } else if treasury.claim.is_none() {
-        if let Some(id) = treasury.incoming.front().copied() {
-            ctx.out.push(cs::read_mail(false, id));
+        if let Some(mail) = treasury.incoming.front().copied() {
+            ctx.out.push(cs::read_mail(false, mail.id));
             treasury.claim = Some(Claim::Reading {
-                id,
+                mail,
                 deadline: now + 8_000,
             });
         } else if now >= treasury.next_check
@@ -364,6 +420,19 @@ fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) ->
         };
         ctx.log
             .say(format!("guild: received {received} copper in {purpose}"));
+    }
+    if bounty_through > 0 {
+        let paid = ctx.hub.journal.update(ctx.persona.id, |j| {
+            account_mut(j, guild).map_or(0, |a| {
+                let before = a.bounty_paid;
+                a.bounty_paid = before.max(bounty_through.min(a.bounty_earned));
+                a.bounty_paid - before
+            })
+        });
+        if paid > 0 {
+            ctx.log
+                .say(format!("guild: received {paid} copper in bounty rewards"));
+        }
     }
     collecting || listing
 }

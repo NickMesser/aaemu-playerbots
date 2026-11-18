@@ -861,6 +861,10 @@ impl Brain {
                         " Unpaid guild commission is {} copper. Guild rank allowances received: {} copper.",
                         a.unpaid_commission, a.support_received
                     ));
+                    let pending = a.bounty_earned.saturating_sub(a.bounty_paid);
+                    if pending > 0 {
+                        context.push_str(&format!(" I earned {pending} copper in bounty rewards awaiting collection."));
+                    }
                 }
             });
         }

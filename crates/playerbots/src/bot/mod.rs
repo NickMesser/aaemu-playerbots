@@ -788,7 +788,7 @@ impl Bot {
                             activity,
                             &mem.log,
                             owner,
-                            terms.weekly_support_copper > 0,
+                            terms.support_enabled(),
                             now,
                             |id| self.shared.hub.is_bot_char(id),
                         );
@@ -920,6 +920,12 @@ impl Bot {
         {
             self.shared.hub.journal.update(self.entry.id, |j| {
                 j.bounties_completed = j.bounties_completed.saturating_add(1);
+                let reward = cfg
+                    .guild
+                    .treasuries
+                    .get(&log.id.to_string())
+                    .map_or(0, |terms| terms.bounty_reward_copper);
+                guild::treasury::note_bounty(j, log.id, reward);
             });
         }
     }

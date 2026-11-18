@@ -368,6 +368,9 @@ when the game confirms the action.
 Bounty hunters with warzone play enabled check recent sightings after a hostile character kills
 a trade runner carrying a pack. Hunters prioritize eligible targets in view during war patrols.
 The game must credit the kill to a hunter before the report is cleared and recorded in memory.
+Set `bounty_reward_copper` on the guild treasury to pay hunters for those confirmed kills.
+Rewards use express mail and the guildmaster's collected funds. An unpaid amount carries
+forward when the treasury cannot cover it and still protect its reserve.
 The director sees the role, work availability and configured orders. When trade runs are eligible
 it also sees recent route outcomes and gross price estimates. External agents see the work summary
 as `guild_work` in `observe`.

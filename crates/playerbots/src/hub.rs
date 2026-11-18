@@ -498,6 +498,16 @@ impl Hub {
         self.bot_chars.read().contains(&char_id)
     }
 
+    pub fn bot_id_of(&self, char_id: u32) -> Option<u32> {
+        if char_id == 0 {
+            return None;
+        }
+        self.slots
+            .read()
+            .iter()
+            .find_map(|(&id, slot)| (slot.char_id.load(Ordering::Relaxed) == char_id).then_some(id))
+    }
+
     /// Remembers the character name of one of our bots (also called when a name changes).
     pub fn mark_bot_name(&self, name: &str) {
         self.chat.names.add(name);
