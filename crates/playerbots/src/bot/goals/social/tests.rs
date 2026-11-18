@@ -16,6 +16,36 @@ use super::gate::ChatGate;
 use super::*;
 use crate::config::PersonalityCfg;
 
+#[test]
+fn a_server_auction_quote_can_be_said_once_in_local_chat() {
+    let mut env = Env::new(7);
+    env.pcfg.ambient_per_min = 4;
+    env.auction_quote = Some(AuctionRemark {
+        item: "Potato",
+        copper: 17,
+        seen_ms: 900,
+    });
+    let mut social = Social {
+        next_ambient_ms: env.now_ms,
+        ..Social::default()
+    };
+    let service = Fake::default();
+    assert!(env.step(&mut social, &service, Vec::new()).is_empty());
+    env.advance(5_000);
+    let lines = env.step(&mut social, &service, Vec::new());
+    assert!(
+        matches!(lines.as_slice(), [Action::Say(text)] if text.contains("Potato") && text.contains("17c"))
+    );
+    env.advance(5 * 60_000);
+    social.next_ambient_ms = env.now_ms;
+    env.step(&mut social, &service, Vec::new());
+    env.advance(5_000);
+    assert!(!env
+        .step(&mut social, &service, Vec::new())
+        .iter()
+        .any(|line| matches!(line, Action::Say(text) if text.contains("17c"))));
+}
+
 // ---- fakes -----------------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -59,6 +89,7 @@ struct Env {
     real_near: bool,
     active: bool,
     dominant: &'static str,
+    auction_quote: Option<AuctionRemark<'static>>,
 }
 
 impl Env {
@@ -81,6 +112,7 @@ impl Env {
             real_near: true,
             active: true,
             dominant: "quester",
+            auction_quote: None,
         }
     }
 
@@ -128,6 +160,7 @@ impl Env {
                 dominant: self.dominant,
                 zone: self.zone,
             },
+            auction_quote: self.auction_quote,
             rng: &mut self.rng,
         };
         let mut out = SmallVec::new();

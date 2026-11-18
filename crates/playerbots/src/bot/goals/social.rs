@@ -357,8 +357,45 @@ pub struct Inputs<'a> {
     pub style: Style,
     /// Who the bot is.
     pub facts: Facts<'a>,
+    /// A recent server quote while standing at an auctioneer.
+    auction_quote: Option<AuctionRemark<'a>>,
     /// Randomness.
     pub rng: &'a mut fastrand::Rng,
+}
+
+#[derive(Clone, Copy)]
+struct AuctionRemark<'a> {
+    item: &'a str,
+    copper: u32,
+    seen_ms: u64,
+}
+
+fn auction_remark<'a>(ctx: &Ctx<'a>, last_spoken: u64) -> Option<AuctionRemark<'a>> {
+    if !ctx.cfg.behavior.settlement_visits || ctx.state.place.in_instance() || !ctx.real_player_near
+    {
+        return None;
+    }
+    let market = ctx.state.market.get()?;
+    let observed = market
+        .auction
+        .prices()
+        .iter()
+        .filter_map(|entry| {
+            let quote = entry.quote?;
+            if entry.at_ms <= last_spoken || ctx.now_ms.saturating_sub(entry.at_ms) > 3 * 60_000 {
+                return None;
+            }
+            Some(AuctionRemark {
+                item: ctx.world.item_name(entry.template)?,
+                copper: quote.lowest,
+                seen_ms: entry.at_ms,
+            })
+        })
+        .max_by_key(|quote| quote.seen_ms)?;
+    let [x, y, z] = ctx.pos();
+    ctx.world
+        .nearest_auctioneer(aa_world::Vec3::new(x, y, z), 15.0, |_| false)?;
+    Some(observed)
 }
 
 /// A line to put on the wire.
@@ -552,6 +589,7 @@ pub struct Social {
     next_scan_ms: u64,
     next_hello_ms: u64,
     next_ambient_ms: u64,
+    last_auction_remark_ms: u64,
     next_channel_ms: u64,
     next_bag_ms: u64,
     llm_off_until_ms: u64,
@@ -702,6 +740,9 @@ impl Social {
         }
         let facts = facts_of(ctx.persona, &ctx.state.me, ctx.world);
         let me = &ctx.state.me;
+        let auction_quote = (ctx.now_ms >= self.next_ambient_ms)
+            .then(|| auction_remark(ctx, self.last_auction_remark_ms))
+            .flatten();
         let mut inp = Inputs {
             bot_id: ctx.persona.id,
             team: ctx.state.team(),
@@ -715,6 +756,7 @@ impl Social {
             pcfg: &ctx.cfg.personality,
             style: Style::new(&ctx.persona.profile, &ctx.cfg.personality),
             facts,
+            auction_quote,
             rng: &mut *ctx.rng,
         };
         let mut out: SmallVec<[Action; 2]> = SmallVec::new();
@@ -1148,6 +1190,29 @@ impl Social {
         if !self.unasked_room(inp) || !gate.take_ambient(inp.now, per_min) {
             return false;
         }
+        if let Some(quote) = inp
+            .auction_quote
+            .filter(|q| q.seen_ms > self.last_auction_remark_ms)
+        {
+            let line = format!(
+                "I just saw {} at the auction house for as little as {} each.",
+                quote.item,
+                super::trade_run::coins(i64::from(quote.copper))
+            );
+            if let Some(text) = filtered(&line, inp.style.level(), &gate.stats) {
+                self.last_auction_remark_ms = quote.seen_ms;
+                self.spoke_unasked(inp);
+                self.due = Some(Due {
+                    at_ms: now + rand_range(inp.rng, CANNED_DELAY_MS),
+                    action: Action::Say(text),
+                    how: Sent::Ambient,
+                    who: "".into(),
+                    told: 0,
+                    joke: false,
+                });
+                return true;
+            }
+        }
         let told = gate.told();
         let tongue = inp.style.tongue();
         let slots = Slots {
@@ -1297,7 +1362,11 @@ fn route_inbox(ctx: &mut Ctx<'_>, heard: &mut SmallVec<[ChatIn; 2]>) {
         return;
     }
     let mut lines = std::mem::take(&mut ctx.state.inbox);
-    lines.retain(|l| !super::delivery::on_whisper(ctx, l) && !super::mediation::on_whisper(ctx, l));
+    lines.retain(|l| {
+        !super::delivery::on_whisper(ctx, l)
+            && !super::mediation::on_whisper(ctx, l)
+            && !super::warzone::bounty_whisper(ctx, l)
+    });
     // (the market features hear the shout, trade and group-finding channels and the whispers
     // besides us; what they do with them is no business of the routing below)
     let market = &mut ctx.state.market;

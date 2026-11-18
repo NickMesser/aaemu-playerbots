@@ -367,6 +367,10 @@ each actual animal phase, the bot can feed, treat or collect eggs, milk or wool 
 when the game confirms the action.
 Bounty hunters with warzone play enabled check recent sightings after a hostile character kills
 a trade runner carrying a pack. Hunters prioritize eligible targets in view during war patrols.
+If a bot witnessed a player's death while they carried a trade pack, that player can whisper
+`bounty RaiderName` to a nearby Bounty Hunter guild member or guildmaster on their side. The
+guild adds the matching report to its patrols while the case remains open. A witness report
+can open a case automatically when another bot died carrying a pack.
 The game must credit the kill to a hunter before the report is cleared and recorded in memory.
 Set `bounty_reward_copper` on the guild treasury to pay hunters for those confirmed kills.
 Rewards use express mail and the guildmaster's collected funds. An unpaid amount carries
@@ -427,6 +431,10 @@ With freshwater chum, a bot within 450 metres of a known freshwater school can w
 nearby bank. The route requires baked terrain and a point where both the chum and lure can reach
 the water.
 
+With settlement visits and ambient social chat enabled, a bot standing near an auctioneer can
+remark in local chat on the lowest buyout it recently saw for an item. It uses the server's
+quote and the normal ambient chat limits.
+
 ### Message deliveries
 
 With `[behavior] delivery_contracts = true` and social chat enabled, a player within 30 metres
@@ -457,6 +465,9 @@ keeps its pack equipped while sailing to the buyer, then uses the ordinary sale 
 The planner considers the ship's speed when comparing the route with a land run. Set `[sail]
 ship = "auto"` if the bots own different boats. An optional `[guild] voyage_buyers` entry
 prioritizes a buyer NPC template for that guild when a viable passage is available.
+Trader guild members also compare gross quotes with estimated material replacement costs and
+recorded failures on the route. Bot memory records land and sea runs separately and exposes the
+last quote and available cost estimate to the director.
 
 ### Trade escorts
 

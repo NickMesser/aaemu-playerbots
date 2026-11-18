@@ -351,6 +351,60 @@ pub fn bounty(ctx: &Ctx<'_>, matches: impl Fn(&Case) -> bool) -> Option<Case> {
     )
 }
 
+pub(super) fn bounty_whisper(ctx: &mut Ctx<'_>, line: &crate::bot::state::ChatIn) -> bool {
+    if !(ctx.cfg.pvp.enabled && ctx.cfg.pvp.warzone)
+        || line.kind != aa_proto::cs::chat_type::WHISPER
+        || ctx.state.me.dead
+        || ctx.state.place.in_instance()
+    {
+        return false;
+    }
+    let Some((verb, target)) = line.text.trim().split_once(' ') else {
+        return false;
+    };
+    if !verb.eq_ignore_ascii_case("bounty") {
+        return false;
+    }
+    let Some((requester, who)) = super::delivery::nearby_requester(ctx, line) else {
+        return false;
+    };
+    let alliance = ctx.world.mother_faction(ctx.state.me.faction);
+    let on_same_side = ctx
+        .state
+        .units
+        .get(&line.sender_obj)
+        .is_some_and(|u| alliance != 0 && ctx.world.mother_faction(u.faction) == alliance);
+    if !on_same_side
+        || !matches!(
+            profession::membership(ctx),
+            Some((_, Profession::BountyHunter, _))
+        )
+    {
+        super::delivery::tell(
+            ctx,
+            who,
+            "A Bounty Hunter guild on your side can take the case.",
+        );
+        return true;
+    }
+    if let Some(case) =
+        ctx.hub
+            .bounties
+            .request(crate::hub::unix_ms(), alliance, requester, target.trim())
+    {
+        super::delivery::tell(ctx, who, &format!("I put a bounty on {} for the trade pack ambush. We'll look for them when the area is at war.", case.name));
+        ctx.log
+            .say(format!("bounty: took a case on {} from {who}", case.name));
+    } else {
+        super::delivery::tell(
+            ctx,
+            who,
+            "We need a witness to your trade pack ambush before we can take the case.",
+        );
+    }
+    true
+}
+
 /// The zone groups at war that the bot may join now, with their distance and the bot's kills.
 fn wars(ctx: &Ctx<'_>) -> SmallVec<[War; 8]> {
     let mut out: SmallVec<[War; 8]> = SmallVec::new();

@@ -831,6 +831,7 @@ impl Bot {
         if *killer == me.obj {
             self.record_bounty_kill(*obj);
         }
+        self.record_pack_death(*obj, *killer);
         if *obj != me.obj {
             return;
         }
@@ -842,7 +843,6 @@ impl Bot {
         else {
             return;
         };
-        self.report_pack_attack(attacker);
         if !self.shared.cfg.party.join_player_parties && !self.shared.hub.is_bot_char(attacker.id) {
             return;
         }
@@ -857,7 +857,7 @@ impl Bot {
         });
     }
 
-    fn report_pack_attack(&self, attacker: &state::Unit) {
+    fn record_pack_death(&self, object: u32, killer: u32) {
         let cfg = &self.shared.cfg;
         if !(cfg.guild.enabled && cfg.pvp.enabled && cfg.pvp.warzone)
             || !cfg
@@ -871,25 +871,51 @@ impl Bot {
         }
         let world = &self.shared.world;
         let me = &self.state.me;
-        if goals::trade_run::carried_pack_in(world, &self.state.equipment).is_none()
-            || !pvp::rules::Rules::new(world, cfg, me.faction).hostile(attacker.faction)
-        {
+        let (victim, faction, pack) = if object == me.obj {
+            (
+                me.char_id,
+                me.faction,
+                goals::trade_run::carried_pack_in(world, &self.state.equipment).unwrap_or_default(),
+            )
+        } else {
+            let Some(unit) = self
+                .state
+                .units
+                .get(&object)
+                .filter(|u| u.kind == UnitKind::Character && u.flags & state::U_PACK != 0)
+            else {
+                return;
+            };
+            (unit.id, unit.faction, self.state.pack_of(object))
+        };
+        if victim == 0 || world.specialty_buyers(pack).is_empty() {
             return;
         }
-        let Some((name, zone)) = attacker
-            .name
-            .as_deref()
-            .zip(world.zone_info_at(attacker.pos[0], attacker.pos[1]))
+        let Some(attacker) = self
+            .state
+            .units
+            .get(&killer)
+            .filter(|u| u.kind == UnitKind::Character && u.id != victim && u.id != 0)
         else {
             return;
         };
+        if !pvp::rules::Rules::new(world, cfg, faction).hostile(attacker.faction) {
+            return;
+        }
+        let Some(zone) = world.zone_info_at(attacker.pos[0], attacker.pos[1]) else {
+            return;
+        };
+        let alliance = world.mother_faction(faction);
+        if alliance == 0 {
+            return;
+        }
         self.shared.hub.bounties.report(
             crate::hub::unix_ms(),
-            attacker.id,
-            name.into(),
-            world.mother_faction(me.faction),
+            attacker,
+            victim,
+            alliance,
             zone.group,
-            [attacker.pos[0], attacker.pos[1]],
+            object == me.obj || self.shared.hub.is_bot_char(victim),
         );
     }
 
