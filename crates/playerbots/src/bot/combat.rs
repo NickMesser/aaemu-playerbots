@@ -1551,7 +1551,7 @@ impl Combat {
 /// Whether a unit is a monster the bot may attack: an NPC the bot's faction is hostile to that no
 /// player owns. Returns its template.
 pub fn attackable<'w>(world: &'w World, own_faction: u32, unit: &Unit) -> Option<&'w NpcTemplate> {
-    if unit.kind != UnitKind::Npc || unit.dead() || unit.owned() {
+    if unit.kind != UnitKind::Npc || unit.dead() || unit.owned() || world.is_sport_fish(unit.id) {
         return None;
     }
     let template = world.npc(unit.id)?;

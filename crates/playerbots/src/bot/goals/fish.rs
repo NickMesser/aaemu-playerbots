@@ -25,6 +25,8 @@ const REEL_CUE_MAX_AGE_MS: u64 = 1_500;
 const FOLLOW_FISH_M: f32 = 45.0;
 const KEEP_FISH_M: f32 = 30.0;
 const LOOT_REACH_M: f32 = 4.0;
+// A fish can surface at the bobber when it dies, some distance from the pursuer.
+const LAND_WAIT_MS: u64 = 90_000;
 const ROD_CHANGE_BUFF: u32 = 5795;
 const ROD_CHANGE_MS: u64 = 40_000;
 // Unwrapped sport rods in the r208022 item catalogue.
@@ -173,7 +175,7 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     {
         return 0.0;
     }
-    if carries_catch(ctx) {
+    if carries_catch(ctx) || nearby_owned_catch(ctx).is_some() {
         return 8.0;
     }
     if ctx.state.me.hp_pct() >= 60
@@ -184,6 +186,22 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     } else {
         0.0
     }
+}
+
+fn nearby_owned_catch(ctx: &Ctx<'_>) -> Option<u32> {
+    let pos = ctx.pos();
+    ctx.state
+        .units
+        .iter()
+        .filter(|(_, fish)| {
+            fish.kind == UnitKind::Npc
+                && fish.flags & U_MY_SUMMON != 0
+                && fish.dead()
+                && fish.has_loot()
+                && ctx.world.is_sport_fish(fish.id)
+        })
+        .min_by(|(_, left), (_, right)| dist3d(pos, left.pos).total_cmp(&dist3d(pos, right.pos)))
+        .map(|(&object, _)| object)
 }
 
 #[derive(Debug, Default)]
@@ -250,6 +268,16 @@ impl Fish {
             Start => {
                 if carries_catch(ctx) {
                     return self.begin_turn_in(ctx);
+                }
+                if let Some(object) = nearby_owned_catch(ctx) {
+                    if let Some(at) = cast_point(ctx) {
+                        ctx.motion.note_water_surface(at);
+                    }
+                    self.step = Land {
+                        object,
+                        deadline: now + LAND_WAIT_MS,
+                    };
+                    return GoalStatus::Running;
                 }
                 if !has_supplies(ctx) {
                     return GoalStatus::Failed(FailReason::NoTarget);
@@ -403,7 +431,7 @@ impl Fish {
                     ));
                     self.step = Land {
                         object,
-                        deadline: now + 18_000,
+                        deadline: now + LAND_WAIT_MS,
                     };
                     return GoalStatus::Running;
                 } else if distance > FOLLOW_FISH_M
@@ -451,7 +479,11 @@ impl Fish {
                 let Some(unit) = ctx.state.units.get(&object) else {
                     return GoalStatus::Failed(FailReason::NoTarget);
                 };
-                if !unit.dead() || !ctx.world.is_sport_fish(unit.id) {
+                if unit.kind != UnitKind::Npc
+                    || unit.flags & U_MY_SUMMON == 0
+                    || !unit.dead()
+                    || !ctx.world.is_sport_fish(unit.id)
+                {
                     return GoalStatus::Failed(FailReason::NoTarget);
                 }
                 let pos = unit.pos;
@@ -493,6 +525,7 @@ impl Fish {
                 let (id, template) = (pack.id, pack.template);
                 if let Some((object, sale)) = nearby_stand(ctx, template) {
                     let money = ctx.state.me.money;
+                    ctx.motion.stop();
                     ctx.send(cs::start_skill_doodad(sale.skill, ctx.state.me.obj, object));
                     self.step = Payment {
                         id,
