@@ -80,6 +80,10 @@ impl Relationship {
         self.change_trust(-loss);
         true
     }
+
+    pub fn remembers_bloodlust(&self) -> bool {
+        self.last_bloodlust.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -16,8 +16,8 @@ const CAST: u32 = 21578;
 const LURE: u32 = 27319;
 // The sport-cast plot channels for up to 220 seconds and rolls for a bite every 20 seconds.
 const HOOK_WAIT_MS: u64 = 230_000;
-// The shortest authored hooked-fish status lasts five minutes.
-const FIGHT_WAIT_MS: u64 = 300_000;
+// Hooked fish can stay in the fight for up to ten minutes. Their escape removes them from view.
+const FIGHT_WAIT_MS: u64 = 600_000;
 // Each reel action is a 5.6-second repeating plot. Start it on a new cue to
 // keep its checks in the same direction and avoid overlapping two plots.
 const REEL_CHANNEL_MS: u64 = 5_600;

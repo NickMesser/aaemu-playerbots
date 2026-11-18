@@ -252,10 +252,14 @@ impl Services for Hub {
         self.journal.read(bot, |j| {
             let record = j.relationships.get(character)?;
             let activity = record.preference.map_or("unspecified", |p| p.label());
-            Some(format!(
+            let mut memory = format!(
                 "You have partied together {} times. Your trust in this player is {} out of 100. Their stated preferred activity is {}. Use this to suggest an activity when relevant.",
                 record.shared_parties, record.trust, activity
-            ))
+            );
+            if record.remembers_bloodlust() {
+                memory.push_str(" You saw this player enable Bloodlust while in your party.");
+            }
+            Some(memory)
         })
     }
 }
