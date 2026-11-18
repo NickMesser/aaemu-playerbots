@@ -598,8 +598,23 @@ impl Brain {
             self.end_goal(ctx, None);
         }
         let party = self.party.take();
+        let forage_leader = kind == GoalKind::FieldParty
+            && party.as_ref().is_some_and(|order| {
+                order.is_leader(ctx.persona.id)
+                    && order.purpose
+                        == super::party::PartyPurpose::Field(super::party::FieldActivity::Forage)
+            });
+        let work_available = self.guild_service_available(ctx.now_ms);
+        let territory_work =
+            kind == GoalKind::Warzone && super::goals::warzone::territory_patrol_ready(ctx);
+        if (forage_leader || territory_work) && !work_available {
+            return;
+        }
         let why = args.as_ref().and_then(|a| a.why.clone());
         let mut goal = Goal::with_args(kind, order, party, args);
+        if let Goal::FieldParty(field) = &mut goal {
+            field.permit_forage(work_available);
+        }
         goal.start(ctx);
         match why {
             Some(why) => ctx.log.say(format!("goal: {} ({why})", kind.name())),
@@ -610,7 +625,7 @@ impl Brain {
                 && (profession.goals().contains(&kind)
                     || kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx))
         });
-        if professional || kind == GoalKind::Siege {
+        if professional || forage_leader || territory_work || kind == GoalKind::Siege {
             let interval = ctx.cfg.llm.director_interval_secs;
             self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
         }
@@ -723,6 +738,9 @@ impl Brain {
         }
         if !self.guild_service_available(ctx.now_ms) {
             blocked |= 1 << GoalKind::Siege.index();
+            if super::goals::warzone::territory_patrol_ready(ctx) {
+                blocked |= 1 << GoalKind::Warzone.index();
+            }
         }
         for g in GoalKind::ALL {
             if self.cooldown_until.active(g, ctx.now_ms) {
@@ -794,6 +812,9 @@ impl Brain {
             return self.guild_service_available(ctx.now_ms);
         }
         if kind == GoalKind::Siege {
+            return self.guild_service_available(ctx.now_ms);
+        }
+        if kind == GoalKind::Warzone && super::goals::warzone::territory_patrol_ready(ctx) {
             return self.guild_service_available(ctx.now_ms);
         }
         profession::membership(ctx).is_none_or(|(_, profession, master)| {

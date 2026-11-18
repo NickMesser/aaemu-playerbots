@@ -275,7 +275,48 @@ pub fn context(ctx: &Ctx<'_>) -> Option<String> {
             order.group
         ));
     }
+    let sites = patrol_sites(ctx).len();
+    if sites > 0 {
+        summary.push_str(&format!(
+            " The guild holds a castle and has {sites} resource or trade patrol sites."
+        ));
+    }
     Some(summary)
+}
+
+pub fn patrol_sites<'a>(ctx: &Ctx<'a>) -> &'a [crate::config::TerritoryPatrol] {
+    let cfg = &ctx.cfg.guild;
+    if !cfg.enabled || cfg.territory_patrols.is_empty() {
+        return &[];
+    }
+    let Some(guild) = ctx.state.guild.get() else {
+        return &[];
+    };
+    let log = &guild.log;
+    let character = ctx.state.me.char_id;
+    if !log.in_guild()
+        || log.is_owner(character)
+        || log.member(character).is_none()
+        || !ctx.hub.is_bot_char(log.owner)
+    {
+        return &[];
+    }
+    let key = log.id.to_string();
+    let sites = cfg.territory_patrols.get(&key);
+    let holds = cfg.siege_zones.get(&key).is_some_and(|zones| {
+        zones.iter().any(|group| {
+            guild
+                .sieges
+                .0
+                .get(group)
+                .is_some_and(|site| site.owner == log.id)
+        })
+    });
+    if holds {
+        sites.map_or(&[], Vec::as_slice)
+    } else {
+        &[]
+    }
 }
 
 #[cfg(test)]

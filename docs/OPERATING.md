@@ -408,6 +408,12 @@ Defenders can engage enrolled attackers under the existing PvP target settings. 
 server's territory update counts as a capture or successful defense, and the director remembers
 those results. This goal requires a server with an active siege and access to that castle zone.
 
+Use `[guild] territory_patrols` to designate nearby roads and resource sites for guilds that
+hold a castle. Each guild's entries give a `zone_group` and its world `[x, y]` `position`. With
+warzone play enabled, members prioritize reachable sites in active conflict, patrol their
+surroundings and use the usual PvP rules. These patrols use guild work time and stop after the
+guild loses its last configured castle.
+
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
 auctioneer and stroll around the market. Add places such as taverns or campfires to
 `settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and
@@ -448,6 +454,8 @@ With the same setting, a Thief guild member can take `spy Farsignal` from a near
 It travels within sight of the named bot and reports where it was seen and whether it was carrying
 a trade pack. A sighting uses the member's guild work time and adds a journal note and a
 `scouting_reports` count. The requester can whisper `spy cancel`.
+With sport fishing and PvP ambushes enabled, Thief guild members can also raid eligible rivals
+carrying a landed sport fish. They can recover a dropped catch and use a fish stand to sell it.
 
 Whisper `mediate` to ask whether the bot has a disagreement you can help resolve. If it
 remembers a negative relationship with another nearby bot, it can ask you to visit them.
@@ -494,8 +502,10 @@ two to four bots of the same alliance within 120 metres and five levels of each 
 familiar characters, compatible attitudes toward outlaw activity, and a mix of party roles.
 Bots skip teammates they strongly distrust and leave if trust falls that far during a trip.
 Outgoing, dedicated bots tend to lead. The coordinator gives their preferences double weight
-when it chooses exploration, questing, or grinding. The leader announces the plan in party
-chat. Followers stay nearby and assist with fights. More sociable bots tend to stay longer.
+when it chooses exploration, questing, grinding, or foraging. Foraging requires a leader with an
+available Gatherer order and guild work time. The leader gathers up to three confirmed sources
+while the party stays together. The leader announces the plan in party chat, and followers stay
+nearby and assist with fights. More sociable bots tend to stay longer.
 
 **See it.** The web UI's bot list carries each bot's guild with its members (`guild` in
 `/api/bots`); the bot's log has the `guild:` lines (invited, joined, handed over, left). Server

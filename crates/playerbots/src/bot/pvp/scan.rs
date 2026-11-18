@@ -84,8 +84,18 @@ pub fn candidates(
 }
 
 /// The carriers of trade packs the bot may ambush (see [`candidates`]).
-pub fn carriers(ctx: &Ctx<'_>, post: [f32; 2], radius: f32) -> SmallVec<[Cand; MAX_CANDS]> {
-    candidates(ctx, Purpose::Gank, post, radius)
+pub fn carriers(
+    ctx: &Ctx<'_>,
+    post: [f32; 2],
+    radius: f32,
+    raid_catch: bool,
+) -> SmallVec<[Cand; MAX_CANDS]> {
+    let purpose = if raid_catch {
+        Purpose::RaidCatch
+    } else {
+        Purpose::Gank
+    };
+    candidates(ctx, purpose, post, radius)
 }
 
 /// The hostile characters the bot may fight in a war (see [`candidates`]).

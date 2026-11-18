@@ -693,7 +693,12 @@ impl Machine {
     /// Looks for a carrier to attack: `Some(obj)` when the bot takes the fight.
     fn spot(&mut self, ctx: &mut Ctx<'_>, order: Option<&PartyOrder>) -> Option<u32> {
         let now = ctx.now_ms;
-        let mut cands = scan::carriers(ctx, self.post.pos, SEE_M);
+        let mut cands = scan::carriers(
+            ctx,
+            self.post.pos,
+            SEE_M,
+            thief(ctx) && ctx.cfg.behavior.sport_fishing,
+        );
         if thief(ctx) {
             cands.retain(|c| {
                 ctx.state
@@ -907,7 +912,7 @@ impl Machine {
         let view = CollectView {
             now_ms: now,
             doodad: pack.map(|(obj, _, pos, _)| (obj, dist2d(pos, me))),
-            carrying: carried_pack_of(ctx).is_some(),
+            carrying: carried_pack_of(ctx).is_some() || super::fish::carries_catch(ctx),
         };
         match self.job.step(&view) {
             CollectStep::Collected => {

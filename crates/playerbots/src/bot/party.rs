@@ -77,6 +77,7 @@ pub enum PartyPurpose {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldActivity {
     Explore,
+    Forage,
     Grind,
     Quest,
 }

@@ -202,6 +202,12 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     }
 }
 
+pub(super) fn forage_ready(ctx: &Ctx<'_>) -> bool {
+    available_order(ctx).is_some_and(|(order, training)| {
+        matches!(order, Order::Gather { .. }) && plan(ctx, order, training).is_some()
+    })
+}
+
 #[derive(Debug)]
 struct Hunt {
     item: u32,

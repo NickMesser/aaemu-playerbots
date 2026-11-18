@@ -2,6 +2,7 @@
 
 use aa_proto::cs;
 
+use super::work::{self, Work};
 use super::{FailReason, GoalStatus, Grind, Quest, Wander};
 use crate::bot::combat::CombatStatus;
 use crate::bot::coordinator::{Dispatch, FieldOffer};
@@ -25,6 +26,7 @@ pub fn cooperation(ctx: &Ctx<'_>) -> f32 {
 #[derive(Debug)]
 enum Outing {
     Explore(Wander),
+    Forage(Box<Work>),
     Grind(Grind),
     Quest(Quest),
 }
@@ -35,6 +37,8 @@ pub struct Field {
     deadline: u64,
     next_invite: u64,
     next_relationship_check: u64,
+    forage_allowed: bool,
+    gathered: u8,
     invite_index: usize,
     accepted: bool,
     team_id: u32,
@@ -49,6 +53,10 @@ impl Field {
             order: order.map(|o| *o),
             ..Self::default()
         })
+    }
+
+    pub fn permit_forage(&mut self, allowed: bool) {
+        self.forage_allowed = allowed;
     }
 
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
@@ -66,6 +74,11 @@ impl Field {
                 explore: ctx.persona.profile.explorer,
                 quest: if ctx.cfg.behavior.quest > 0.0 {
                     ctx.persona.temper.quester
+                } else {
+                    0.0
+                },
+                forage: if self.forage_allowed && work::forage_ready(ctx) {
+                    0.65 + 0.35 * ctx.persona.temper.merchant
                 } else {
                     0.0
                 },
@@ -157,10 +170,28 @@ impl Field {
             let PartyPurpose::Field(activity) = order.purpose else {
                 return GoalStatus::Failed(FailReason::NoTarget);
             };
+            if activity == FieldActivity::Forage
+                && own
+                && !(self.forage_allowed && work::forage_ready(ctx))
+            {
+                return GoalStatus::Failed(FailReason::Other("foraging order unavailable"));
+            }
             self.begin_outing(ctx, activity);
         }
         match &mut self.outing {
             Some(Outing::Explore(wander)) => wander.tick(ctx),
+            Some(Outing::Forage(work)) => {
+                let status = work.tick(ctx, combat);
+                if status == GoalStatus::Done {
+                    self.gathered += 1;
+                    if self.gathered < 3 && work::forage_ready(ctx) {
+                        **work = Work::default();
+                        work.start(ctx);
+                        return GoalStatus::Running;
+                    }
+                }
+                status
+            }
             Some(Outing::Grind(grind)) => grind.tick(ctx, combat),
             Some(Outing::Quest(quest)) => quest.tick(ctx),
             None => {
@@ -232,6 +263,14 @@ impl Field {
                     wander.start(ctx);
                     (Outing::Explore(wander), "Let's explore a bit. Stay close.")
                 }
+                FieldActivity::Forage => {
+                    let mut gather = Box::<Work>::default();
+                    gather.start(ctx);
+                    (
+                        Outing::Forage(gather),
+                        "Let's forage together. Keep an eye on the trail.",
+                    )
+                }
                 FieldActivity::Grind => {
                     let mut grind = Grind::default();
                     grind.start(ctx);
@@ -254,6 +293,7 @@ impl Field {
         ctx.coord.cancel(ctx.persona.id);
         match &mut self.outing {
             Some(Outing::Explore(wander)) => wander.stop(ctx),
+            Some(Outing::Forage(work)) => work.stop(ctx),
             Some(Outing::Grind(grind)) => grind.stop(ctx),
             Some(Outing::Quest(quest)) => quest.stop(ctx),
             None => ctx.motion.stop(),
@@ -278,6 +318,7 @@ impl Field {
     pub fn describe(&self, out: &mut String) {
         out.push_str(match &self.outing {
             Some(Outing::Explore(_)) => "Exploring with a bot party",
+            Some(Outing::Forage(_)) => "Leading a foraging party",
             Some(Outing::Grind(_)) => "Leading a grinding party",
             Some(Outing::Quest(_)) => "Leading a questing party",
             None if self.team_id != 0 => "Following the field party",

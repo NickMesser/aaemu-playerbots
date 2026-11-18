@@ -167,6 +167,7 @@ pub struct FieldOffer {
     pub lead: f32,
     pub explore: f32,
     pub quest: f32,
+    pub forage: f32,
     pub cooperation: f32,
     pub outlaw: f32,
 }
@@ -498,13 +499,17 @@ impl Coordinator {
             };
             let explore = vote(|offer| offer.explore);
             let quest = vote(|offer| offer.quest);
-            let outing = if leader.quest > 0.0 && quest >= 0.6 && quest > explore {
-                FieldActivity::Quest
-            } else if explore >= 0.5 {
-                FieldActivity::Explore
-            } else {
-                FieldActivity::Grind
-            };
+            let forage = vote(|offer| offer.forage);
+            let outing =
+                if leader.forage > 0.0 && forage >= 0.45 && forage >= explore && forage >= quest {
+                    FieldActivity::Forage
+                } else if leader.quest > 0.0 && quest >= 0.6 && quest > explore {
+                    FieldActivity::Quest
+                } else if explore >= 0.5 {
+                    FieldActivity::Explore
+                } else {
+                    FieldActivity::Grind
+                };
             let members = group
                 .iter()
                 .map(|&m| self.field[m].0.bot)
@@ -847,6 +852,7 @@ mod tests {
             explore: 0.0,
             quest: 0.0,
             cooperation: 0.5,
+            forage: 0.0,
             outlaw: 0.5,
         };
         for candidate in [
@@ -888,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn a_questing_leader_breaks_a_field_partys_tie() {
+    fn a_field_leader_breaks_ties_for_questing_and_foraging() {
         let (rec, _, mut coord) = coordinator();
         let now = Instant::now();
         let follower = FieldOffer {
@@ -901,6 +907,7 @@ mod tests {
             explore: 0.9,
             quest: 0.2,
             cooperation: 0.5,
+            forage: 0.0,
             outlaw: 0.5,
         };
         let leader = FieldOffer {
@@ -919,6 +926,25 @@ mod tests {
         assert!(orders
             .iter()
             .all(|(_, order)| order.purpose == PartyPurpose::Field(FieldActivity::Quest)));
+
+        let (rec, _, mut coord) = coordinator();
+        let follower = FieldOffer {
+            explore: 0.4,
+            ..follower
+        };
+        let leader = FieldOffer {
+            forage: 0.95,
+            quest: 0.3,
+            ..leader
+        };
+        coord.handle(CoordMsg::Field(follower), now);
+        coord.handle(CoordMsg::Field(leader), now);
+        coord.expire(now + Duration::from_secs(8));
+        let orders = parties(&rec);
+        assert_eq!(orders.len(), 2);
+        assert!(orders
+            .iter()
+            .all(|(_, order)| order.purpose == PartyPurpose::Field(FieldActivity::Forage)));
     }
 
     #[test]

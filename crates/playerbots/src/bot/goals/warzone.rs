@@ -192,8 +192,12 @@ pub fn score(ctx: &Ctx<'_>, _base: f32) -> f32 {
     {
         return 0.0;
     }
-    if wars(ctx).is_empty() {
+    let available = wars(ctx);
+    if available.is_empty() {
         return 0.0;
+    }
+    if territory_site(ctx, |group| available.iter().any(|war| war.group == group)).is_some() {
+        return 2.0;
     }
     weight(&ctx.persona.temper)
 }
@@ -448,6 +452,51 @@ fn wars(ctx: &Ctx<'_>) -> SmallVec<[War; 8]> {
     out
 }
 
+fn territory_site(
+    ctx: &Ctx<'_>,
+    available: impl Fn(u16) -> bool,
+) -> Option<crate::config::TerritoryPatrol> {
+    let [x, y, _] = ctx.pos();
+    crate::bot::guild::siege::patrol_sites(ctx)
+        .iter()
+        .copied()
+        .filter_map(|site| {
+            let [sx, sy] = site.position;
+            let distance = (sx - x).hypot(sy - y);
+            (available(site.zone_group)
+                && (distance <= WALK_REACH_M || ctx.would_teleport(distance))
+                && standable(ctx.world)(site.position)
+                && ctx
+                    .world
+                    .zone_info_at(sx, sy)
+                    .is_some_and(|zone| zone.group == site.zone_group))
+            .then_some((site, distance))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(site, _)| site)
+}
+
+pub fn territory_patrol_ready(ctx: &Ctx<'_>) -> bool {
+    if !(ctx.cfg.pvp.enabled && ctx.cfg.pvp.warzone) {
+        return false;
+    }
+    let now = unix_now_s();
+    territory_site(ctx, |group| {
+        let Some((state, end)) = ctx.state.zone_state(group) else {
+            return false;
+        };
+        let kills = ctx
+            .state
+            .pvp
+            .as_ref()
+            .map_or(0, |p| p.war_kills(group, end));
+        ctx.world.is_conflict_group(group)
+            && conflict_state::at_war(state)
+            && worth_joining(time_left_s(end, now), kills, ctx.cfg.pvp.war_kill_cap)
+    })
+    .is_some()
+}
+
 // ---- the machine -------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,6 +537,7 @@ struct Machine {
     phase_ms: u64,
     /// Where the bot walks to (the spot of the zone group).
     spot: Option<[f32; 2]>,
+    territory: Option<[f32; 2]>,
     target: u32,
     name: Box<str>,
     eval_ms: u64,
@@ -508,6 +558,7 @@ impl Machine {
             end_ms: now_ms + GOAL_MAX_MS,
             phase_ms: now_ms,
             spot: None,
+            territory: None,
             target: 0,
             name: "".into(),
             eval_ms: 0,
@@ -536,6 +587,10 @@ impl Machine {
             return self.fail(ctx, FailReason::Timeout, "it took too long");
         }
         if self.phase != Phase::Plan {
+            if self.territory.is_some() && crate::bot::guild::siege::patrol_sites(ctx).is_empty() {
+                self.outcome = Outcome::Over;
+                return GoalStatus::Done;
+            }
             let at_war = ctx.state.at_war(self.group);
             let left = time_left_s(self.end_unix_s, unix_now_s());
             if war_over(at_war, left) {
@@ -575,9 +630,15 @@ impl Machine {
                 && (ctx.would_teleport(dist) || dist <= WALK_REACH_M)
                 && standable(ctx.world)(c.last_seen)
         });
+        let assigned = territory_site(ctx, |group| list.iter().any(|war| war.group == group));
         let chosen = lead
             .as_ref()
             .and_then(|case| list.iter().find(|war| war.group == case.group).copied())
+            .or_else(|| {
+                list.iter()
+                    .find(|war| assigned.is_some_and(|site| site.zone_group == war.group))
+                    .copied()
+            })
             .or_else(|| pick_war(&list, roll));
         let Some(war) = chosen else {
             return self.fail(ctx, FailReason::NoTarget, "no war to join");
@@ -596,6 +657,13 @@ impl Machine {
                 case.name
             ));
             case.last_seen
+        } else if let Some(site) = assigned {
+            self.territory = Some(site.position);
+            ctx.log.say(format!(
+                "territory patrol: covering the guild site in zone group {}",
+                war.group
+            ));
+            site.position
         } else {
             near[ctx.rng.usize(..near.len())].0
         };
@@ -664,10 +732,30 @@ impl Machine {
         }
         if self.spot.is_none() {
             let me = ctx.state.me.pos;
+            let local;
+            let points = if let Some([x, y]) = self.territory {
+                local = [
+                    [x, y],
+                    [x + 65.0, y],
+                    [x - 65.0, y],
+                    [x, y + 65.0],
+                    [x, y - 65.0],
+                ];
+                &local[..]
+            } else {
+                ctx.world.zone_group_spots(self.group)
+            };
             self.spot = patrol_spot(
-                ctx.world.zone_group_spots(self.group),
+                points,
                 [me[0], me[1]],
-                standable(ctx.world),
+                |[x, y]| {
+                    standable(ctx.world)([x, y])
+                        && (self.territory.is_none()
+                            || ctx
+                                .world
+                                .zone_info_at(x, y)
+                                .is_some_and(|zone| zone.group == self.group))
+                },
                 ctx.rng,
             );
             self.walker.reset();

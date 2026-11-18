@@ -508,6 +508,8 @@ pub struct GuildCfg {
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Optional priority cross-continent pack buyer for a Trader guild.
     pub voyage_buyers: std::collections::BTreeMap<String, u32>,
+    /// Resource or route sites a castle-holding guild can patrol in active conflict.
+    pub territory_patrols: std::collections::BTreeMap<String, Vec<TerritoryPatrol>>,
     /// Long-run percentage of play that can go to professional goals.
     pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
@@ -529,6 +531,13 @@ pub struct GuildCfg {
     pub churn_per_hour: f32,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerritoryPatrol {
+    pub zone_group: u16,
+    pub position: [f32; 2],
+}
+
 impl Default for GuildCfg {
     fn default() -> Self {
         Self {
@@ -540,6 +549,7 @@ impl Default for GuildCfg {
             treasuries: Default::default(),
             siege_zones: Default::default(),
             voyage_buyers: Default::default(),
+            territory_patrols: Default::default(),
             work_percent: 60,
             enabled: false,
             found: true,
@@ -1442,6 +1452,18 @@ impl Config {
                             == Some(&crate::bot::guild::profession::Profession::Trader)
                 }),
             "guild.voyage_buyers must name Trader guilds and nonzero pack buyer templates"
+        );
+        ensure!(
+            g.territory_patrols.len() <= 16
+                && g.territory_patrols.iter().all(|(guild, sites)| {
+                    g.siege_zones.contains_key(guild)
+                        && !sites.is_empty()
+                        && sites.len() <= 16
+                        && sites.iter().all(|site| {
+                            site.zone_group != 0 && site.position.iter().all(|p| p.is_finite())
+                        })
+                }),
+            "guild.territory_patrols must name guilds with siege zones and valid patrol sites"
         );
         ensure!(
             (50..=75).contains(&g.work_percent),

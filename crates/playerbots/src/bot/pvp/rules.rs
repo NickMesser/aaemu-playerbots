@@ -56,6 +56,9 @@ pub trait Geo {
     fn zone_owner(&self, x: f32, y: f32) -> Option<u32>;
     /// Whether item `template` is a trade pack some NPC buys.
     fn is_pack(&self, template: u32) -> bool;
+    fn is_sport_catch(&self, _template: u32) -> bool {
+        false
+    }
 }
 
 impl Geo for World {
@@ -75,6 +78,10 @@ impl Geo for World {
     fn is_pack(&self, template: u32) -> bool {
         !self.specialty_buyers(template).is_empty()
     }
+
+    fn is_sport_catch(&self, template: u32) -> bool {
+        self.fish_sales().iter().any(|sale| sale.item == template)
+    }
 }
 
 /// Why a fight is started.
@@ -86,6 +93,8 @@ pub enum Purpose {
     Hunt,
     /// An ambush on a carrier of a trade pack.
     Gank,
+    /// A Thief guild ambush on a carrier of a trade pack or landed sport fish.
+    RaidCatch,
 }
 
 /// What kind of character a target is.
@@ -245,8 +254,13 @@ impl<'a, G: Geo + ?Sized> Rules<'a, G> {
             None if purpose != Purpose::Defend => return Err(Why::UnknownZone),
             _ => {}
         }
-        if purpose == Purpose::Gank && !(t.pack != 0 && self.geo.is_pack(t.pack)) {
-            return Err(Why::NoPack);
+        if matches!(purpose, Purpose::Gank | Purpose::RaidCatch) {
+            let valuable = t.pack != 0
+                && (self.geo.is_pack(t.pack)
+                    || purpose == Purpose::RaidCatch && self.geo.is_sport_catch(t.pack));
+            if !valuable {
+                return Err(Why::NoPack);
+            }
         }
         Ok(who)
     }
@@ -335,6 +349,10 @@ pub(crate) mod tests {
 
         fn is_pack(&self, template: u32) -> bool {
             template == 28_091
+        }
+
+        fn is_sport_catch(&self, template: u32) -> bool {
+            template == 27_504
         }
     }
 
@@ -514,7 +532,16 @@ pub(crate) mod tests {
         assert_eq!(check(&g, &c, false, &t, Purpose::Gank), Err(Why::NoPack));
         t.pack = 28_091;
         assert_eq!(check(&g, &c, false, &t, Purpose::Gank), Ok(Who::Bot));
+        t.pack = 27_504;
+        assert_eq!(check(&g, &c, false, &t, Purpose::Gank), Err(Why::NoPack));
+        assert_eq!(check(&g, &c, false, &t, Purpose::RaidCatch), Ok(Who::Bot));
+        t.pos[0] = 6000.0;
+        assert_eq!(
+            check(&g, &c, false, &t, Purpose::RaidCatch),
+            Err(Why::HomeZone)
+        );
         // a hunt does not care
+        t.pos[0] = 3000.0;
         t.pack = 0;
         assert_eq!(check(&g, &c, false, &t, Purpose::Hunt), Ok(Who::Bot));
     }
