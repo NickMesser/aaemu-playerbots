@@ -362,12 +362,18 @@ impl Brain {
                 let kind = match order.purpose {
                     PartyPurpose::Dungeon { .. } => GoalKind::Dungeon,
                     PartyPurpose::Guild => GoalKind::Guild,
+                    PartyPurpose::Field { .. } => GoalKind::FieldParty,
                     PartyPurpose::Ambush { .. } => GoalKind::Gank,
                 };
                 self.queue(kind, None);
                 self.party = Some(order.clone());
             }
             BotCmd::GoalWith { kind, args } => {
+                if matches!(kind, GoalKind::FieldParty | GoalKind::Fish)
+                    && self.goal.as_ref().is_some_and(|g| g.kind() == *kind)
+                {
+                    return;
+                }
                 self.forced_fails = 0;
                 self.drop_plan();
                 self.queue_with(*kind, args.clone());
@@ -421,6 +427,7 @@ impl Brain {
         super::goals::trade_run::collect_payments(ctx);
         // The same for the mail the auction house sends.
         super::goals::auction::duty(ctx);
+        super::guild::treasury::duty(ctx);
         let combat = Combat::tick(ctx);
         // Mounts and gliders: get off for a fight, summon for a long trip, glide off a ledge.
         super::mount::duty(ctx);
@@ -487,6 +494,19 @@ impl Brain {
             && super::goals::event::duty(ctx, self.goal.as_ref().map(Goal::kind))
         {
             self.start_goal(ctx, GoalKind::Event, None);
+        }
+        if !pack_busy
+            && self.choice == GoalChoice::Auto
+            && self.goal.as_ref().is_some_and(|g| {
+                matches!(
+                    g.kind(),
+                    GoalKind::Companion | GoalKind::Wander | GoalKind::Rest
+                )
+            })
+            && !self.cooldown_until.active(GoalKind::Delivery, now)
+            && super::goals::delivery::ready(ctx)
+        {
+            self.start_goal(ctx, GoalKind::Delivery, None);
         }
         if self.goal.is_none() && now >= self.next_think_ms {
             self.pick(ctx);
@@ -687,6 +707,22 @@ impl Brain {
         s[work] = own_score(blocked, work, || super::goals::work::score(ctx));
         let fish = GoalKind::Fish.index();
         s[fish] = own_score(blocked, fish, || super::goals::fish::score(ctx));
+        let delivery = GoalKind::Delivery.index();
+        s[delivery] = own_score(blocked, delivery, || {
+            if super::goals::delivery::ready(ctx) {
+                10.0
+            } else {
+                0.0
+            }
+        });
+        let field = GoalKind::FieldParty.index();
+        s[field] = own_score(blocked, field, || {
+            if super::goals::field::ready(ctx) {
+                0.7
+            } else {
+                0.0
+            }
+        });
         // the population director's goal multipliers (all 1.0 unless its policy sets some)
         ctx.hub.pop.bias.apply(&mut s);
         if let Some((_, role, master)) = profession::membership(ctx) {
@@ -750,6 +786,21 @@ impl Brain {
             context.push_str(&format!(
                 " Production order: {order}. Lifetime orders completed: {done}."
             ));
+        }
+        if ctx.cfg.guild.treasuries.contains_key(&id.to_string()) {
+            ctx.hub.journal.read(ctx.persona.id, |j| {
+                if master {
+                    context.push_str(&format!(
+                        " Guild contributors paid {} copper into the guildmaster's purse.",
+                        j.guild_copper_received
+                    ));
+                } else if let Some(a) = j.guild_treasury.get(&id) {
+                    context.push_str(&format!(
+                        " Unpaid guild commission is {} copper.",
+                        a.unpaid_commission
+                    ));
+                }
+            });
         }
         Some(context)
     }

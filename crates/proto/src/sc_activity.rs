@@ -220,7 +220,7 @@ pub struct MailHeader {
     pub title: Box<str>,
     /// Sender name.
     pub sender: Box<str>,
-    /// Number of attachments (items; money is in the body).
+    /// Number of item and currency attachments. The amounts are in the body.
     pub attachments: u8,
     /// Receiver name.
     pub receiver: Box<str>,

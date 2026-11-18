@@ -588,6 +588,10 @@ impl Run {
             got_money: money,
         };
         if t.is_complete() {
+            if a.seller {
+                use crate::bot::{cmd::GoalKind, guild::treasury};
+                treasury::note_receipt(ctx, GoalKind::Market, a.total.max(0) as u64);
+            }
             ctx.log.say(format!(
                 "market: the trade checks out ({items:+} items, {money:+} copper)"
             ));

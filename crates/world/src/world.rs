@@ -587,9 +587,20 @@ impl World {
         &self.doodads.fish_sales
     }
 
+    pub fn is_mailbox(&self, template: u32, phase: u32) -> bool {
+        self.doodads.mailbox_phases.contains(&(template, phase))
+    }
+
     pub fn school_fish(&self, phase: u32) -> &[u32] {
         self.doodads
             .fish_schools
+            .get(&phase)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub fn school_chum(&self, phase: u32) -> &[crate::doodad::FishChum] {
+        self.doodads
+            .fish_chum
             .get(&phase)
             .map_or(&[], Vec::as_slice)
     }

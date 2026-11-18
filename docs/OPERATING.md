@@ -338,7 +338,8 @@ Crafter and Gatherer members can run `work` for a configured production order, f
 `production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
 `{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
 Orders need compatible world templates, a nearby visible bench or node, and sufficient labor.
-Crafting currently uses recipes without a proficiency requirement and materials already in the bag.
+Crafting uses recipes without a proficiency requirement. Crafter members with trade-chat shopping
+enabled seek missing materials using the normal market prices and trade confirmation.
 
 The guildmaster skips the profession's autonomous goals and continues to manage recruitment and
 membership. Members recover personal time after each professional goal based on its actual elapsed
@@ -348,6 +349,14 @@ The director sees the role, work availability and configured orders. When trade 
 it also sees recent route outcomes and gross price estimates. External agents see the work summary
 as `guild_work` in `observe`.
 
+Set `treasuries = { "43" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }`
+to collect contributions for a configured guild with a bot as guildmaster. A member at level 10 or
+higher pays once per week when within reach of a mailbox and able to cover the contribution and
+postage while keeping its reserve. Confirmed trade-pack and auction receipts for Traders, fish
+stand receipts for Gatherers, and sales through the market for members doing market work accrue
+commission. The guildmaster claims the coins from express
+mail sent by members. `observe` reports the total claimed as `guild_copper_received`.
+
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
 auctioneer and stroll around the market. Add places such as taverns or campfires to
 `settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and
@@ -356,12 +365,35 @@ can sit when their usual emote rules allow it. The director can choose a nearby 
 ### Sport fishing
 
 Set `[behavior] sport_fishing = true` to enable the `fish` goal. Start with a sport-fishing
-rod, lure item 27319, labor, an empty backpack equipment slot, and baked terrain. A bot in range
+rod, lure item 27319, labor, an empty backpack equipment slot, and baked terrain. The bot can
+equip a rod from its bag and switch back to its previous weapon afterwards. A bot in range
 of an active school can cast into the water, reel in its own fish, loot the catch, and travel
 to a stand that accepts that fish. An already-equipped fish goes straight to turn-in. Fish stand
 eligibility, the sale skill, and the expected copper payment come from the compact database.
 The journal records a sale after the catch leaves the backpack slot and the purse receives the
 expected payment. Agents can read `fish_turn_ins` and `fish_sale_copper` in `observe`.
+
+A bot within casting range of an inactive school can apply a compatible chum item from its bag.
+It waits for the rod-change lockout and for the server's school phase update before casting a lure,
+then matches the reel actions to the hooked fish's movement.
+
+### Message deliveries
+
+With `[behavior] delivery_contracts = true` and social chat enabled, a player within 30 metres
+of a bot can whisper `deliver Farsignal Meet me at the market`. The recipient must be another
+online bot within 850 metres. The courier accepts one delivery at a time, travels to the
+recipient, whispers the message in person, and tells the requester it has handed it off.
+The requester can whisper `deliver cancel`. Orders survive bot restarts and expire after 20
+minutes. External agents can see the recipient and handoff count in `observe`.
+
+### Open-world bot parties
+
+Set `[behavior] field_parties = true` to offer the `field_party` goal. The coordinator gathers
+two to four bots of the same alliance within 120 metres and five levels of each other. It favors
+familiar characters and a mix of party roles, and skips pairs that distrust each other.
+Among the group, more outgoing and dedicated bots tend to lead. The group's exploration preference
+gives the leader double weight when choosing a stroll or a grind. Followers stay near the leader
+and assist with fights. The group dissolves after the outing, or when the leader leaves.
 
 **See it.** The web UI's bot list carries each bot's guild with its members (`guild` in
 `/api/bots`); the bot's log has the `guild:` lines (invited, joined, handed over, left). Server

@@ -62,6 +62,8 @@ pub enum PartyPurpose {
     /// Sign the charter of a new guild: the leader founds it, the others sign (the guild feature,
     /// [`super::guild`]).
     Guild,
+    /// Make a short open-world trip together.
+    Field { explore: bool },
     /// Lie in wait together for trade pack carriers (the gank goal, see
     /// [`pvp::squad`](super::pvp::squad)).
     Ambush {
@@ -102,6 +104,7 @@ impl PartyOrder {
             PartyPurpose::Dungeon { zone_group } => zone_group,
             // (a charter has no dungeon)
             PartyPurpose::Guild => 0,
+            PartyPurpose::Field { .. } => 0,
             PartyPurpose::Ambush { .. } => 0,
         }
     }

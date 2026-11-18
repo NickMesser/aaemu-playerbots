@@ -758,6 +758,16 @@ impl Bot {
         }
         self.record_hostile_death(&ev);
         self.state.apply(&ev);
+        if let ServerEvent::Activity(activity) = &ev {
+            if self.shared.cfg.guild.enabled && !self.shared.cfg.guild.treasuries.is_empty() {
+                if let Some(mem) = self.state.guild.get_mut().filter(|mem| mem.log.in_guild()) {
+                    let owner = mem.log.is_owner(self.state.me.char_id);
+                    mem.treasury.observe(activity, &mem.log, owner, now, |id| {
+                        self.shared.hub.is_bot_char(id)
+                    });
+                }
+            }
+        }
         // (the guild lists the server sends name the guilds that exist: those names are taken)
         if let ServerEvent::Activity(aa_proto::sc_activity::ActivityEvent::Guild(g)) = &ev {
             guild::observe(&self.shared.hub.guilds, g);
@@ -1100,6 +1110,10 @@ impl Bot {
             || st.travel.busy()
             || st.vehicle.seat().is_some()
             || st.vehicle.boat().is_some()
+            || self
+                .brain
+                .goal()
+                .is_some_and(|goal| goal.kind() == GoalKind::Fish)
             || st.place.in_instance()
             || st.place.loading()
     }

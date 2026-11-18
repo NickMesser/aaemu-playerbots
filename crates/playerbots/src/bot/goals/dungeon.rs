@@ -261,7 +261,10 @@ pub fn score(ctx: &Ctx<'_>, base: f32) -> f32 {
 /// other one to the same character on the server.)
 pub fn unsolicited(ctx: &mut Ctx<'_>, running: Option<GoalKind>) {
     // (a founding team answers its own invitations: the guild goal)
-    if matches!(running, Some(GoalKind::Dungeon | GoalKind::Guild)) {
+    if matches!(
+        running,
+        Some(GoalKind::Dungeon | GoalKind::Guild | GoalKind::FieldParty)
+    ) {
         return;
     }
     // (a real player's invitation is the party feature's: it answers within seconds)

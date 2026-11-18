@@ -32,7 +32,7 @@ use super::pvp;
 use super::rotation::{
     self, CastKind, Decision, Inputs, LearnCtx, Learner, RotState, Rotation, SkillBook, TargetView,
 };
-use super::state::{dist2d, Unit, UnitKind};
+use super::state::{dist2d, Unit, UnitKind, U_MY_SUMMON};
 use super::watch::classify::{self, Refusal};
 use super::watch::Finding;
 
@@ -1647,7 +1647,7 @@ fn named_attacker(
         let Some(u) = units.get(&obj) else {
             continue;
         };
-        if u.dead() || u.kind != UnitKind::Npc {
+        if u.dead() || u.kind != UnitKind::Npc || u.flags & U_MY_SUMMON != 0 {
             continue;
         }
         let d = u.dist2d(me);

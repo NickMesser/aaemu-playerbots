@@ -65,6 +65,13 @@ pub const U_TAG_MASK: u8 = U_TAG_ME | U_TAG_PARTY | U_TAG_OTHER;
 /// This NPC belongs to this character.
 pub const U_MY_SUMMON: u8 = 128;
 
+#[derive(Debug)]
+pub struct FishCue {
+    pub object: u32,
+    index: u32,
+    pub skill: u32,
+}
+
 /// Who the bot saw hit an NPC first (the server's tag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagOwner {
@@ -433,6 +440,8 @@ pub struct BotState {
     pub cooldowns: SmallVec<[(u32, u64); 8]>,
     /// Own buffs `(instance index, buff id)`.
     pub buffs: SmallVec<[(u32, u32); 8]>,
+    /// The latest direction of this character's hooked fish.
+    pub fish_cue: Option<Box<FishCue>>,
     /// Own houses.
     pub houses: SmallVec<[HouseBrief; 1]>,
     /// Units that target the bot `(object id, bot clock ms)`.
@@ -782,6 +791,9 @@ impl BotState {
             WorldEvent::UnitsRemoved { objs } => {
                 for o in objs {
                     self.units.remove(o);
+                    if self.fish_cue.as_ref().is_some_and(|cue| cue.object == *o) {
+                        self.fish_cue = None;
+                    }
                     self.threats.retain(|t| t.0 != *o);
                     if let Some(p) = self.pvp.as_mut() {
                         p.forget(*o);
@@ -1051,10 +1063,26 @@ impl BotState {
                     self.buffs.retain(|b| b.0 != *index);
                     self.buffs.push((*index, *buff_id));
                 }
+                if let Some(skill) = super::goals::fish::response_to(*buff_id) {
+                    if self
+                        .units
+                        .get(obj)
+                        .is_some_and(|u| u.flags & U_MY_SUMMON != 0)
+                    {
+                        self.note_fish_cue(*obj, *index, skill);
+                    }
+                }
             }
             WorldEvent::BuffRemoved { obj, index } => {
                 if *obj == self.me.obj {
                     self.buffs.retain(|b| b.0 != *index);
+                }
+                if self
+                    .fish_cue
+                    .as_ref()
+                    .is_some_and(|cue| (cue.object, cue.index) == (*obj, *index))
+                {
+                    self.fish_cue = None;
                 }
             }
             WorldEvent::Chat {
@@ -1107,6 +1135,7 @@ impl BotState {
     /// ([`Reactions::world_changed`]).
     fn clear_view(&mut self) {
         self.units = FxHashMap::default();
+        self.fish_cue = None;
         self.doodads = FxHashMap::default();
         self.threats.clear();
         self.kills.clear();
@@ -1118,6 +1147,21 @@ impl BotState {
         if let Some(p) = self.pvp.as_mut() {
             p.clear_view();
         }
+    }
+
+    fn note_fish_cue(&mut self, object: u32, index: u32, skill: u32) {
+        let cue = self.fish_cue.get_or_insert_with(|| {
+            Box::new(FishCue {
+                object,
+                index,
+                skill,
+            })
+        });
+        **cue = FishCue {
+            object,
+            index,
+            skill,
+        };
     }
 
     /// Notes that character `obj`'s backpack slot holds `template` (0 = nothing now).
@@ -1216,6 +1260,20 @@ impl BotState {
         }
         if kind == UnitKind::Character && info.backpack != 0 {
             flags |= U_PACK;
+        }
+        if self
+            .fish_cue
+            .as_ref()
+            .is_some_and(|cue| cue.object == info.obj)
+        {
+            self.fish_cue = None;
+        }
+        if flags & U_MY_SUMMON != 0 {
+            for buff in info.buffs.iter() {
+                if let Some(skill) = super::goals::fish::response_to(buff.buff_id) {
+                    self.note_fish_cue(info.obj, buff.index, skill);
+                }
+            }
         }
         self.units.insert(
             info.obj,

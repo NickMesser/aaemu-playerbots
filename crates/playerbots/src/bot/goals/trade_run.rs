@@ -1278,6 +1278,8 @@ pub fn collect_payments(ctx: &mut Ctx<'_>) {
         ctx.find(crate::bot::watch::Finding::Payment { fault });
     }
     if let Some(p) = paid {
+        use crate::bot::{cmd::GoalKind, guild::treasury};
+        treasury::note_receipt(ctx, GoalKind::TradeRun, p.money.max(0) as u64);
         let mut text = format!(
             "trade run: payment collected, {}",
             coins(i64::from(p.money))

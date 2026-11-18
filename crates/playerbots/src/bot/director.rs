@@ -139,6 +139,10 @@ pub fn option_text(kind: GoalKind) -> &'static str {
         GoalKind::Fish => {
             "fish: catch a sport fish at an active school and sell it at a fish stand"
         }
+        GoalKind::Delivery => "delivery: take the accepted message to its intended bot in person",
+        GoalKind::FieldParty => {
+            "field_party: explore or grind with nearby bots of compatible level"
+        }
         GoalKind::Rest => "rest: sit down and recover",
         GoalKind::Wander => "wander: stroll around and see the sights",
     }
@@ -1014,7 +1018,7 @@ mod tests {
         // temperament weight, which `own_scores` replaces)
         // (the auction, market, guild, gank, warzone, event, companion and farm goals do too, and
         // are 0 until their features exist)
-        assert_eq!(with.len(), GoalKind::COUNT - 13);
+        assert_eq!(with.len(), GoalKind::COUNT - 15);
         assert!(!with.contains(&GoalKind::Sail));
         assert!(!with.contains(&GoalKind::Auction) && !with.contains(&GoalKind::Market));
         for g in [

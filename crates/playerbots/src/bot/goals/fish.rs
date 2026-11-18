@@ -1,7 +1,11 @@
 //! Sport fishing at an active school and selling the resulting backpack to a fish stand.
 
 use aa_proto::{cs, sc_world::BACKPACK_SLOT};
-use aa_world::{doodad::FishSale, Vec3};
+use aa_world::{
+    doodad::{FishChum, FishSale},
+    gear::equip_slot,
+    Vec3,
+};
 
 use super::{FailReason, GoalStatus};
 use crate::bot::ctx::Ctx;
@@ -10,8 +14,29 @@ use crate::bot::state::{dist3d, UnitKind, U_MY_SUMMON};
 
 const CAST: u32 = 21578;
 const LURE: u32 = 27319;
-const REEL: [u32; 5] = [21135, 21194, 21195, 21196, 21290];
-const SEA_Z: f32 = 100.0;
+// The sport-cast plot channels for up to 220 seconds and rolls for a bite every 20 seconds.
+const HOOK_WAIT_MS: u64 = 230_000;
+const ROD_CHANGE_BUFF: u32 = 5795;
+const ROD_CHANGE_MS: u64 = 40_000;
+// Unwrapped sport rods in the r208022 item catalogue.
+const RODS: [u32; 13] = [
+    27308, 27309, 27310, 27311, 27312, 27367, 27368, 27370, 29702, 30764, 30765, 30772, 30773,
+];
+
+pub(crate) fn response_to(buff: u32) -> Option<u32> {
+    match buff {
+        5264 => Some(21135), // right
+        5265 => Some(21194), // left
+        5266 => Some(21196), // dive
+        5267 => Some(21195), // run
+        5508 => Some(21290), // jump
+        _ => None,
+    }
+}
+
+fn rod_changing(ctx: &Ctx<'_>) -> bool {
+    ctx.state.buffs.iter().any(|&(_, id)| id == ROD_CHANGE_BUFF)
+}
 
 fn backpack<'a>(ctx: &'a Ctx<'_>) -> Option<&'a aa_proto::sc_world::EquipSlot> {
     ctx.state
@@ -39,33 +64,90 @@ pub fn carried_catch_in(
         })
 }
 
+fn has_supplies(ctx: &Ctx<'_>) -> bool {
+    ctx.world.skill(CAST).is_some_and(|skill| {
+        backpack(ctx).is_none()
+            && ctx.state.item_count(LURE) > 0
+            && i32::from(ctx.state.me.labor) >= i32::from(skill.labor)
+            && ctx.state.cooldown_ready(CAST, ctx.now_ms)
+            && !ctx.world.fish_sales().is_empty()
+            && (mainhand(ctx).is_some_and(|item| RODS.contains(&item.template))
+                || bag_rod(ctx).is_some())
+    })
+}
+
+fn mainhand<'a>(ctx: &'a Ctx<'_>) -> Option<&'a aa_proto::sc_world::EquipSlot> {
+    ctx.state
+        .equipment
+        .iter()
+        .find(|item| item.slot == equip_slot::MAINHAND)
+}
+
+fn bag_rod(ctx: &Ctx<'_>) -> Option<(u8, u64)> {
+    RODS.iter().find_map(|&template| {
+        let (slot, item) = ctx.state.find_item(template)?;
+        Some((u8::try_from(slot).ok()?, item.id))
+    })
+}
+
 fn cast_point(ctx: &Ctx<'_>) -> Option<([f32; 3], u32)> {
-    let skill = ctx.world.skill(CAST)?;
-    if backpack(ctx).is_some()
-        || ctx.state.item_count(LURE) == 0
-        || i32::from(ctx.state.me.labor) < i32::from(skill.labor)
-        || !ctx.state.cooldown_ready(CAST, ctx.now_ms)
-        || ctx.world.fish_sales().is_empty()
-    {
-        return None;
-    }
     let me = ctx.pos();
-    let school = ctx
-        .state
+    ctx.state
         .doodads
         .values()
         .filter(|d| !ctx.world.school_fish(d.phase).is_empty() && dist3d(me, d.pos) < 95.0)
-        .min_by(|a, b| dist3d(me, a.pos).total_cmp(&dist3d(me, b.pos)))?;
-    let dx = school.pos[0] - me[0];
-    let dy = school.pos[1] - me[1];
+        .filter_map(|school| {
+            let at = water_towards(ctx, school.pos)?;
+            Some((dist3d(me, school.pos), at, school.phase))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, at, phase)| (at, phase))
+}
+
+fn water_towards(ctx: &Ctx<'_>, school: [f32; 3]) -> Option<[f32; 3]> {
+    let me = ctx.pos();
+    let dx = school[0] - me[0];
+    let dy = school[1] - me[1];
     let distance = dx.hypot(dy);
     if distance < 1.0 {
         return None;
     }
     let scale = distance.clamp(12.0, 25.0) / distance;
-    let at = [me[0] + dx * scale, me[1] + dy * scale, SEA_Z];
-    (ctx.world.ground_z(at[0], at[1]).is_some_and(|z| z < 99.0) && !ctx.in_war_zone(at[0], at[1]))
-        .then_some((at, school.phase))
+    let at = [me[0] + dx * scale, me[1] + dy * scale, school[2]];
+    let skill = ctx.world.skill(CAST)?;
+    ((f32::from(skill.min_range)..=f32::from(skill.max_range)).contains(&dist3d(me, at))
+        && ctx
+            .world
+            .ground_z(at[0], at[1])
+            .is_some_and(|z| z < at[2] - 0.75)
+        && !ctx.in_war_zone(at[0], at[1]))
+    .then_some(at)
+}
+
+fn chum_target(ctx: &Ctx<'_>) -> Option<(u32, [f32; 3], FishChum, u64)> {
+    ctx.state.doodads.iter().find_map(|(&object, school)| {
+        let options = ctx.world.school_chum(school.phase);
+        if options.is_empty() || !ctx.world.school_fish(school.phase).is_empty() {
+            return None;
+        }
+        // The chum affects a 25 m circle at the cast point.
+        let at = water_towards(ctx, school.pos)?;
+        if dist3d(at, school.pos) > 24.0 {
+            return None;
+        }
+        let distance = dist3d(ctx.pos(), at);
+        options.iter().find_map(|&chum| {
+            let skill = ctx.world.skill(chum.skill)?;
+            if !(f32::from(skill.min_range)..=f32::from(skill.max_range)).contains(&distance)
+                || !ctx.state.cooldown_ready(chum.skill, ctx.now_ms)
+            {
+                return None;
+            }
+            ctx.state
+                .find_item(chum.item)
+                .map(|(_, item)| (object, at, chum, item.id))
+        })
+    })
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
@@ -76,7 +158,10 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     if carries_catch(ctx) {
         return 8.0;
     }
-    if ctx.state.me.hp_pct() >= 60 && cast_point(ctx).is_some() {
+    if ctx.state.me.hp_pct() >= 60
+        && has_supplies(ctx)
+        && (cast_point(ctx).is_some() || chum_target(ctx).is_some())
+    {
         1.0
     } else {
         0.0
@@ -87,6 +172,18 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
 enum Step {
     #[default]
     Start,
+    Equipping {
+        deadline: u64,
+    },
+    SettlingRod {
+        ready: u64,
+        deadline: u64,
+    },
+    Chumming {
+        object: u32,
+        expected: u32,
+        deadline: u64,
+    },
     Hook {
         at: [f32; 3],
         phase: u32,
@@ -116,6 +213,7 @@ enum Step {
 pub struct Fish {
     step: Step,
     walker: Walker,
+    restore_weapon: Option<(u32, u64)>,
 }
 
 impl Fish {
@@ -131,28 +229,111 @@ impl Fish {
                 if carries_catch(ctx) {
                     return self.begin_turn_in(ctx);
                 }
-                let Some((at, phase)) = cast_point(ctx) else {
+                if !has_supplies(ctx) {
                     return GoalStatus::Failed(FailReason::NoTarget);
-                };
-                ctx.motion.stop();
-                ctx.motion.face(at[0], at[1]);
-                ctx.send(cs::start_skill_position(
-                    CAST,
-                    ctx.state.me.obj,
-                    (at[0], at[1], at[2]),
-                    ctx.motion.yaw(),
-                ));
-                self.step = Hook {
-                    at,
-                    phase,
-                    deadline: now + 45_000,
-                };
+                }
+                if !mainhand(ctx).is_some_and(|item| RODS.contains(&item.template)) {
+                    let Some((slot, rod)) = bag_rod(ctx) else {
+                        return GoalStatus::Failed(FailReason::NoTarget);
+                    };
+                    self.restore_weapon = mainhand(ctx).map(|item| (item.template, item.id));
+                    let packet = match self.restore_weapon {
+                        Some((_, old)) => cs::equip_swap(old, equip_slot::MAINHAND, rod, slot),
+                        None => cs::equip_into_empty(equip_slot::MAINHAND, slot, rod),
+                    };
+                    ctx.send(packet);
+                    self.step = Equipping {
+                        deadline: now + 6_000,
+                    };
+                    return GoalStatus::Running;
+                }
+                if rod_changing(ctx) {
+                    ctx.log
+                        .debug("sport fishing: waiting for the equipped rod's lockout");
+                    self.step = SettlingRod {
+                        ready: now,
+                        deadline: now + ROD_CHANGE_MS + 5_000,
+                    };
+                    return GoalStatus::Running;
+                }
+                if let Some((at, phase)) = cast_point(ctx) {
+                    self.cast(ctx, at, phase);
+                } else if let Some((object, [x, y, z], chum, item)) = chum_target(ctx) {
+                    ctx.motion.stop();
+                    ctx.motion.face(x, y);
+                    ctx.send(cs::start_skill_item_at(
+                        chum.skill,
+                        ctx.state.me.obj,
+                        item,
+                        chum.item,
+                        (x, y, z),
+                        ctx.motion.yaw(),
+                    ));
+                    self.step = Chumming {
+                        object,
+                        expected: chum.next_phase,
+                        deadline: now + 12_000,
+                    };
+                } else {
+                    return GoalStatus::Failed(FailReason::NoTarget);
+                }
+            }
+            Equipping { deadline } => {
+                if mainhand(ctx).is_some_and(|item| RODS.contains(&item.template)) {
+                    ctx.log
+                        .debug("sport fishing: rod equipped, waiting out swap lockout");
+                    self.step = SettlingRod {
+                        ready: now + ROD_CHANGE_MS,
+                        deadline: now + ROD_CHANGE_MS + 5_000,
+                    };
+                } else if now >= deadline {
+                    return timeout;
+                }
+            }
+            SettlingRod { ready, deadline } => {
+                if now >= ready && !rod_changing(ctx) {
+                    ctx.log.debug("sport fishing: the rod is ready");
+                    self.step = Start;
+                } else if now >= deadline {
+                    return timeout;
+                }
+            }
+            Chumming {
+                object,
+                expected,
+                deadline,
+            } => {
+                if now >= deadline {
+                    return timeout;
+                }
+                if let Some(school) = ctx
+                    .state
+                    .doodads
+                    .get(&object)
+                    .filter(|d| d.phase == expected)
+                {
+                    let Some(at) = water_towards(ctx, school.pos) else {
+                        return GoalStatus::Failed(FailReason::NoTarget);
+                    };
+                    self.cast(ctx, at, expected);
+                }
             }
             Hook {
                 at,
                 phase,
                 deadline,
             } => {
+                if let Some(note) = ctx.state.travel.skill_note().filter(|n| {
+                    n.skill == CAST
+                        && n.result != 0
+                        && n.at_ms >= deadline.saturating_sub(HOOK_WAIT_MS)
+                }) {
+                    ctx.log.say(format!(
+                        "sport fishing: cast refused with result {}",
+                        note.result
+                    ));
+                    return GoalStatus::Failed(FailReason::Other("sport fishing cast refused"));
+                }
                 if now >= deadline {
                     return timeout;
                 }
@@ -163,6 +344,8 @@ impl Fish {
                         && ctx.world.school_fish(phase).contains(&fish.id)
                         && dist3d(at, fish.pos) < 15.0
                 }) {
+                    ctx.log
+                        .say(format!("sport fishing: hooked owned fish {object}"));
                     self.step = Reel {
                         object,
                         due: now,
@@ -198,16 +381,18 @@ impl Fish {
                     self.step = Loot {
                         deadline: now + 8_000,
                     };
-                } else if now >= due {
-                    if let Some(skill) =
-                        REEL.iter()
-                            .filter_map(|id| ctx.world.skill(*id))
-                            .find(|skill| {
-                                ctx.state.cooldown_ready(skill.id, now)
-                                    && (f32::from(skill.min_range)..=f32::from(skill.max_range))
-                                        .contains(&dist3d(ctx.pos(), pos))
-                            })
-                    {
+                } else if now >= due && !rod_changing(ctx) {
+                    let skill = ctx
+                        .state
+                        .fish_cue
+                        .as_ref()
+                        .filter(|cue| cue.object == object)
+                        .and_then(|cue| ctx.world.skill(cue.skill));
+                    if let Some(skill) = skill.filter(|skill| {
+                        ctx.state.cooldown_ready(skill.id, now)
+                            && (f32::from(skill.min_range)..=f32::from(skill.max_range))
+                                .contains(&dist3d(ctx.pos(), pos))
+                    }) {
                         ctx.send(cs::start_skill_unit(skill.id, ctx.state.me.obj, object));
                         self.step = Reel {
                             object,
@@ -271,6 +456,8 @@ impl Fish {
                         j.fish_turn_ins = j.fish_turn_ins.saturating_add(1);
                         j.fish_sale_copper = j.fish_sale_copper.saturating_add(refund as u64);
                     });
+                    use crate::bot::{cmd::GoalKind, guild::treasury};
+                    treasury::note_receipt(ctx, GoalKind::Fish, refund as u64);
                     ctx.log
                         .say(format!("sport fishing: sold a catch for {refund} copper"));
                     return GoalStatus::Done;
@@ -281,6 +468,22 @@ impl Fish {
             }
         }
         GoalStatus::Running
+    }
+
+    fn cast(&mut self, ctx: &mut Ctx<'_>, [x, y, z]: [f32; 3], phase: u32) {
+        ctx.motion.stop();
+        ctx.motion.face(x, y);
+        ctx.send(cs::start_skill_position(
+            CAST,
+            ctx.state.me.obj,
+            (x, y, z),
+            ctx.motion.yaw(),
+        ));
+        self.step = Step::Hook {
+            at: [x, y, z],
+            phase,
+            deadline: ctx.now_ms + HOOK_WAIT_MS,
+        };
     }
 
     fn begin_turn_in(&mut self, ctx: &Ctx<'_>) -> GoalStatus {
@@ -314,11 +517,32 @@ impl Fish {
 
     pub fn describe(&self, out: &mut String) {
         out.push_str(match self.step {
+            Step::Equipping { .. } => "Equipping a sport fishing rod",
+            Step::SettlingRod { .. } => "Waiting to use the fishing rod",
+            Step::Chumming { .. } => "Chumming a sport fishing school",
             Step::Start | Step::Hook { .. } => "Casting for a sport fish",
             Step::Reel { .. } => "Reeling in a sport fish",
             Step::Loot { .. } => "Taking the catch",
             Step::TurnIn { .. } | Step::Payment { .. } => "Selling the catch at a fish stand",
         });
+    }
+
+    pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        ctx.motion.stop();
+        let Some((template, old)) = self.restore_weapon.take() else {
+            return;
+        };
+        let Some(rod) = mainhand(ctx)
+            .filter(|item| RODS.contains(&item.template))
+            .map(|item| item.id)
+        else {
+            return;
+        };
+        if let Some((slot, _)) = ctx.state.find_item_where(template, |item| item.id == old) {
+            if let Ok(slot) = u8::try_from(slot) {
+                ctx.send(cs::equip_swap(rod, equip_slot::MAINHAND, old, slot));
+            }
+        }
     }
 }
 

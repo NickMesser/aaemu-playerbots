@@ -271,6 +271,13 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
     o.thief_history = journal.thief_history;
     o.fish_turn_ins = journal.fish_turn_ins;
     o.fish_sale_copper = journal.fish_sale_copper;
+    o.delivery_recipient = journal
+        .delivery
+        .as_ref()
+        .filter(|order| order.expires_ms > now_ms)
+        .map(|order| order.recipient_name.clone());
+    o.deliveries_completed = journal.deliveries_completed;
+    o.guild_copper_received = journal.guild_copper_received;
     o.relationships = journal
         .relationships
         .entries

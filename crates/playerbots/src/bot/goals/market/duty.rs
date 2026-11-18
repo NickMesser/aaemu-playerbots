@@ -14,7 +14,7 @@ use super::meet::{self, Side};
 use super::report;
 use crate::bot::cmd::GoalKind;
 use crate::bot::ctx::Ctx;
-use crate::bot::goals::trade;
+use crate::bot::goals::{trade, work};
 use crate::bot::market::ads::board::{self, Peer, PEER_FRESH_MS};
 use crate::bot::market::ads::lines::{self, Meet, Words};
 use crate::bot::market::ads::names;
@@ -80,8 +80,7 @@ pub fn surplus_of(
 }
 
 /// What a bot would buy: the shared trade goods it holds hardly any of (the order, and so the one
-/// it advertises first, changes every hour). A stand-in for the materials of the bot's own work,
-/// which no goal reports yet. Only goods that are `tradable` (see
+/// it advertises first, changes every hour). Only goods that are `tradable` (see
 /// [`aa_world::ItemFacts::tradable`]) are wanted: nobody sells the others.
 pub fn wanted_goods(
     bag: &rustc_hash::FxHashMap<u16, Item>,
@@ -174,6 +173,10 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let board = board::global();
     let real_near = ctx.real_player_near;
     let bot_id = persona.id;
+    let guild_recipe = match work::selected_order(ctx) {
+        Some(work::Order::Craft { recipe }) => world.craft(recipe),
+        _ => None,
+    };
 
     let st = &mut *ctx.state;
     let pos = st.me.pos;
@@ -205,9 +208,29 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     // what the bot has and wants
     let quest_needs = QuestNeeds::of(world, &st.quests);
     let surplus = surplus_of(&inner.ledger, world, &st.bag, &quest_needs);
-    let needs = wanted_goods(&st.bag, money, bot_id, unix, |t| {
-        world.item_facts(t).is_some_and(ItemFacts::tradable)
-    });
+    let tradable = |t| world.item_facts(t).is_some_and(ItemFacts::tradable);
+    let mut needs = wanted_goods(&st.bag, money, bot_id, unix, tradable);
+    if money >= SHOP_MONEY {
+        if let Some(craft) = guild_recipe
+            .filter(|c| !c.is_pack && c.actability_limit == 0 && st.me.level >= c.req_level)
+        {
+            for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t))
+            {
+                let count = st
+                    .bag
+                    .values()
+                    .filter(|i| i.template == template)
+                    .map(|i| i64::from(i.count))
+                    .sum::<i64>();
+                if let Ok(qty) = u32::try_from(i64::from(quantity) - count) {
+                    if qty > 0 {
+                        needs.retain(|n| n.template != template);
+                        needs.insert(0, Need { template, qty });
+                    }
+                }
+            }
+        }
+    }
     let audience = board.audience(name, group, unix) + usize::from(real_near);
     let prices = VendorPrices(world);
     let index = names::global(world);

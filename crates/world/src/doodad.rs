@@ -32,6 +32,8 @@ impl DoodadFlags {
     pub const PURCHASE: DoodadFlags = DoodadFlags(1 << 5);
     /// Active sport fishing school or fish stand.
     pub const FISHING: DoodadFlags = DoodadFlags(1 << 6);
+    /// Opens the player's mailbox.
+    pub const MAILBOX: DoodadFlags = DoodadFlags(1 << 7);
 
     /// The empty set.
     pub const NONE: DoodadFlags = DoodadFlags(0);
@@ -49,7 +51,7 @@ impl DoodadFlags {
 
 impl std::fmt::Debug for DoodadFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const NAMES: [(DoodadFlags, &str); 7] = [
+        const NAMES: [(DoodadFlags, &str); 8] = [
             (DoodadFlags::QUEST, "quest"),
             (DoodadFlags::CRAFT, "craft"),
             (DoodadFlags::USE, "use"),
@@ -57,6 +59,7 @@ impl std::fmt::Debug for DoodadFlags {
             (DoodadFlags::GATHER, "gather"),
             (DoodadFlags::PURCHASE, "purchase"),
             (DoodadFlags::FISHING, "fishing"),
+            (DoodadFlags::MAILBOX, "mailbox"),
         ];
         f.write_str("DoodadFlags[")?;
         let mut first = true;
@@ -113,6 +116,8 @@ pub struct DoodadData {
     pack_doodads: Vec<u32>,
     pub fish_sales: Vec<FishSale>,
     pub fish_schools: FxHashMap<u32, Vec<u32>>,
+    pub fish_chum: FxHashMap<u32, Vec<FishChum>>,
+    pub mailbox_phases: FxHashSet<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +127,13 @@ pub struct FishSale {
     pub item: u32,
     pub skill: u32,
     pub copper: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FishChum {
+    pub item: u32,
+    pub skill: u32,
+    pub next_phase: u32,
 }
 
 const GATHER_FUNCS: [&str; 17] = [
@@ -195,9 +207,10 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
     let mut use_skill: FxHashMap<u32, u32> = FxHashMap::default();
     let mut bench_pairs: Vec<(u32, u32)> = Vec::new();
     let mut loot_funcs = Vec::new();
+    let mut mailbox_phases = FxHashSet::default();
     each_row(
         conn,
-        "SELECT g.doodad_almighty_id, f.actual_func_type, f.actual_func_id, f.func_skill_id \
+        "SELECT g.doodad_almighty_id, f.actual_func_type, f.actual_func_id, f.func_skill_id, g.id \
          FROM doodad_funcs f JOIN doodad_func_groups g ON g.id = f.doodad_func_group_id \
          ORDER BY g.doodad_almighty_id, g.doodad_func_group_kind_id, g.id, f.id",
         |r| {
@@ -230,6 +243,10 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
                     loot_funcs.push((doodad, true, actual));
                 }
                 "DoodadFuncPurchase" => add = DoodadFlags::PURCHASE,
+                "DoodadFuncNaviOpenMailbox" => {
+                    add = DoodadFlags::MAILBOX;
+                    mailbox_phases.insert((doodad, r.u32(4)));
+                }
                 t if GATHER_FUNCS.contains(&t) => add = DoodadFlags::GATHER,
                 _ => {}
             }
@@ -297,6 +314,27 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
         let flag = flags.entry(stand.stand).or_default();
         *flag = flag.with(DoodadFlags::FISHING);
     }
+    let mut fish_chum = FxHashMap::<u32, Vec<FishChum>>::default();
+    let _ = each_row(
+        conn,
+        "SELECT DISTINCT g.id, g.doodad_almighty_id, f.next_phase, h.skill_id, i.id
+         FROM doodad_funcs f JOIN doodad_func_groups g ON g.id = f.doodad_func_group_id
+         JOIN doodad_func_skill_hits h ON h.id = f.actual_func_id
+         JOIN items i ON i.use_skill_id = h.skill_id
+         WHERE f.actual_func_type = 'DoodadFuncSkillHit' AND i.use_skill_id > 0",
+        |r| {
+            let next_phase = r.u32(2);
+            if fish_schools.contains_key(&next_phase) {
+                fish_chum.entry(r.u32(0)).or_default().push(FishChum {
+                    item: r.u32(4),
+                    skill: r.u32(3),
+                    next_phase,
+                });
+                let flag = flags.entry(r.u32(1)).or_default();
+                *flag = flag.with(DoodadFlags::FISHING);
+            }
+        },
+    );
 
     let templates = names
         .into_iter()
@@ -319,6 +357,8 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
         pack_doodads,
         fish_sales,
         fish_schools,
+        fish_chum,
+        mailbox_phases,
     })
 }
 
@@ -420,6 +460,11 @@ fn r208022_catalog_contains_sport_fish_stands_and_active_schools() {
         .iter()
         .any(|sale| { sale.item == 27602 && sale.copper == 400000 && sale.skill != 0 }));
     assert!(data.fish_schools.values().any(|fish| !fish.is_empty()));
+    assert!(data
+        .fish_chum
+        .values()
+        .flatten()
+        .any(|chum| chum.item == 27313 && chum.skill == 21693));
 }
 
 #[cfg(test)]

@@ -35,10 +35,10 @@ impl Profession {
             Self::Potato => &[Farm, Market],
             Self::Thief => &[Gank],
             Self::Trader => &[TradeRun, Auction, Market],
-            Self::Adventurer => &[Dungeon, Grind],
+            Self::Adventurer => &[Dungeon, Grind, FieldParty],
             Self::BountyHunter => &[Warzone],
-            Self::Crafter => &[Work],
-            Self::Gatherer => &[Work, Fish],
+            Self::Crafter => &[Work, Market],
+            Self::Gatherer => &[Work, Fish, Market],
         }
     }
 

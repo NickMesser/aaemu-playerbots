@@ -83,6 +83,13 @@ pub struct Journal {
     pub fish_turn_ins: u32,
     /// Copper received from fish stands.
     pub fish_sale_copper: u64,
+    /// Outstanding player request and number of messages handed off.
+    pub delivery: Option<crate::bot::goals::delivery::DeliveryOrder>,
+    pub deliveries_completed: u32,
+    /// Unpaid commissions and confirmed contributions by server guild.
+    pub guild_treasury: BTreeMap<u32, crate::bot::guild::treasury::Account>,
+    /// Copper claimed from authenticated guild contribution mail by this guildmaster.
+    pub guild_copper_received: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

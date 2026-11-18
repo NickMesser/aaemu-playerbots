@@ -1,0 +1,381 @@
+//! Real guild contributions travel through the game's express mail system.
+
+use std::collections::VecDeque;
+
+use aa_proto::cs;
+use aa_proto::sc_activity::{mail_type, ActivityEvent, MailHeader};
+use serde::{Deserialize, Serialize};
+
+use super::log::GuildLog;
+use super::profession;
+use crate::bot::{cmd::GoalKind, ctx::Ctx, state::dist3d};
+use crate::hub::unix_ms;
+
+const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const EXPRESS_FEE: i64 = 100;
+const MIN_SEND_LEVEL: u8 = 10;
+const RETRY_MS: u64 = 60_000;
+const LIST_EVERY_MS: u64 = 300_000;
+const PREFIX: &str = "Guild contribution ";
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Terms {
+    pub weekly_dues_copper: u32,
+    pub commission_percent: u8,
+    pub reserve_copper: u32,
+}
+
+impl Default for Terms {
+    fn default() -> Self {
+        Self {
+            weekly_dues_copper: 100,
+            commission_percent: 5,
+            reserve_copper: 10_000,
+        }
+    }
+}
+
+impl Terms {
+    pub fn valid(self) -> bool {
+        self.weekly_dues_copper <= 100_000 && self.commission_percent <= 25
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Account {
+    pub unpaid_commission: u64,
+    pub paid_week: u64,
+}
+
+/// Charges a share of confirmed receipts earned in the relevant guild profession.
+pub fn note_receipt(ctx: &Ctx<'_>, work: GoalKind, copper: u64) {
+    let Some((guild, role, false)) = profession::membership(ctx) else {
+        return;
+    };
+    let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()) else {
+        return;
+    };
+    let commission = copper.saturating_mul(u64::from(terms.commission_percent)) / 100;
+    if role.goals().contains(&work) && commission > 0 {
+        ctx.hub.journal.update(ctx.persona.id, |j| {
+            if j.guild_treasury.len() < 16 || j.guild_treasury.contains_key(&guild) {
+                let account = j.guild_treasury.entry(guild).or_default();
+                account.unpaid_commission = account.unpaid_commission.saturating_add(commission);
+            }
+        });
+    }
+}
+
+#[derive(Debug)]
+enum Claim {
+    Reading { id: i64, deadline: u64 },
+    Ready { id: i64, copper: u64 },
+    Taking { id: i64, copper: u64, deadline: u64 },
+}
+
+#[derive(Debug, Default)]
+pub struct Treasury {
+    guild: u32,
+    next_check: u64,
+    /// Lists sent mail before sending, so reconnecting after an unacknowledged payment is safe.
+    checking: Option<(u64, u64)>,
+    list_ended: bool,
+    sent: Option<(u64, u64)>,
+    incoming: VecDeque<i64>,
+    done: VecDeque<i64>,
+    claim: Option<Claim>,
+    received: u64,
+}
+
+fn contribution(mail: &MailHeader, guild: u32) -> Option<(u64, u64)> {
+    // A pending contribution has one currency attachment. It has none once collected.
+    if mail.mail_type != mail_type::EXPRESS || mail.attachments > 1 || mail.returned {
+        return None;
+    }
+    let (group, week) = mail.title.strip_prefix(PREFIX)?.split_once('/')?;
+    if group.parse::<u32>().ok()? != guild {
+        return None;
+    }
+    Some((week.parse().ok()?, u64::try_from(mail.extra).ok()?))
+}
+
+impl Treasury {
+    fn for_guild(&mut self, guild: u32) {
+        if self.guild != guild {
+            *self = Self {
+                guild,
+                ..Self::default()
+            };
+        }
+    }
+
+    fn note_sent(&mut self, mail: &MailHeader, guild: u32) {
+        if let Some((week, commission)) = contribution(mail, guild) {
+            if week <= unix_ms() / WEEK_MS && self.sent.is_none_or(|(last, _)| week > last) {
+                self.sent = Some((week, commission));
+            }
+        }
+    }
+
+    fn note_received(&mut self, mail: &MailHeader, guild: &GuildLog, is_bot: impl Fn(u32) -> bool) {
+        if mail.attachments == 1
+            && contribution(mail, guild.id).is_some()
+            && guild
+                .members
+                .iter()
+                .any(|m| m.name.eq_ignore_ascii_case(&mail.sender) && is_bot(m.char_id))
+            && !self.done.contains(&mail.mail_id)
+            && !self.incoming.contains(&mail.mail_id)
+            && self.incoming.len() < 32
+        {
+            self.incoming.push_back(mail.mail_id);
+        }
+    }
+
+    pub fn observe(
+        &mut self,
+        event: &ActivityEvent,
+        guild: &GuildLog,
+        owner: bool,
+        now: u64,
+        is_bot: impl Fn(u32) -> bool,
+    ) {
+        self.for_guild(guild.id);
+        match event {
+            ActivityEvent::MailSent { mail, .. } if !owner => self.note_sent(mail, guild.id),
+            ActivityEvent::MailList { is_sent, mails } if *is_sent && !owner => {
+                for mail in mails {
+                    self.note_sent(mail, guild.id);
+                }
+            }
+            ActivityEvent::MailListEnd { .. } => self.list_ended = self.checking.is_some(),
+            ActivityEvent::MailList {
+                is_sent: false,
+                mails,
+            } if owner => {
+                for mail in mails {
+                    self.note_received(mail, guild, &is_bot);
+                }
+            }
+            ActivityEvent::MailReceived {
+                mail,
+                is_cancel: false,
+                ..
+            } if owner => {
+                self.note_received(mail, guild, &is_bot);
+            }
+            ActivityEvent::MailBody {
+                is_sent: false,
+                body,
+                ..
+            } if owner
+                && matches!(self.claim, Some(Claim::Reading { id, .. }) if id == body.mail_id) =>
+            {
+                let id = body.mail_id;
+                if body.items.is_empty() && body.money > 0 && body.billing == 0 && body.money2 == 0
+                {
+                    self.claim = Some(Claim::Ready {
+                        id,
+                        copper: body.money as u64,
+                    });
+                } else {
+                    self.finish_claim(id);
+                }
+            }
+            ActivityEvent::AttachmentTaken {
+                mail_id,
+                money: true,
+                ..
+            } if owner => {
+                if let Some(Claim::Taking { id, copper, .. }) = self.claim {
+                    if id == *mail_id {
+                        self.received = self.received.saturating_add(copper);
+                        self.finish_claim(id);
+                    }
+                }
+            }
+            ActivityEvent::MailFailed { .. } if !owner => {
+                self.next_check = self.next_check.max(now + RETRY_MS);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish_claim(&mut self, id: i64) {
+        self.claim = None;
+        self.incoming.retain(|&mail| mail != id);
+        self.done.push_back(id);
+        if self.done.len() > 128 {
+            self.done.pop_front();
+        }
+    }
+}
+
+pub fn duty(ctx: &mut Ctx<'_>) {
+    if ctx.cfg.guild.treasuries.is_empty() || ctx.state.place.in_instance() {
+        return;
+    }
+    let Some((guild, _, owner)) = profession::membership(ctx) else {
+        return;
+    };
+    let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()).copied() else {
+        return;
+    };
+    ctx.state.guild.mem().treasury.for_guild(guild);
+    if owner {
+        collect(ctx);
+    } else {
+        contribute(ctx, guild, terms);
+    }
+}
+
+fn collect(ctx: &mut Ctx<'_>) {
+    let treasury = &mut ctx.state.guild.mem().treasury;
+    let now = ctx.now_ms;
+    let received = std::mem::take(&mut treasury.received);
+    if let Some(Claim::Ready { id, copper }) = treasury.claim {
+        ctx.out.push(cs::take_attachment_sequentially(id));
+        treasury.claim = Some(Claim::Taking {
+            id,
+            copper,
+            deadline: now + 8_000,
+        });
+    } else if treasury.claim.is_none() {
+        if let Some(id) = treasury.incoming.front().copied() {
+            ctx.out.push(cs::read_mail(false, id));
+            treasury.claim = Some(Claim::Reading {
+                id,
+                deadline: now + 8_000,
+            });
+        } else if now >= treasury.next_check {
+            ctx.out.push(cs::list_mail());
+            treasury.next_check = now + LIST_EVERY_MS;
+        }
+    } else if matches!(treasury.claim,
+        Some(Claim::Reading { deadline, .. } | Claim::Taking { deadline, .. }) if now >= deadline)
+    {
+        treasury.claim = None;
+        treasury.incoming.pop_front();
+    }
+    if received > 0 {
+        ctx.hub.journal.update(ctx.persona.id, |j| {
+            j.guild_copper_received = j.guild_copper_received.saturating_add(received);
+        });
+        ctx.log.say(format!(
+            "guild: received {received} copper in contributions"
+        ));
+    }
+}
+
+fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
+    let week = unix_ms() / WEEK_MS;
+    let now = ctx.now_ms;
+    if let Some((paid, commission)) = ctx.state.guild.mem().treasury.sent.take() {
+        ctx.hub.journal.update(ctx.persona.id, |j| {
+            if j.guild_treasury.len() < 16 || j.guild_treasury.contains_key(&guild) {
+                let account = j.guild_treasury.entry(guild).or_default();
+                if paid > account.paid_week {
+                    account.paid_week = paid;
+                    account.unpaid_commission =
+                        account.unpaid_commission.saturating_sub(commission);
+                }
+            }
+        });
+    }
+    let (paid, commission) = ctx.hub.journal.read(ctx.persona.id, |j| {
+        j.guild_treasury
+            .get(&guild)
+            .map_or((0, 0), |a| (a.paid_week, a.unpaid_commission))
+    });
+    let dues = u64::from(terms.weekly_dues_copper);
+    let spendable = ctx.state.me.money - i64::from(terms.reserve_copper) - EXPRESS_FEE;
+    if paid >= week || ctx.state.me.level < MIN_SEND_LEVEL || spendable <= 0 {
+        return;
+    }
+    let commission = commission.min((spendable as u64).saturating_sub(dues));
+    let amount = dues.saturating_add(commission);
+    if amount == 0 || amount > spendable as u64 || amount > (i32::MAX - 100) as u64 {
+        return;
+    }
+    let Some((&mailbox, _)) = ctx.state.doodads.iter().find(|(_, d)| {
+        dist3d(ctx.pos(), d.pos) <= 3.5 && ctx.world.is_mailbox(d.template, d.phase)
+    }) else {
+        return;
+    };
+    let log = &ctx
+        .state
+        .guild
+        .get()
+        .expect("membership already checked")
+        .log;
+    let Some(master) = log
+        .member(log.owner)
+        .filter(|m| ctx.hub.is_bot_char(m.char_id))
+    else {
+        return;
+    };
+    let owner = master.name.clone();
+    let treasury = &mut ctx.state.guild.mem().treasury;
+    if let Some((expected_week, deadline)) = treasury.checking {
+        if treasury.list_ended && expected_week == week {
+            treasury.checking = None;
+            treasury.next_check = now + RETRY_MS;
+            ctx.out.push(cs::send_money_mail(
+                &owner,
+                &format!("{PREFIX}{guild}/{week}"),
+                amount as i32,
+                commission as i64,
+                mailbox,
+            ));
+        } else if now >= deadline {
+            treasury.checking = None;
+        }
+    } else if now >= treasury.next_check {
+        treasury.list_ended = false;
+        treasury.checking = Some((week, now + 8_000));
+        treasury.next_check = now + RETRY_MS;
+        ctx.out.push(cs::list_mail());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sent_contributions_are_recognized_on_a_new_connection() {
+        let week = unix_ms() / WEEK_MS;
+        let mut mail = MailHeader {
+            mail_id: 1,
+            mail_type: mail_type::EXPRESS,
+            status: 1,
+            title: format!("{PREFIX}42/{week}").into(),
+            sender: "Member".into(),
+            attachments: 1,
+            receiver: "Master".into(),
+            open_date: 0,
+            returned: false,
+            extra: 98,
+        };
+        let mut treasury = Treasury::default();
+        treasury.observe(
+            &ActivityEvent::MailList {
+                is_sent: true,
+                mails: vec![mail.clone()],
+            },
+            &GuildLog {
+                id: 42,
+                ..GuildLog::default()
+            },
+            false,
+            2000,
+            |_| true,
+        );
+        assert_eq!(treasury.sent, Some((week, 98)));
+        assert_eq!(contribution(&mail, 43), None);
+        mail.returned = true;
+        assert_eq!(contribution(&mail, 42), None);
+    }
+}

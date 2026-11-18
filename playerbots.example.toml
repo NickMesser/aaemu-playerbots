@@ -109,6 +109,10 @@ settlement_visits = false
 settlement_hangouts = []
 # Catch sport fish from active schools and sell the pack at a fish stand.
 sport_fishing = false
+# Accept short message-delivery jobs from nearby players by whisper.
+delivery_contracts = false
+# Form nearby bot parties to explore or grind together.
+field_parties = false
 
 [dungeons]
 # Count the server's entry limit (three entries per zone group and four hours) and skip a dungeon
@@ -188,6 +192,7 @@ work_percent = 60
 # Server guild IDs are strings in these tables. Examples:
 # professions = { "42" = "potato", "43" = "trader" }
 # farm_orders = { "42" = 12345 }  # seed or produce item template
+# treasuries = { "42" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }
 # Bots may found guilds. false = they only join existing ones.
 found = true
 # A bot founds or joins a guild from this level on.

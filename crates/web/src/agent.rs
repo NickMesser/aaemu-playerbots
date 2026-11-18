@@ -166,6 +166,11 @@ pub struct Observation {
     /// Completed sport fishing sales and the copper paid by fish stands.
     pub fish_turn_ins: u32,
     pub fish_sale_copper: u64,
+    /// Name of the bot the courier is trying to reach, and total messages handed off.
+    pub delivery_recipient: Option<String>,
+    pub deliveries_completed: u32,
+    /// Copper collected in the guildmaster's purse from member dues and commissions.
+    pub guild_copper_received: u64,
     /// Zones it has been in.
     pub zones_seen: u32,
     /// Seconds since the bot last filled in `eligible`, `plan`, `nearby` and `mp_pct` (`None`:

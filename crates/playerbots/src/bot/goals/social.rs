@@ -1292,7 +1292,8 @@ fn route_inbox(ctx: &mut Ctx<'_>, heard: &mut SmallVec<[ChatIn; 2]>) {
     if ctx.state.inbox.is_empty() {
         return;
     }
-    let lines = std::mem::take(&mut ctx.state.inbox);
+    let mut lines = std::mem::take(&mut ctx.state.inbox);
+    lines.retain(|l| !super::delivery::on_whisper(ctx, l));
     // (the market features hear the shout, trade and group-finding channels and the whispers
     // besides us; what they do with them is no business of the routing below)
     let market = &mut ctx.state.market;

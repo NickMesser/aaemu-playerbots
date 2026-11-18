@@ -51,6 +51,10 @@ pub enum GoalKind {
     Work,
     /// Catch and sell a sport fish.
     Fish,
+    /// Carry a player's message to another bot.
+    Delivery,
+    /// Form and play with an open-world bot party.
+    FieldParty,
 }
 
 /// A set of goals, one bit per [`GoalKind::index`] (the brain's `disabled`, `blocked` and gate
@@ -62,7 +66,7 @@ const _: () = assert!(GoalKind::COUNT <= GoalMask::BITS as usize);
 
 impl GoalKind {
     /// Every goal.
-    pub const ALL: [GoalKind; 22] = [
+    pub const ALL: [GoalKind; 24] = [
         GoalKind::Wander,
         GoalKind::Rest,
         GoalKind::Grind,
@@ -85,6 +89,8 @@ impl GoalKind {
         GoalKind::Gear,
         GoalKind::Work,
         GoalKind::Fish,
+        GoalKind::Delivery,
+        GoalKind::FieldParty,
     ];
 
     /// Number of goals.
@@ -120,6 +126,8 @@ impl GoalKind {
             GoalKind::Gear => "gear",
             GoalKind::Work => "work",
             GoalKind::Fish => "fish",
+            GoalKind::Delivery => "delivery",
+            GoalKind::FieldParty => "field_party",
         }
     }
 

@@ -554,6 +554,10 @@ pub fn duty(ctx: &mut Ctx<'_>) {
     let found = duty_step(&mut inner.auction, now, ctx.out);
     let counts = inner.auction.mail.counts;
     if let Some(s) = found.settled {
+        if s.kind == Kind::Sold {
+            use crate::bot::{cmd::GoalKind, guild::treasury};
+            treasury::note_receipt(ctx, GoalKind::Auction, s.money.max(0) as u64);
+        }
         let coins = crate::bot::goals::trade_run::coins;
         let text = match s.kind {
             Kind::Sold => format!(

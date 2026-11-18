@@ -1,0 +1,241 @@
+//! Short bot-only parties for open-world patrols and grinding.
+
+use aa_proto::cs;
+
+use super::{FailReason, GoalStatus, Grind, Wander};
+use crate::bot::combat::CombatStatus;
+use crate::bot::coordinator::{Dispatch, FieldOffer};
+use crate::bot::ctx::Ctx;
+use crate::bot::party::{PartyOrder, PartyPurpose};
+use crate::bot::pvp::walk::{Walk, Walker};
+use crate::bot::state::{dist2d, UnitKind};
+
+pub fn ready(ctx: &Ctx<'_>) -> bool {
+    ctx.cfg.behavior.field_parties
+        && ctx.state.me.hp_pct() >= 70
+        && !ctx.state.place.in_instance()
+        && !ctx.state.place.loading()
+        && !ctx.state.team().is_some_and(|t| t.in_team())
+}
+
+#[derive(Debug)]
+enum Outing {
+    Explore(Wander),
+    Grind(Grind),
+}
+
+#[derive(Debug, Default)]
+pub struct Field {
+    order: Option<PartyOrder>,
+    deadline: u64,
+    next_invite: u64,
+    invite_index: usize,
+    accepted: bool,
+    team_id: u32,
+    walker: Walker,
+    outing: Option<Outing>,
+    started: bool,
+}
+
+impl Field {
+    pub fn new(order: Option<Box<PartyOrder>>) -> Box<Self> {
+        Box::new(Self {
+            order: order.map(|o| *o),
+            ..Self::default()
+        })
+    }
+
+    pub fn start(&mut self, ctx: &mut Ctx<'_>) {
+        self.deadline = ctx.now_ms + 35_000;
+        self.invite_index = 1;
+        if self.order.is_none() && ready(ctx) {
+            let [x, y, _] = ctx.pos();
+            ctx.coord.request_field_party(FieldOffer {
+                bot: ctx.persona.id,
+                at: [x, y],
+                mother: crate::bot::guild::duty::mother_of(ctx),
+                level: ctx.state.me.level,
+                role: crate::bot::companion::duty::role_of(ctx.persona.archetype.role),
+                lead: (ctx.persona.profile.dedication + ctx.persona.profile.chatty) * 0.5,
+                explore: ctx.persona.profile.explorer,
+            });
+        }
+    }
+
+    pub fn tick(&mut self, ctx: &mut Ctx<'_>, combat: CombatStatus) -> GoalStatus {
+        if !ctx.cfg.behavior.field_parties
+            || ctx.now_ms >= self.deadline
+            || ctx.state.place.in_instance()
+        {
+            return if self.team_id != 0 {
+                GoalStatus::Done
+            } else {
+                GoalStatus::Failed(FailReason::Timeout)
+            };
+        }
+        let Some(order) = self.order.as_ref() else {
+            return GoalStatus::Running;
+        };
+        let (leader_char, _) = Dispatch::who(ctx.hub, order.leader);
+        if leader_char == 0 {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        }
+        let own = order.is_leader(ctx.persona.id);
+        let team = ctx.state.team().filter(|team| team.in_team());
+        if team.is_some_and(|t| t.owner != leader_char) {
+            return GoalStatus::Failed(FailReason::Other("already in another team"));
+        }
+        let size = team.map_or(0, |t| t.size());
+        if self.team_id != 0 {
+            if team.is_none_or(|t| t.team_id != self.team_id) || ctx.state.me.hp_pct() < 35 {
+                return GoalStatus::Done;
+            }
+        } else if let Some(team) = team.filter(|t| t.size() >= 2) {
+            self.team_id = team.team_id;
+        }
+        if own && self.invite_index < order.members.len() {
+            if ctx.now_ms >= self.next_invite {
+                let (_, name) = Dispatch::who(ctx.hub, order.members[self.invite_index]);
+                if !name.is_empty() {
+                    ctx.send(cs::invite_to_team(self.team_id, true, &name));
+                }
+                self.next_invite = ctx.now_ms + 7_000;
+                self.invite_index += 1;
+            }
+            return GoalStatus::Running;
+        }
+        if self.team_id == 0 {
+            if !own && !self.accepted {
+                let invite = ctx.state.team().and_then(|t| t.invite.clone());
+                if let Some(i) = invite.filter(|i| i.is_party && i.from_char == leader_char) {
+                    ctx.send(cs::reply_to_join_team(
+                        i.team_id,
+                        i.is_party,
+                        i.from_char,
+                        false,
+                        &i.from_name,
+                        false,
+                    ));
+                    self.accepted = true;
+                }
+            }
+            return GoalStatus::Running;
+        }
+        if size < 2 {
+            return GoalStatus::Done;
+        }
+        if !self.started {
+            let explore = matches!(order.purpose, PartyPurpose::Field { explore: true });
+            self.begin_outing(ctx, explore);
+        }
+        match &mut self.outing {
+            Some(Outing::Explore(wander)) => wander.tick(ctx),
+            Some(Outing::Grind(grind)) => grind.tick(ctx, combat),
+            None => {
+                if ctx.combat.busy() {
+                    return GoalStatus::Running;
+                }
+                let position = ctx
+                    .state
+                    .units
+                    .values()
+                    .find(|u| u.kind == UnitKind::Character && u.id == leader_char)
+                    .map(|u| u.pos)
+                    .or_else(|| {
+                        let leader = ctx.state.team()?.remote_of(leader_char)?;
+                        (leader.online
+                            && leader.located()
+                            && leader.instance_id == 0
+                            && ctx.now_ms.saturating_sub(leader.seen_ms) < 15_000)
+                            .then_some(leader.pos)
+                    });
+                if let Some(pos) = position {
+                    if dist2d(ctx.pos(), pos) < 6.0 {
+                        if ctx.motion.is_moving() {
+                            ctx.motion.stop();
+                            self.walker.reset();
+                        }
+                        return GoalStatus::Running;
+                    }
+                    if self.walker.step(ctx, [pos[0], pos[1]], 4.0) == Walk::Stuck {
+                        return GoalStatus::Failed(FailReason::Stuck);
+                    }
+                }
+                GoalStatus::Running
+            }
+        }
+    }
+
+    fn begin_outing(&mut self, ctx: &mut Ctx<'_>, explore: bool) {
+        self.started = true;
+        self.deadline = ctx.now_ms + 5 * 60_000;
+        if let Some(team) = ctx.state.team() {
+            ctx.hub.journal.update(ctx.persona.id, |j| {
+                for mate in team
+                    .members
+                    .iter()
+                    .filter(|m| m.char_id != ctx.state.me.char_id)
+                {
+                    j.relationships.update(mate.char_id, |r| {
+                        r.joined_party(crate::hub::unix_ms() / 1000)
+                    });
+                }
+            });
+        }
+        let role = crate::bot::companion::duty::role_of(ctx.persona.archetype.role);
+        ctx.send(cs::set_team_member_role(
+            self.team_id,
+            ctx.state.me.char_id,
+            role,
+        ));
+        ctx.log.say("field party: joined the open-world team");
+        if self
+            .order
+            .as_ref()
+            .is_some_and(|o| o.is_leader(ctx.persona.id))
+        {
+            self.outing = Some(if explore {
+                let mut wander = Wander::default();
+                wander.start(ctx);
+                Outing::Explore(wander)
+            } else {
+                let mut grind = Grind::default();
+                grind.start(ctx);
+                Outing::Grind(grind)
+            });
+        }
+    }
+
+    pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        ctx.coord.cancel(ctx.persona.id);
+        match &mut self.outing {
+            Some(Outing::Explore(wander)) => wander.stop(ctx),
+            Some(Outing::Grind(grind)) => grind.stop(ctx),
+            None => ctx.motion.stop(),
+        }
+        let me = ctx.state.me.char_id;
+        let Some(team) = ctx
+            .state
+            .team()
+            .filter(|t| self.team_id != 0 && t.team_id == self.team_id)
+        else {
+            return;
+        };
+        let action =
+            if team.owner == me && team.members.iter().all(|m| ctx.hub.is_bot_char(m.char_id)) {
+                cs::RISKY_DISMISS
+            } else {
+                cs::RISKY_LEAVE
+            };
+        ctx.send(cs::ask_risky_team_action(self.team_id, me, action));
+    }
+
+    pub fn describe(&self, out: &mut String) {
+        out.push_str(match &self.outing {
+            Some(Outing::Explore(_)) => "Exploring with a bot party",
+            Some(Outing::Grind(_)) => "Leading a grinding party",
+            None if self.team_id != 0 => "Following the field party",
+            None => "Looking for a nearby field party",
+        });
+    }
+}

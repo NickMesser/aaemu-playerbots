@@ -92,6 +92,8 @@ pub fn busy_goal(kind: GoalKind) -> bool {
             | GoalKind::Warzone
             | GoalKind::Event
             | GoalKind::Sail
+            | GoalKind::Delivery
+            | GoalKind::FieldParty
     )
 }
 

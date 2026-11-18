@@ -45,6 +45,7 @@ pub mod names;
 pub mod plan;
 pub mod profession;
 pub mod report;
+pub mod treasury;
 
 use aa_proto::guild::GuildEvent;
 
@@ -60,6 +61,7 @@ pub struct Mem {
     pub log: GuildLog,
     /// The duty's clocks and plans.
     pub t: Timers,
+    pub treasury: treasury::Treasury,
 }
 
 /// What a bot knows about its guild (one pointer until the first guild packet or duty tick).

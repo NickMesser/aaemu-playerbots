@@ -51,17 +51,22 @@ struct Job {
     destination: [f32; 3],
 }
 
-fn plan(ctx: &Ctx<'_>) -> Option<Job> {
-    if ctx.state.place.in_instance() || ctx.state.place.loading() || ctx.state.me.hp_pct() < 60 {
+pub fn selected_order(ctx: &Ctx<'_>) -> Option<Order> {
+    if ctx.cfg.guild.production_orders.is_empty() {
         return None;
     }
     let (guild, profession, false) = membership(ctx)? else {
         return None;
     };
     let order = *ctx.cfg.guild.production_orders.get(&guild.to_string())?;
-    if !order.allowed_in(profession) {
+    order.allowed_in(profession).then_some(order)
+}
+
+fn plan(ctx: &Ctx<'_>) -> Option<Job> {
+    if ctx.state.place.in_instance() || ctx.state.place.loading() || ctx.state.me.hp_pct() < 60 {
         return None;
     }
+    let order = selected_order(ctx)?;
     let gather_doodad;
     let (doodads, item, increase) = match order {
         Order::Craft { recipe } => {
@@ -120,7 +125,7 @@ fn plan(ctx: &Ctx<'_>) -> Option<Job> {
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
-    if !ctx.cfg.guild.production_orders.is_empty() && plan(ctx).is_some() {
+    if plan(ctx).is_some() {
         1.0
     } else {
         0.0

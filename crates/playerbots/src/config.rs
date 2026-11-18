@@ -268,6 +268,10 @@ pub struct BehaviorCfg {
     pub settlement_hangouts: Vec<[f32; 2]>,
     /// Sport fish near active schools and sell the caught packs.
     pub sport_fishing: bool,
+    /// Accept player-issued courier work via whisper.
+    pub delivery_contracts: bool,
+    /// Form bot-only open-world parties.
+    pub field_parties: bool,
 }
 
 impl Default for BehaviorCfg {
@@ -294,6 +298,8 @@ impl Default for BehaviorCfg {
             settlement_visits: false,
             settlement_hangouts: Vec::new(),
             sport_fishing: false,
+            delivery_contracts: false,
+            field_parties: false,
         }
     }
 }
@@ -490,6 +496,8 @@ pub struct GuildCfg {
     pub farm_orders: std::collections::BTreeMap<String, u32>,
     /// Repeatable crafting and gathering orders by guild ID.
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    /// Contributions paid to the current bot guildmaster, by server guild ID.
+    pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
     /// Long-run percentage of play that can go to professional goals.
     pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
@@ -517,6 +525,7 @@ impl Default for GuildCfg {
             professions: Default::default(),
             farm_orders: Default::default(),
             production_orders: Default::default(),
+            treasuries: Default::default(),
             work_percent: 60,
             enabled: false,
             found: true,
@@ -1384,6 +1393,13 @@ impl Config {
                     .is_some_and(|profession| order.allowed_in(*profession))
             }),
             "guild.production_orders must name a guild with the corresponding profession"
+        );
+        ensure!(
+            g.treasuries.len() <= 16
+                && g.treasuries
+                    .iter()
+                    .all(|(id, terms)| { g.professions.contains_key(id) && terms.valid() }),
+            "guild.treasuries must name up to 16 configured guilds with valid contributions"
         );
         ensure!(
             (50..=75).contains(&g.work_percent),
