@@ -477,6 +477,27 @@ impl Brain {
         {
             self.start_goal(ctx, GoalKind::Companion, None);
         }
+        if ctx.cfg.party.trade_escorts {
+            let accompanying = self
+                .goal
+                .as_ref()
+                .is_some_and(|g| g.kind() == GoalKind::Companion);
+            let was_escorting = accompanying
+                && self
+                    .ext
+                    .as_ref()
+                    .is_some_and(|ext| ext.guild_service.active());
+            let available = self.guild_service_available(now);
+            let escorting = super::companion::escort::tick(ctx, accompanying, available);
+            if escorting != was_escorting {
+                let service = &mut self.chat(ctx.rng, interval).guild_service;
+                if escorting {
+                    service.start(now);
+                } else {
+                    service.finish(now, ctx.cfg.guild.work_percent);
+                }
+            }
+        }
         // Guild duty: answers invitations, recruits, promotes and talks whatever the bot does.
         super::guild::duty(ctx, self.goal.as_ref().map(Goal::kind));
         // Equip duty: puts on the better piece of the bag whatever the bot does (not in a fight).
@@ -797,6 +818,37 @@ impl Brain {
                     context.push_str(&format!(
                         " Unpaid guild commission is {} copper.",
                         a.unpaid_commission
+                    ));
+                }
+            });
+        }
+        if role == profession::Profession::Trader {
+            ctx.hub.journal.read(ctx.persona.id, |j| {
+                let mut shown = smallvec::SmallVec::<[u32; 4]>::new();
+                let now = crate::hub::unix_ms();
+                for sale in &j.market_sales {
+                    if shown.len() == 4 {
+                        break;
+                    }
+                    if !shown.contains(&sale.item) {
+                        if let Some(price) = ctx.hub.market_prices.average(sale.item, now) {
+                            context.push_str(&format!(
+                                " Recent sales of item {} averaged {:.1} copper per unit.",
+                                sale.item, price
+                            ));
+                            shown.push(sale.item);
+                        }
+                    }
+                }
+            });
+        }
+        if role == profession::Profession::Thief {
+            ctx.hub.journal.read(ctx.persona.id, |j| {
+                for raid in j.raid_sites.iter().take(3) {
+                    let [x, y] = raid.position;
+                    context.push_str(&format!(
+                        " Previous ambushes near {x:.0}, {y:.0} recovered {} packs.",
+                        raid.recovered
                     ));
                 }
             });

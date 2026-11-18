@@ -986,6 +986,13 @@ impl Combat {
                     .say(format!("pvp: defending against {}", char_name_of(ctx, obj)));
                 ctx.combat.engage(obj);
                 ctx.combat.defending = obj;
+            } else if let Some(obj) = super::companion::escort::raider(ctx) {
+                ctx.log.say(format!(
+                    "escort: defending the carrier against {}",
+                    char_name_of(ctx, obj)
+                ));
+                ctx.combat.engage(obj);
+                ctx.combat.defending = obj;
             } else if !carrying {
                 if let Some(obj) = pick_assist(ctx, travelling) {
                     // (a team member's fight: help, and share the loot)

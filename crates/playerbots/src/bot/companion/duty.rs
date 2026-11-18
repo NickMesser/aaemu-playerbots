@@ -526,6 +526,15 @@ pub fn forward_chat(ctx: &mut Ctx<'_>, lines: &[ChatIn]) -> SmallVec<[Box<str>; 
             claimed.push(who.into());
             continue;
         }
+        if l.kind == chat_type::WHISPER && ctx.cfg.party.trade_escorts {
+            if let Some((sender, true)) = member_named(ctx, who) {
+                if !ctx.hub.is_bot_char(sender) && super::escort::request(ctx, who, sender, &l.text)
+                {
+                    claimed.push(who.into());
+                    continue;
+                }
+            }
+        }
         let Some(cmd) = command::parse(&l.text) else {
             continue;
         };
@@ -608,6 +617,7 @@ fn handle(ctx: &mut Ctx<'_>, who: &str, whisper: bool, cmd: Command) -> bool {
         }
         Command::Stay => {
             let m = mem_of(ctx.state);
+            m.escort = None;
             m.mode = Mode::Stay;
             m.come = 0;
             m.dungeon = None;
@@ -652,6 +662,7 @@ fn handle(ctx: &mut Ctx<'_>, who: &str, whisper: bool, cmd: Command) -> bool {
                 reply(ctx, Say::NotYours, "");
                 return whisper;
             }
+            mem_of(ctx.state).escort = None;
             dungeon_request(ctx, who, whisper, &query);
         }
         Command::Invite => {}

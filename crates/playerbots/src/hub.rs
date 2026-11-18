@@ -393,6 +393,8 @@ pub struct Hub {
     pub pop: Population,
     /// What every bot remembers between runs, see [`crate::journal`].
     pub journal: Arc<crate::journal::JournalBook>,
+    /// Recent confirmed market prices shared across guild members.
+    pub market_prices: crate::bot::guild::prices::Prices,
     /// The log-in and log-out schedules of the bots (owned by the presence feature, see
     /// [`crate::presence`]).
     pub presence: crate::presence::Presence,
@@ -436,6 +438,7 @@ impl Hub {
             llm: p.llm,
             pop: Population::inert(),
             journal: Arc::new(crate::journal::JournalBook::memory()),
+            market_prices: Default::default(),
             presence: crate::presence::Presence::default(),
             zones: crate::agent::ZoneNames::from_world(p.world),
         }
@@ -450,6 +453,15 @@ impl Hub {
 
     /// The hub with the bots' journal (read at start, written by its saver task).
     pub fn with_journal(mut self, journal: Arc<crate::journal::JournalBook>) -> Hub {
+        let mut sales: Vec<_> = journal
+            .ids()
+            .into_iter()
+            .flat_map(|id| journal.read(id, |j| j.market_sales.clone()))
+            .collect();
+        sales.sort_unstable_by_key(|sale| sale.at_ms);
+        for sale in sales {
+            self.market_prices.remember(sale);
+        }
         self.journal = journal;
         self
     }

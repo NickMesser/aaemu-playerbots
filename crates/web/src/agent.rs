@@ -169,6 +169,8 @@ pub struct Observation {
     /// Name of the bot the courier is trying to reach, and total messages handed off.
     pub delivery_recipient: Option<String>,
     pub deliveries_completed: u32,
+    /// Trade escorts that reached a buyer with the current party leader and cargo.
+    pub escorts_completed: u32,
     /// Copper collected in the guildmaster's purse from member dues and commissions.
     pub guild_copper_received: u64,
     /// Zones it has been in.

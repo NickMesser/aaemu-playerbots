@@ -277,6 +277,7 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
         .filter(|order| order.expires_ms > now_ms)
         .map(|order| order.recipient_name.clone());
     o.deliveries_completed = journal.deliveries_completed;
+    o.escorts_completed = journal.escorts_completed;
     o.guild_copper_received = journal.guild_copper_received;
     o.relationships = journal
         .relationships

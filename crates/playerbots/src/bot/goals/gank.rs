@@ -37,6 +37,7 @@ use smallvec::SmallVec;
 
 use crate::bot::combat::{CombatStatus, LostReason};
 use crate::bot::ctx::Ctx;
+use crate::bot::guild::profession::{membership, Profession};
 use crate::bot::party::{PartyOrder, PartyPurpose};
 use crate::bot::pvp::fight::{self, Odds};
 use crate::bot::pvp::post::{self, Post, Query};
@@ -101,6 +102,17 @@ const COLLECT_MAX_MS: u64 = 30_000;
 const APPEAR_MS: u64 = 8_000;
 /// Squad members take turns at the doodad: member `i` waits `i` times this long (ms).
 const TURN_MS: u64 = 1_500;
+
+fn thief(ctx: &Ctx<'_>) -> bool {
+    matches!(membership(ctx), Some((_, Profession::Thief, false)))
+}
+
+fn town_near(world: &aa_world::World, x: f32, y: f32) -> bool {
+    !world
+        .auctioneers()
+        .nearest(aa_world::Vec3::new(x, y, 0.0), 100.0, 1)
+        .is_empty()
+}
 
 /// Gank: ambush trade-pack carriers. See the module docs.
 #[derive(Debug, Default)]
@@ -527,7 +539,7 @@ impl Machine {
         } else {
             (PLAN_WALK_RADIUS_M, PLAN_WALK_TRIP_M)
         };
-        let cands = {
+        let mut cands = {
             let state = &*ctx.state;
             let at_war = |g: u16| state.at_war(g);
             let post_ok = |p: [f32; 2]| !state.pvp.as_ref().is_some_and(|m| m.post_blocked(p, now));
@@ -541,6 +553,19 @@ impl Machine {
             };
             post::candidates(ctx.world, ctx.world, &q)
         };
+        if thief(ctx) {
+            cands.retain(|p| !town_near(ctx.world, p.pos[0], p.pos[1]));
+            ctx.hub.journal.read(ctx.persona.id, |journal| {
+                for p in &mut cands {
+                    if let Some(raid) = journal.raid_sites.iter().find(|raid| {
+                        (p.pos[0] - raid.position[0]).hypot(p.pos[1] - raid.position[1]) <= 250.0
+                    }) {
+                        p.score += f32::from(raid.recovered.min(5)) * 2.0;
+                    }
+                }
+            });
+            cands.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
         let Some(p) = post::pick(&cands, ctx.rng) else {
             return self.fail(ctx, FailReason::NoTarget, "no ambush post", Outcome::NoPost);
         };
@@ -668,7 +693,15 @@ impl Machine {
     /// Looks for a carrier to attack: `Some(obj)` when the bot takes the fight.
     fn spot(&mut self, ctx: &mut Ctx<'_>, order: Option<&PartyOrder>) -> Option<u32> {
         let now = ctx.now_ms;
-        let cands = scan::carriers(ctx, self.post.pos, SEE_M);
+        let mut cands = scan::carriers(ctx, self.post.pos, SEE_M);
+        if thief(ctx) {
+            cands.retain(|c| {
+                ctx.state
+                    .units
+                    .get(&c.obj)
+                    .is_some_and(|unit| !town_near(ctx.world, unit.pos[0], unit.pos[1]))
+            });
+        }
         if cands.is_empty() {
             return None;
         }
@@ -884,6 +917,12 @@ impl Machine {
                     self.job.casts()
                 ));
                 self.outcome = Outcome::Collected;
+                if thief(ctx) {
+                    let [x, y, _] = self.victim;
+                    ctx.hub
+                        .journal
+                        .update(ctx.persona.id, |j| j.note_raid_site([x, y]));
+                }
                 GoalStatus::Done
             }
             CollectStep::Nothing(why) => {

@@ -307,6 +307,8 @@ struct Who {
     wild_only: bool,
     /// The seed (or produce) the goal was started for.
     item: Option<u32>,
+    /// This planting uses the portion of farm space assigned to the guild.
+    guild_order: bool,
     /// The bot keeps out of zones at war.
     avoid_war: bool,
 }
@@ -322,6 +324,7 @@ impl Who {
             wild: order.is_none() && cfg.wild && (asked || outlaw),
             wild_only: order.is_none() && cfg.wild && asked,
             item: order.or_else(|| args.and_then(|a| a.item)),
+            guild_order: order.is_some(),
             avoid_war: crate::bot::war::avoiding(&ctx.cfg.events),
         }
     }
@@ -437,7 +440,12 @@ fn plan_now(
         let room = if site.is_wild() {
             site::wild_room(mem, fcfg.max_plots, fcfg.wild_plots)
         } else {
-            site::room(mem, site.land, fcfg.max_plots)
+            let limit = if who.guild_order {
+                fcfg.max_plots.div_ceil(2)
+            } else {
+                fcfg.max_plots
+            };
+            site::room(mem, site.land, limit)
         };
         let plan = plan::make_plan(&pick, site, room, state.me.money, gm)?;
         if site.is_wild() {
@@ -528,8 +536,11 @@ fn candidate_sites(
 /// without `bots.gm_bootstrap`, of anybody), not watched by a real player. The nearest.
 pub fn steal_target(ctx: &Ctx<'_>) -> Option<Foreign> {
     let cfg = &ctx.cfg.farm;
+    use crate::bot::guild::profession::{membership, Profession};
+    let thief = matches!(membership(ctx), Some((_, Profession::Thief, false)));
     if !cfg.steal
-        || ctx.persona.profile.outlaw < cfg.wild_outlaw
+        || !thief && ctx.persona.profile.outlaw < cfg.wild_outlaw
+        || thief && ctx.state.team().is_some_and(|team| team.in_team())
         || ctx.real_player_near
         || crate::bot::guild::profession::farm_order(ctx).is_some()
     {

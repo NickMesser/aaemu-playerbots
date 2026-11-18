@@ -334,6 +334,13 @@ Potato members favor farming and market work, traders favor trade runs and aucti
 favor ambushes, adventurers favor dungeons and grinding, and bounty hunters favor war zones.
 Each activity uses its existing switches and prerequisites. A Potato order supplies a seed or
 produce template for new plantings on protected land. Existing ripe crops are tended first.
+Set `farm_choices` to compare up to twelve seeds per Potato guild. Members use the last week's
+confirmed market sales to estimate profit per growing hour and fall back to `farm_orders` when
+there is too little price evidence. Guild planting uses up to half the configured plot count per
+site, rounded up. Thief members look for ripe crops on wild plots when alone and
+`[farm] steal` is enabled. The director also sees recent average prices for a Trader's sales.
+With ambushes enabled, Thief members avoid auctioneer districts and favor parts of trade routes
+where they previously recovered packs.
 Crafter and Gatherer members can run `work` for a configured production order, for example
 `production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
 `{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
@@ -387,6 +394,16 @@ online bot within 850 metres. The courier accepts one delivery at a time, travel
 recipient, whispers the message in person, and tells the requester it has handed it off.
 The requester can whisper `deliver cancel`. Orders survive bot restarts and expire after 20
 minutes. External agents can see the recipient and handoff count in `observe`.
+
+### Trade escorts
+
+With `[party] trade_escorts = true`, the leader of a player party can whisper `escort` to an Adventurer
+guild member in that party. Start within 45 metres of the bot with a trade pack equipped. The bot
+follows and assists through the normal party combat rules until both reach a buyer for that pack.
+When PvP and the relevant target type are enabled, the escort can also defend the carrier against a
+nearby hostile character after seeing it land a hit.
+The escort uses professional work time and ends if the pack is lost, the party breaks up, or 20
+minutes elapse. The leader can whisper `escort cancel`. Agents can read `escorts_completed`.
 
 ### Open-world bot parties
 

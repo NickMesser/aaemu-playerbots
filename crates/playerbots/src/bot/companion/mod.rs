@@ -25,6 +25,7 @@
 pub mod command;
 pub mod duty;
 pub mod enter;
+pub mod escort;
 pub mod follow;
 pub mod lead;
 pub mod policy;
@@ -93,6 +94,8 @@ pub struct Mem {
     pub dungeon: Option<u32>,
     /// The bot told the player it arrived at that dungeon's entrance.
     pub dungeon_told: bool,
+    /// Current trade escort offered by the party leader.
+    pub escort: Option<escort::Escort>,
     /// Whispers waiting to be sent.
     pub replies: SmallVec<[Reply; 2]>,
     /// Players who asked for an invitation `(name hash, bot clock)`.

@@ -88,10 +88,16 @@ pub struct Journal {
     /// Outstanding player request and number of messages handed off.
     pub delivery: Option<crate::bot::goals::delivery::DeliveryOrder>,
     pub deliveries_completed: u32,
+    /// Trade escorts that reached a buyer with the party leader and cargo.
+    pub escorts_completed: u32,
     /// Unpaid commissions and confirmed contributions by server guild.
     pub guild_treasury: BTreeMap<u32, crate::bot::guild::treasury::Account>,
     /// Copper claimed from authenticated guild contribution mail by this guildmaster.
     pub guild_copper_received: u64,
+    /// Recent sales whose items and copper changed as agreed.
+    pub market_sales: Vec<crate::bot::guild::prices::Receipt>,
+    /// Places where this bot recovered a pack after a guild ambush.
+    pub raid_sites: Vec<RaidSite>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +110,30 @@ pub struct TradeRoute {
     pub quoted_copper: u32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RaidSite {
+    pub position: [f32; 2],
+    pub recovered: u16,
+}
+
 impl Journal {
+    pub fn note_raid_site(&mut self, position: [f32; 2]) {
+        let index = self.raid_sites.iter().position(|site| {
+            (site.position[0] - position[0]).hypot(site.position[1] - position[1]) <= 150.0
+        });
+        let recovered = index.map_or(1, |index| {
+            self.raid_sites.remove(index).recovered.saturating_add(1)
+        });
+        self.raid_sites.insert(
+            0,
+            RaidSite {
+                position,
+                recovered,
+            },
+        );
+        self.raid_sites.truncate(12);
+    }
+
     pub fn note_trade_route(&mut self, item: u32, buyer: u32, quote: u32, sold: bool) {
         let index = self
             .trade_routes

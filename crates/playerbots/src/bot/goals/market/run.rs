@@ -591,6 +591,19 @@ impl Run {
             if a.seller {
                 use crate::bot::{cmd::GoalKind, guild::treasury};
                 treasury::note_receipt(ctx, GoalKind::Market, a.total.max(0) as u64);
+                if ctx.cfg.guild.enabled && !ctx.cfg.guild.professions.is_empty() {
+                    let sale = crate::bot::guild::prices::Receipt {
+                        item: a.template,
+                        quantity: a.qty as u32,
+                        copper: a.total as u32,
+                        at_ms: crate::hub::unix_ms(),
+                    };
+                    ctx.hub.market_prices.remember(sale);
+                    ctx.hub.journal.update(ctx.persona.id, |j| {
+                        j.market_sales.insert(0, sale);
+                        j.market_sales.truncate(24);
+                    });
+                }
             }
             ctx.log.say(format!(
                 "market: the trade checks out ({items:+} items, {money:+} copper)"

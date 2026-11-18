@@ -33,7 +33,7 @@ impl Profession {
         use GoalKind::*;
         match self {
             Self::Potato => &[Farm, Market],
-            Self::Thief => &[Gank],
+            Self::Thief => &[Gank, Farm],
             Self::Trader => &[TradeRun, Auction, Market],
             Self::Adventurer => &[Dungeon, Grind, FieldParty],
             Self::BountyHunter => &[Warzone],
@@ -63,13 +63,37 @@ pub fn membership(ctx: &Ctx<'_>) -> Option<(u32, Profession, bool)> {
 }
 
 pub fn farm_order(ctx: &Ctx<'_>) -> Option<u32> {
-    if ctx.cfg.guild.farm_orders.is_empty() {
+    if ctx.cfg.guild.farm_orders.is_empty() && ctx.cfg.guild.farm_choices.is_empty() {
         return None;
     }
     let (id, Profession::Potato, false) = membership(ctx)? else {
         return None;
     };
-    ctx.cfg.guild.farm_orders.get(&id.to_string()).copied()
+    let key = id.to_string();
+    let known = ctx.cfg.guild.farm_choices.get(&key);
+    let prices = &ctx.hub.market_prices;
+    let now = crate::hub::unix_ms();
+    let market_order = known
+        .into_iter()
+        .flatten()
+        .filter_map(|&seed| {
+            let crop = ctx
+                .world
+                .farm()
+                .crop_of_seed(seed)
+                .filter(|crop| crop.plantable_on_land())?;
+            let market_return: f32 = crop
+                .produce
+                .iter()
+                .filter_map(|y| prices.average(y.item, now).map(|price| y.average() * price))
+                .sum();
+            let seed_price = ctx.world.item_facts(seed).map_or(0, |i| i.price);
+            let profit = market_return - seed_price as f32;
+            (profit > 0.0).then_some((seed, profit / crop.grow_ms as f32))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .map(|(seed, _)| seed);
+    market_order.or_else(|| ctx.cfg.guild.farm_orders.get(&key).copied())
 }
 
 /// Time spent in professional goals must be paid back with personal play. Carrying debt forward

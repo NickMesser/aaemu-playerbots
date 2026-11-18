@@ -874,6 +874,7 @@ impl BotState {
                 }
             }
             WorldEvent::UnitDamaged { caster, target } => {
+                super::companion::escort::note_hit(self, *caster, *target);
                 // The first hit the bot sees is the server's tag: the tag decides quest credit,
                 // so a killing blow on a monster somebody else tagged is not counted as one.
                 let bit = if *caster == self.me.obj && self.me.obj != 0 {
