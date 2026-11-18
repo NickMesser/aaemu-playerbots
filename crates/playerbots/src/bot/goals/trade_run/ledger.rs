@@ -195,6 +195,7 @@ struct Cold {
     paid: Option<Paid>,
     /// The pack waiting at the spot the bot died at.
     lost: Option<LostPack>,
+    proficiency: Option<rustc_hash::FxHashMap<u32, u32>>,
 }
 
 impl Cold {
@@ -238,6 +239,27 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    pub fn note_proficiency(&mut self, rows: &[(u32, i32)]) {
+        let points = self
+            .cold
+            .get_or_insert_with(Box::default)
+            .proficiency
+            .get_or_insert_with(Default::default);
+        points.extend(
+            rows.iter()
+                .map(|&(group, point)| (group, point.max(0) as u32)),
+        );
+    }
+
+    pub fn proficiency(&self, group: u32) -> u32 {
+        self.cold
+            .as_ref()
+            .and_then(|cold| cold.proficiency.as_ref())
+            .and_then(|points| points.get(&group))
+            .copied()
+            .unwrap_or(0)
+    }
+
     // ---- events -------------------------------------------------------------------------
 
     /// Feeds the ledger one server event; `me_obj` is the bot's object id (0 before the spawn).
@@ -262,6 +284,15 @@ impl Ledger {
                     self.cast_ms = now_ms;
                 } else {
                     self.last_error = Some((now_ms, ERR_SKILL_REFUSED, u32::from(*result)));
+                }
+            }
+            ServerEvent::World(WorldEvent::Actabilities(rows)) => self.note_proficiency(rows),
+            ServerEvent::World(WorldEvent::LaborChanged {
+                actability, point, ..
+            }) if *actability > 0 => {
+                if let Some(points) = self.cold.as_mut().and_then(|c| c.proficiency.as_mut()) {
+                    let recorded = points.entry(*actability as u32).or_default();
+                    *recorded = recorded.saturating_add_signed(*point);
                 }
             }
             ServerEvent::Activity(a) => self.observe_mail(a, now_ms),
@@ -555,6 +586,22 @@ fn unread_received(unread: &[i32; 4]) -> i32 {
 mod tests {
     use super::*;
     use aa_proto::sc_activity::{MailBodyInfo, MailHeader};
+
+    #[test]
+    fn proficiency_snapshot_and_labor_updates_track_points() {
+        let mut ledger = Ledger::default();
+        let event = ServerEvent::World(WorldEvent::Actabilities(Box::new([(7, 29_998), (14, 0)])));
+        ledger.observe(&event, 100, 1);
+        let event = ServerEvent::World(WorldEvent::LaborChanged {
+            delta: -5,
+            actability: 7,
+            point: 5,
+            step: 4,
+        });
+        ledger.observe(&event, 101, 1);
+        assert_eq!(ledger.proficiency(7), 30_003);
+        assert_eq!(ledger.proficiency(14), 0);
+    }
 
     fn header(id: i64, ty: u8) -> Box<MailHeader> {
         Box::new(MailHeader {

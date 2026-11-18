@@ -77,6 +77,8 @@ pub struct Journal {
     pub relationships: Relationships,
     /// Number of production orders with a confirmed inventory increase.
     pub production_completed: u32,
+    /// Number of proficiency-training recipes with a confirmed result.
+    pub production_training_completed: u32,
     /// Trade runs by pack item and destination buyer, most recent first.
     pub trade_routes: Vec<TradeRoute>,
     /// Sport fishing turn-ins confirmed by equipment removal and purse credit.

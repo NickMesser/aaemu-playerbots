@@ -598,6 +598,10 @@ impl World {
             .map_or(&[], Vec::as_slice)
     }
 
+    pub fn is_sport_fish(&self, template: u32) -> bool {
+        self.doodads.sport_fish.contains(&template)
+    }
+
     pub fn school_chum(&self, phase: u32) -> &[crate::doodad::FishChum] {
         self.doodads
             .fish_chum

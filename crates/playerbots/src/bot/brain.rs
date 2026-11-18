@@ -779,12 +779,11 @@ impl Brain {
             ));
         }
         if let Some(order) = ctx.cfg.guild.production_orders.get(&id.to_string()) {
-            let done = ctx
-                .hub
-                .journal
-                .read(ctx.persona.id, |j| j.production_completed);
+            let (done, training) = ctx.hub.journal.read(ctx.persona.id, |j| {
+                (j.production_completed, j.production_training_completed)
+            });
             context.push_str(&format!(
-                " Production order: {order}. Lifetime orders completed: {done}."
+                " Production order: {order}. Lifetime orders completed: {done}. Training crafts: {training}."
             ));
         }
         if ctx.cfg.guild.treasuries.contains_key(&id.to_string()) {

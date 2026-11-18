@@ -338,8 +338,10 @@ Crafter and Gatherer members can run `work` for a configured production order, f
 `production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
 `{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
 Orders need compatible world templates, a nearby visible bench or node, and sufficient labor.
-Crafting uses recipes without a proficiency requirement. Crafter members with trade-chat shopping
-enabled seek missing materials using the normal market prices and trade confirmation.
+Crafting reads proficiency from the server. Set `training_recipe` alongside `recipe` to practice a
+lower-tier recipe in the same vocation until the main recipe's requirement is met. Crafter members
+with trade-chat shopping enabled seek missing materials for their current recipe using the normal
+market prices and trade confirmation.
 
 The guildmaster skips the profession's autonomous goals and continues to manage recruitment and
 membership. Members recover personal time after each professional goal based on its actual elapsed

@@ -736,6 +736,12 @@ impl Bot {
                 return;
             }
         };
+        if matches!(ev, ServerEvent::World(WorldEvent::Actabilities(_)))
+            && !self.shared.cfg.behavior.sport_fishing
+            && self.shared.cfg.guild.production_orders.is_empty()
+        {
+            return;
+        }
         // (the crops of the bot are not kept as doodads in view: the farm memory follows them)
         if self.shared.cfg.farm.enabled {
             if let ServerEvent::World(w) = &ev {

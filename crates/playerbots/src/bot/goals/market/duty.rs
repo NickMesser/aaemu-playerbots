@@ -174,7 +174,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let real_near = ctx.real_player_near;
     let bot_id = persona.id;
     let guild_recipe = match work::selected_order(ctx) {
-        Some(work::Order::Craft { recipe }) => world.craft(recipe),
+        Some((work::Order::Craft { recipe, .. }, _)) => world.craft(recipe),
         _ => None,
     };
 
@@ -211,9 +211,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let tradable = |t| world.item_facts(t).is_some_and(ItemFacts::tradable);
     let mut needs = wanted_goods(&st.bag, money, bot_id, unix, tradable);
     if money >= SHOP_MONEY {
-        if let Some(craft) = guild_recipe
-            .filter(|c| !c.is_pack && c.actability_limit == 0 && st.me.level >= c.req_level)
-        {
+        if let Some(craft) = guild_recipe.filter(|c| !c.is_pack && st.me.level >= c.req_level) {
             for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t))
             {
                 let count = st

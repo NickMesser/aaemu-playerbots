@@ -12,14 +12,29 @@ use crate::bot::state::dist3d;
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Order {
-    Craft { recipe: u32 },
-    Gather { doodad: u32, item: u32 },
+    Craft {
+        recipe: u32,
+        training_recipe: Option<u32>,
+    },
+    Gather {
+        doodad: u32,
+        item: u32,
+    },
 }
 
 impl std::fmt::Display for Order {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Craft { recipe } => write!(f, "craft recipe {recipe}"),
+            Self::Craft {
+                recipe,
+                training_recipe,
+            } => {
+                write!(f, "craft recipe {recipe}")?;
+                if let Some(training) = training_recipe {
+                    write!(f, " (train with recipe {training})")?;
+                }
+                Ok(())
+            }
             Self::Gather { doodad, item } => write!(f, "gather item {item} from doodad {doodad}"),
         }
     }
@@ -27,23 +42,33 @@ impl std::fmt::Display for Order {
 
 impl Order {
     pub fn allowed_in(self, profession: Profession) -> bool {
-        matches!(
-            (self, profession),
-            (Self::Craft { recipe: 1.. }, Profession::Crafter)
-                | (
-                    Self::Gather {
-                        doodad: 1..,
-                        item: 1..
-                    },
-                    Profession::Gatherer
-                )
-        )
+        match (self, profession) {
+            (
+                Self::Craft {
+                    recipe,
+                    training_recipe,
+                },
+                Profession::Crafter,
+            ) => {
+                recipe != 0
+                    && training_recipe.is_none_or(|training| training != 0 && training != recipe)
+            }
+            (
+                Self::Gather {
+                    doodad: 1..,
+                    item: 1..,
+                },
+                Profession::Gatherer,
+            ) => true,
+            _ => false,
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Job {
     order: Order,
+    training: bool,
     item: u32,
     increase: i64,
     object: u32,
@@ -51,7 +76,7 @@ struct Job {
     destination: [f32; 3],
 }
 
-pub fn selected_order(ctx: &Ctx<'_>) -> Option<Order> {
+pub fn selected_order(ctx: &Ctx<'_>) -> Option<(Order, bool)> {
     if ctx.cfg.guild.production_orders.is_empty() {
         return None;
     }
@@ -59,20 +84,46 @@ pub fn selected_order(ctx: &Ctx<'_>) -> Option<Order> {
         return None;
     };
     let order = *ctx.cfg.guild.production_orders.get(&guild.to_string())?;
-    order.allowed_in(profession).then_some(order)
+    if !order.allowed_in(profession) {
+        return None;
+    }
+    if let Order::Craft {
+        recipe,
+        training_recipe,
+    } = order
+    {
+        let craft = ctx.world.craft(recipe)?;
+        let points = ctx
+            .state
+            .econ
+            .proficiency(u32::from(craft.actability_group));
+        if points < craft.actability_limit {
+            let training = ctx.world.craft(training_recipe?)?;
+            return (training.actability_group == craft.actability_group
+                && training.labor > 0
+                && training.actability_limit <= points)
+                .then_some((
+                    Order::Craft {
+                        recipe: training.id,
+                        training_recipe: None,
+                    },
+                    true,
+                ));
+        }
+    }
+    Some((order, false))
 }
 
 fn plan(ctx: &Ctx<'_>) -> Option<Job> {
     if ctx.state.place.in_instance() || ctx.state.place.loading() || ctx.state.me.hp_pct() < 60 {
         return None;
     }
-    let order = selected_order(ctx)?;
+    let (order, training) = selected_order(ctx)?;
     let gather_doodad;
     let (doodads, item, increase) = match order {
-        Order::Craft { recipe } => {
+        Order::Craft { recipe, .. } => {
             let craft = ctx.world.craft(recipe)?;
             if craft.is_pack
-                || craft.actability_limit != 0
                 || craft.product.0 == 0
                 || craft.product.1 == 0
                 || ctx.state.me.level < craft.req_level
@@ -116,6 +167,7 @@ fn plan(ctx: &Ctx<'_>) -> Option<Job> {
         })?;
     Some(Job {
         order,
+        training,
         item,
         increase,
         object,
@@ -155,10 +207,20 @@ impl Work {
             .is_some_and(|expected| ctx.state.item_count(job.item) >= expected)
         {
             ctx.hub.journal.update(ctx.persona.id, |j| {
-                j.production_completed = j.production_completed.saturating_add(1);
+                let count = if job.training {
+                    &mut j.production_training_completed
+                } else {
+                    &mut j.production_completed
+                };
+                *count = count.saturating_add(1);
             });
+            let action = if job.training {
+                "training"
+            } else {
+                "production"
+            };
             ctx.log
-                .say(format!("guild work: received item {}", job.item));
+                .say(format!("guild {action}: received item {}", job.item));
             return GoalStatus::Done;
         }
         if ctx.now_ms >= self.deadline {
@@ -180,7 +242,7 @@ impl Work {
             return GoalStatus::Failed(FailReason::NoTarget);
         }
         let packet = match job.order {
-            Order::Craft { recipe } => cs::execute_craft(recipe, job.object, 1),
+            Order::Craft { recipe, .. } => cs::execute_craft(recipe, job.object, 1),
             Order::Gather { doodad, .. } => {
                 let skill = ctx.world.doodad_use_skill(doodad);
                 cs::start_skill_doodad(skill, ctx.state.me.obj, job.object)
@@ -199,7 +261,12 @@ impl Work {
     pub fn describe(&self, out: &mut String) {
         if let Some(job) = self.job {
             use std::fmt::Write;
-            let _ = write!(out, "Guild production order for item {}", job.item);
+            let action = if job.training {
+                "training"
+            } else {
+                "production order"
+            };
+            let _ = write!(out, "Guild {action} for item {}", job.item);
         }
     }
 }

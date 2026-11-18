@@ -84,13 +84,22 @@ fn mainhand<'a>(ctx: &'a Ctx<'_>) -> Option<&'a aa_proto::sc_world::EquipSlot> {
 }
 
 fn bag_rod(ctx: &Ctx<'_>) -> Option<(u8, u64)> {
-    RODS.iter().find_map(|&template| {
-        let (slot, item) = ctx.state.find_item(template)?;
-        Some((u8::try_from(slot).ok()?, item.id))
-    })
+    RODS.iter()
+        .filter_map(|&template| {
+            let (slot, item) = ctx.state.find_item(template)?;
+            let slot = u8::try_from(slot).ok()?;
+            let (group, required) = ctx
+                .world
+                .item_table()
+                .proficiency_requirement(template)
+                .unwrap_or((0, 0));
+            (ctx.state.econ.proficiency(group) >= required).then_some(((slot, item.id), required))
+        })
+        .max_by_key(|(_, required)| *required)
+        .map(|(rod, _)| rod)
 }
 
-fn cast_point(ctx: &Ctx<'_>) -> Option<([f32; 3], u32)> {
+fn cast_point(ctx: &Ctx<'_>) -> Option<[f32; 3]> {
     let me = ctx.pos();
     ctx.state
         .doodads
@@ -98,10 +107,10 @@ fn cast_point(ctx: &Ctx<'_>) -> Option<([f32; 3], u32)> {
         .filter(|d| !ctx.world.school_fish(d.phase).is_empty() && dist3d(me, d.pos) < 95.0)
         .filter_map(|school| {
             let at = water_towards(ctx, school.pos)?;
-            Some((dist3d(me, school.pos), at, school.phase))
+            Some((dist3d(me, school.pos), at))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, at, phase)| (at, phase))
+        .map(|(_, at)| at)
 }
 
 fn water_towards(ctx: &Ctx<'_>, school: [f32; 3]) -> Option<[f32; 3]> {
@@ -186,7 +195,6 @@ enum Step {
     },
     Hook {
         at: [f32; 3],
-        phase: u32,
         deadline: u64,
     },
     Reel {
@@ -256,8 +264,8 @@ impl Fish {
                     };
                     return GoalStatus::Running;
                 }
-                if let Some((at, phase)) = cast_point(ctx) {
-                    self.cast(ctx, at, phase);
+                if let Some(at) = cast_point(ctx) {
+                    self.cast(ctx, at);
                 } else if let Some((object, [x, y, z], chum, item)) = chum_target(ctx) {
                     ctx.motion.stop();
                     ctx.motion.face(x, y);
@@ -315,14 +323,10 @@ impl Fish {
                     let Some(at) = water_towards(ctx, school.pos) else {
                         return GoalStatus::Failed(FailReason::NoTarget);
                     };
-                    self.cast(ctx, at, expected);
+                    self.cast(ctx, at);
                 }
             }
-            Hook {
-                at,
-                phase,
-                deadline,
-            } => {
+            Hook { at, deadline } => {
                 if let Some(note) = ctx.state.travel.skill_note().filter(|n| {
                     n.skill == CAST
                         && n.result != 0
@@ -341,7 +345,7 @@ impl Fish {
                     fish.kind == UnitKind::Npc
                         && fish.flags & U_MY_SUMMON != 0
                         && !fish.dead()
-                        && ctx.world.school_fish(phase).contains(&fish.id)
+                        && ctx.world.is_sport_fish(fish.id)
                         && dist3d(at, fish.pos) < 15.0
                 }) {
                     ctx.log
@@ -470,7 +474,7 @@ impl Fish {
         GoalStatus::Running
     }
 
-    fn cast(&mut self, ctx: &mut Ctx<'_>, [x, y, z]: [f32; 3], phase: u32) {
+    fn cast(&mut self, ctx: &mut Ctx<'_>, [x, y, z]: [f32; 3]) {
         ctx.motion.stop();
         ctx.motion.face(x, y);
         ctx.send(cs::start_skill_position(
@@ -481,7 +485,6 @@ impl Fish {
         ));
         self.step = Step::Hook {
             at: [x, y, z],
-            phase,
             deadline: ctx.now_ms + HOOK_WAIT_MS,
         };
     }

@@ -116,6 +116,7 @@ pub struct DoodadData {
     pack_doodads: Vec<u32>,
     pub fish_sales: Vec<FishSale>,
     pub fish_schools: FxHashMap<u32, Vec<u32>>,
+    pub sport_fish: FxHashSet<u32>,
     pub fish_chum: FxHashMap<u32, Vec<FishChum>>,
     pub mailbox_phases: FxHashSet<(u32, u32)>,
 }
@@ -350,6 +351,7 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
             )
         })
         .collect();
+    let sport_fish = fish_schools.values().flatten().copied().collect();
     Ok(DoodadData {
         templates: IdMap::build(templates),
         bench_pairs,
@@ -357,6 +359,7 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
         pack_doodads,
         fish_sales,
         fish_schools,
+        sport_fish,
         fish_chum,
         mailbox_phases,
     })

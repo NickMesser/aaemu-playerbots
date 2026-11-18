@@ -132,6 +132,7 @@ fn quest_items_of_quests(conn: &Connection) -> Result<HashSet<u32>> {
 #[derive(Debug, Default)]
 pub struct ItemTable {
     facts: IdMap<ItemFacts>,
+    proficiency: IdMap<(u32, u32)>,
 }
 
 impl ItemTable {
@@ -168,14 +169,35 @@ impl ItemTable {
         for (id, facts) in &mut rows {
             facts.quest |= handed_out.contains(id);
         }
+        let mut requirements = Vec::new();
+        let has_proficiency: bool = conn.query_row(
+            "SELECT count(*)=2 FROM pragma_table_info('items')
+             WHERE name IN ('actability_group_id','actability_requirement')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_proficiency {
+            each_row(
+                conn,
+                "SELECT id,actability_group_id,actability_requirement FROM items
+                 WHERE actability_group_id > 0 AND actability_requirement > 0",
+                |r| requirements.push((r.u32(0), (r.u32(1), r.u32(2)))),
+            )?;
+        }
         Ok(ItemTable {
             facts: IdMap::build(rows),
+            proficiency: IdMap::build(requirements),
         })
     }
 
     /// The facts of item `template`.
     pub fn get(&self, template: u32) -> Option<&ItemFacts> {
         self.facts.get(template)
+    }
+
+    /// Minimum points in a vocation required to equip or use an item.
+    pub fn proficiency_requirement(&self, template: u32) -> Option<(u32, u32)> {
+        self.proficiency.get(template).copied()
     }
 
     /// Every item as `(template, facts)` in ascending template order.
@@ -195,7 +217,7 @@ impl ItemTable {
 
     /// Heap bytes held.
     pub fn bytes(&self) -> usize {
-        self.facts.shallow_bytes()
+        self.facts.shallow_bytes() + self.proficiency.shallow_bytes()
     }
 }
 

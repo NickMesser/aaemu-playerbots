@@ -892,6 +892,8 @@ pub enum WorldEvent {
         /// The grade after.
         after: u8,
     },
+    /// Proficiency points sent on login by `SCActabilityPacket` (packets/world.rs).
+    Actabilities(Box<[(u32, i32)]>),
     /// `SCCharacterLaborPowerChangedPacket` (systems/skills/progress.rs:35).
     LaborChanged {
         /// Labor delta (negative = spent).
@@ -1186,6 +1188,7 @@ fn game_reader(opcode: u16) -> Option<Reader> {
         sc::SCItemTaskSuccessPacket => read_item_task,
         sc::SCItemSocketingLunagemResultPacket => read_lunagem_result,
         sc::SCGradeEnchantResultPacket => read_grade_enchant_result,
+        sc::SCActabilityPacket => read_actabilities,
         sc::SCCharacterLaborPowerChangedPacket => read_labor_changed,
         sc::SCSkillLearnedPacket => |s| read_skill_learned(s, false),
         sc::SCSkillUpgradedPacket => |s| read_skill_learned(s, true),
@@ -2446,6 +2449,18 @@ pub(crate) fn read_item_task_info(s: &mut PacketStream) -> Res<ItemTaskInfo> {
         changes,
         force_removed,
     })
+}
+
+fn read_actabilities(s: &mut PacketStream) -> Res<Option<WorldEvent>> {
+    let _last = s.read_bool()?;
+    let count = usize::from(s.read_u8()?);
+    check_count(s, count, 9, "actabilities")?;
+    let mut points = Vec::with_capacity(count);
+    for _ in 0..count {
+        points.push((s.read_u32()?, s.read_i32()?));
+        let _step = s.read_u8()?;
+    }
+    some(WorldEvent::Actabilities(points.into_boxed_slice()))
 }
 
 fn read_labor_changed(s: &mut PacketStream) -> Res<Option<WorldEvent>> {
