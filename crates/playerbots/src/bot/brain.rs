@@ -525,6 +525,7 @@ impl Brain {
                 )
             })
             && !self.cooldown_until.active(GoalKind::Delivery, now)
+            && self.guild_work_allowed(ctx, GoalKind::Delivery)
             && super::goals::delivery::ready(ctx)
         {
             self.start_goal(ctx, GoalKind::Delivery, None);
@@ -598,7 +599,9 @@ impl Brain {
             None => ctx.log.say(format!("goal: {}", kind.name())),
         }
         if let Some((_, profession, false)) = profession::membership(ctx) {
-            if profession.goals().contains(&kind) {
+            if profession.goals().contains(&kind)
+                || (kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx))
+            {
                 let interval = ctx.cfg.llm.director_interval_secs;
                 self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
             }
@@ -730,7 +733,9 @@ impl Brain {
         s[fish] = own_score(blocked, fish, || super::goals::fish::score(ctx));
         let delivery = GoalKind::Delivery.index();
         s[delivery] = own_score(blocked, delivery, || {
-            if super::goals::delivery::ready(ctx) {
+            if self.guild_work_allowed(ctx, GoalKind::Delivery)
+                && super::goals::delivery::ready(ctx)
+            {
                 10.0
             } else {
                 0.0
@@ -771,6 +776,9 @@ impl Brain {
         }
         if kind == GoalKind::Fish && super::goals::fish::carries_catch(ctx) {
             return true;
+        }
+        if kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx) {
+            return self.guild_service_available(ctx.now_ms);
         }
         profession::membership(ctx).is_none_or(|(_, profession, master)| {
             !profession.goals().contains(&kind)

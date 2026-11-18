@@ -139,7 +139,7 @@ pub fn option_text(kind: GoalKind) -> &'static str {
         GoalKind::Fish => {
             "fish: catch a sport fish at an active school and sell it at a fish stand"
         }
-        GoalKind::Delivery => "delivery: take the accepted message to its intended bot in person",
+        GoalKind::Delivery => "delivery: carry a message or carry out an accepted scouting job",
         GoalKind::FieldParty => {
             "field_party: explore or grind with nearby bots of compatible level"
         }

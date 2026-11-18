@@ -88,6 +88,7 @@ pub struct Journal {
     /// Outstanding player request and number of messages handed off.
     pub delivery: Option<crate::bot::goals::delivery::DeliveryOrder>,
     pub deliveries_completed: u32,
+    pub scouting_reports: u32,
     /// Trade escorts that reached a buyer with the party leader and cargo.
     pub escorts_completed: u32,
     /// Unpaid commissions and confirmed contributions by server guild.

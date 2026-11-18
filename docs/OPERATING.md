@@ -401,6 +401,11 @@ recipient, whispers the message in person, and tells the requester it has handed
 The requester can whisper `deliver cancel`. Orders survive bot restarts and expire after 20
 minutes. External agents can see the recipient and handoff count in `observe`.
 
+With the same setting, a Thief guild member can take `spy Farsignal` from a nearby player.
+It travels within sight of the named bot and reports where it was seen and whether it was carrying
+a trade pack. A sighting uses the member's guild work time and adds a journal note and a
+`scouting_reports` count. The requester can whisper `spy cancel`.
+
 ### Trade escorts
 
 With `[party] trade_escorts = true`, the leader of a player party can whisper `escort` to an Adventurer

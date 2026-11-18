@@ -439,7 +439,7 @@ impl Goal {
             Goal::Gear(g) => g.describe(out),
             Goal::Work(g) => g.describe(out),
             Goal::Fish(g) => g.describe(out),
-            Goal::Delivery(_) => out.push_str("Carrying a player's message"),
+            Goal::Delivery(g) => g.describe(out),
             Goal::FieldParty(g) => g.describe(out),
         }
     }
