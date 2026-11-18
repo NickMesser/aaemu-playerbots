@@ -486,11 +486,9 @@ pub fn pack_busy(ctx: &Ctx<'_>) -> bool {
     // (a note past its deadline no longer holds the bot: the recovery writes it off when the run
     // next looks at it, but nothing else may wait for that)
     carried_pack_of(ctx).is_some()
-        || ctx
-            .state
-            .econ
-            .lost_pack()
-            .is_some_and(|lost| ctx.now_ms < lost.until_ms)
+        || ctx.state.econ.lost_pack().is_some_and(|lost| {
+            ctx.now_ms < lost.until_ms && !ctx.world.specialty_buyers(lost.item).is_empty()
+        })
 }
 
 /// The goals that are not drawn while [`pack_busy`]: every goal but the trade run. A carrying

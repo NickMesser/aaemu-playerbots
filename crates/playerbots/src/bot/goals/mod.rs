@@ -30,6 +30,7 @@ pub mod dungeon;
 pub mod event;
 pub mod explore;
 pub mod farm;
+pub mod fish;
 pub mod gank;
 pub mod gear;
 pub mod grind;
@@ -146,6 +147,8 @@ pub enum Goal {
     Gear(Gear),
     /// Craft or gather for the guild.
     Work(work::Work),
+    /// Sport fishing including catch turn-in.
+    Fish(fish::Fish),
 }
 
 impl Goal {
@@ -194,6 +197,7 @@ impl Goal {
             GoalKind::Explore => Goal::Explore(Explore::new(args)),
             GoalKind::Gear => Goal::Gear(Gear::new(args)),
             GoalKind::Work => Goal::Work(work::Work::default()),
+            GoalKind::Fish => Goal::Fish(fish::Fish::default()),
         }
     }
 
@@ -221,6 +225,7 @@ impl Goal {
             Goal::Explore(_) => GoalKind::Explore,
             Goal::Gear(_) => GoalKind::Gear,
             Goal::Work(_) => GoalKind::Work,
+            Goal::Fish(_) => GoalKind::Fish,
         }
     }
 
@@ -228,7 +233,7 @@ impl Goal {
     /// the controller defend the bot and pauses the goal while a fight or a loot job is on.
     pub fn owns_combat(&self) -> bool {
         match self {
-            Goal::Grind(_) | Goal::Quest(_) | Goal::Duel(_) => true,
+            Goal::Grind(_) | Goal::Quest(_) | Goal::Duel(_) | Goal::Fish(_) => true,
             Goal::Dungeon(g) => g.owns_combat(),
             Goal::Sail(g) => g.owns_combat(),
             Goal::Auction(g) => g.owns_combat(),
@@ -269,6 +274,7 @@ impl Goal {
             Goal::Explore(g) => g.start(ctx),
             Goal::Gear(g) => g.start(ctx),
             Goal::Work(g) => g.start(ctx),
+            Goal::Fish(_) => {}
         }
     }
 
@@ -302,6 +308,7 @@ impl Goal {
             Goal::Explore(g) => return g.tick(ctx),
             Goal::Gear(g) => return g.tick(ctx),
             Goal::Work(g) => return g.tick(ctx),
+            Goal::Fish(g) => return g.tick(ctx),
         };
         if !resume {
             return GoalStatus::Done;
@@ -339,6 +346,7 @@ impl Goal {
             Goal::Explore(g) => g.stop(ctx),
             Goal::Gear(g) => g.stop(ctx),
             Goal::Work(g) => g.stop(ctx),
+            Goal::Fish(_) => ctx.motion.stop(),
         }
     }
 
@@ -377,7 +385,7 @@ impl Goal {
             Goal::Farm(g) => g.activity(moving, fighting),
             Goal::Explore(g) => g.activity(moving, fighting),
             Goal::Gear(g) => g.activity(moving, fighting),
-            Goal::Work(_) => {
+            Goal::Fish(_) | Goal::Work(_) => {
                 if moving {
                     Activity::Traveling
                 } else {
@@ -411,6 +419,7 @@ impl Goal {
             Goal::Explore(g) => g.describe(out),
             Goal::Gear(g) => g.describe(out),
             Goal::Work(g) => g.describe(out),
+            Goal::Fish(g) => g.describe(out),
         }
     }
 }

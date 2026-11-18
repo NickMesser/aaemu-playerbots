@@ -896,7 +896,13 @@ impl Bot {
         // into a fight); the operator's explicit goals are still obeyed.
         let pack_busy =
             goals::trade_run::carried_pack_in(&self.shared.world, &self.state.equipment).is_some()
-                || self.state.econ.lost_pack().is_some();
+                || self
+                    .state
+                    .econ
+                    .lost_pack()
+                    .is_some_and(|lost| !self.shared.world.specialty_buyers(lost.item).is_empty())
+                || (self.shared.cfg.behavior.sport_fishing
+                    && goals::fish::carried_catch_in(&self.shared.world, &self.state.equipment));
         match &cmd {
             BotCmd::Pause => {
                 self.paused = true;
@@ -915,7 +921,7 @@ impl Bot {
             BotCmd::ServerLogLine { level, line } => self.on_server_log_line(*level, line),
             BotCmd::Pair(_) | BotCmd::Party(_) if pack_busy => {
                 self.log
-                    .say("carrying a trade pack; not taking a pairing or party");
+                    .say("handling a pack; skipping the pairing or party");
             }
             BotCmd::Goal(_) | BotCmd::GoalWith { .. } | BotCmd::Pair(_) | BotCmd::Party(_) => {
                 self.brain.command(&cmd)

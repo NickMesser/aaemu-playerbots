@@ -136,6 +136,9 @@ pub fn option_text(kind: GoalKind) -> &'static str {
         GoalKind::Explore => "explore: see places this character has never been",
         GoalKind::Gear => "gear: get, equip and upgrade gear for this level",
         GoalKind::Work => "work: craft or gather for the configured guild production order",
+        GoalKind::Fish => {
+            "fish: catch a sport fish at an active school and sell it at a fish stand"
+        }
         GoalKind::Rest => "rest: sit down and recover",
         GoalKind::Wander => "wander: stroll around and see the sights",
     }
@@ -418,7 +421,8 @@ pub fn menu(ctx: &Ctx<'_>, scored: &[(GoalKind, f32)]) -> Menu {
         }
     }
     if has(GoalKind::Wander) {
-        if let Some(at) = super::goals::wander::settlement_market(ctx)
+        if let Some(at) = super::goals::wander::settlement_hangout(ctx)
+            .or_else(|| super::goals::wander::settlement_market(ctx))
             .filter(|at| ctx.world.zone_key_at(at[0], at[1]).is_some())
         {
             variants.push(Opt {
@@ -1010,7 +1014,7 @@ mod tests {
         // temperament weight, which `own_scores` replaces)
         // (the auction, market, guild, gank, warzone, event, companion and farm goals do too, and
         // are 0 until their features exist)
-        assert_eq!(with.len(), GoalKind::COUNT - 12);
+        assert_eq!(with.len(), GoalKind::COUNT - 13);
         assert!(!with.contains(&GoalKind::Sail));
         assert!(!with.contains(&GoalKind::Auction) && !with.contains(&GoalKind::Market));
         for g in [

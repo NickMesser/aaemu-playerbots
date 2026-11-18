@@ -30,6 +30,8 @@ impl DoodadFlags {
     pub const GATHER: DoodadFlags = DoodadFlags(1 << 4);
     /// Sells something (`DoodadFuncPurchase`).
     pub const PURCHASE: DoodadFlags = DoodadFlags(1 << 5);
+    /// Active sport fishing school or fish stand.
+    pub const FISHING: DoodadFlags = DoodadFlags(1 << 6);
 
     /// The empty set.
     pub const NONE: DoodadFlags = DoodadFlags(0);
@@ -47,13 +49,14 @@ impl DoodadFlags {
 
 impl std::fmt::Debug for DoodadFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const NAMES: [(DoodadFlags, &str); 6] = [
+        const NAMES: [(DoodadFlags, &str); 7] = [
             (DoodadFlags::QUEST, "quest"),
             (DoodadFlags::CRAFT, "craft"),
             (DoodadFlags::USE, "use"),
             (DoodadFlags::LOOT, "loot"),
             (DoodadFlags::GATHER, "gather"),
             (DoodadFlags::PURCHASE, "purchase"),
+            (DoodadFlags::FISHING, "fishing"),
         ];
         f.write_str("DoodadFlags[")?;
         let mut first = true;
@@ -108,6 +111,17 @@ pub struct DoodadData {
     /// (`put_down_backpack_effects.backpack_doodad_id`): the doodads a pack can be picked up
     /// from again (`DoodadFuncRecoverItem`).
     pack_doodads: Vec<u32>,
+    pub fish_sales: Vec<FishSale>,
+    pub fish_schools: FxHashMap<u32, Vec<u32>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FishSale {
+    pub stand: u32,
+    pub phase: u32,
+    pub item: u32,
+    pub skill: u32,
+    pub copper: u32,
 }
 
 const GATHER_FUNCS: [&str; 17] = [
@@ -247,6 +261,43 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
     pack_doodads.sort_unstable();
     pack_doodads.dedup();
 
+    let mut fish_sales = Vec::new();
+    let _ = each_row(
+        conn,
+        "SELECT DISTINCT g.doodad_almighty_id, g.id, b.item_id, f.func_skill_id, i.refund
+         FROM doodad_funcs f JOIN doodad_func_groups g ON g.id = f.doodad_func_group_id
+         JOIN doodad_func_buy_fish_items b ON b.doodad_func_buy_fish_id = f.actual_func_id
+         JOIN items i ON i.id = b.item_id
+         WHERE f.actual_func_type = 'DoodadFuncBuyFish' AND f.func_skill_id > 0 AND i.refund >= 0",
+        |r| {
+            fish_sales.push(FishSale {
+                stand: r.u32(0),
+                phase: r.u32(1),
+                item: r.u32(2),
+                skill: r.u32(3),
+                copper: r.u32(4),
+            });
+        },
+    );
+    let mut fish_schools = FxHashMap::<u32, Vec<u32>>::default();
+    let _ = each_row(
+        conn,
+        "SELECT DISTINCT p.doodad_func_group_id, n.member_id, g.doodad_almighty_id
+         FROM doodad_phase_funcs p JOIN doodad_func_fish_schools f ON f.id = p.actual_func_id
+         JOIN npc_spawner_npcs n ON n.npc_spawner_id = f.npc_spawner_id
+         JOIN doodad_func_groups g ON g.id = p.doodad_func_group_id
+         WHERE p.actual_func_type = 'DoodadFuncFishSchool'",
+        |r| {
+            fish_schools.entry(r.u32(0)).or_default().push(r.u32(1));
+            let flag = flags.entry(r.u32(2)).or_default();
+            *flag = flag.with(DoodadFlags::FISHING);
+        },
+    );
+    for stand in &fish_sales {
+        let flag = flags.entry(stand.stand).or_default();
+        *flag = flag.with(DoodadFlags::FISHING);
+    }
+
     let templates = names
         .into_iter()
         .map(|(id, name)| {
@@ -266,6 +317,8 @@ pub fn load(conn: &Connection, texts: &Texts) -> Result<DoodadData> {
         bench_pairs,
         loot_funcs,
         pack_doodads,
+        fish_sales,
+        fish_schools,
     })
 }
 
@@ -352,6 +405,21 @@ impl DoodadData {
             + self.loot_funcs.capacity() * std::mem::size_of::<(u32, bool, u32)>()
             + self.pack_doodads.capacity() * 4
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "needs AA_COMPACT"]
+fn r208022_catalog_contains_sport_fish_stands_and_active_schools() {
+    let path = std::env::var_os("AA_COMPACT").expect("AA_COMPACT");
+    let conn =
+        Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let data = load(&conn, &Texts::default()).unwrap();
+    assert!(data
+        .fish_sales
+        .iter()
+        .any(|sale| { sale.item == 27602 && sale.copper == 400000 && sale.skill != 0 }));
+    assert!(data.fish_schools.values().any(|fish| !fish.is_empty()));
 }
 
 #[cfg(test)]

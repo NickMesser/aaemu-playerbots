@@ -79,6 +79,10 @@ pub struct Journal {
     pub production_completed: u32,
     /// Trade runs by pack item and destination buyer, most recent first.
     pub trade_routes: Vec<TradeRoute>,
+    /// Sport fishing turn-ins confirmed by equipment removal and purse credit.
+    pub fish_turn_ins: u32,
+    /// Copper received from fish stands.
+    pub fish_sale_copper: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

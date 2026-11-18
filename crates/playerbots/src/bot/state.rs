@@ -62,6 +62,8 @@ pub const U_TAG_PARTY: u8 = 32;
 pub const U_TAG_OTHER: u8 = 64;
 /// Mask of the three tag flags.
 pub const U_TAG_MASK: u8 = U_TAG_ME | U_TAG_PARTY | U_TAG_OTHER;
+/// This NPC belongs to this character.
+pub const U_MY_SUMMON: u8 = 128;
 
 /// Who the bot saw hit an NPC first (the server's tag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1198,6 +1200,9 @@ impl BotState {
         }
         if info.owner_id != 0 {
             flags |= U_OWNED;
+            if info.owner_id == self.me.char_id && kind == UnitKind::Npc {
+                flags |= U_MY_SUMMON;
+            }
         }
         if kind == UnitKind::Npc && info.id == aa_world::travel::portal::PORTAL_ENTRANCE_NPC {
             // an open portal's entrance: the portal travel remembers whose gate it is

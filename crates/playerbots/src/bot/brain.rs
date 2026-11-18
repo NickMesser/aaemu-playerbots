@@ -427,7 +427,12 @@ impl Brain {
         let now = ctx.now_ms;
         // A pack carrier (or a bot going back for a dropped one) does not take up anything new
         // but its trade run: no market deal, trade, party, event or duel.
-        let pack_busy = super::goals::trade_run::pack_busy(ctx);
+        let pack_busy = super::goals::trade_run::pack_busy(ctx)
+            || super::goals::fish::carries_catch(ctx)
+            || self
+                .goal
+                .as_ref()
+                .is_some_and(|g| g.kind() == GoalKind::Fish);
 
         self.director_step(ctx);
         self.publish_agent(ctx);
@@ -641,7 +646,11 @@ impl Brain {
         let kind = match choose(&s, ctx.rng) {
             Some(kind) => kind,
             // (everything but the run is blocked: wait out its cooldown without wandering off)
-            None if super::goals::trade_run::pack_busy(ctx) => GoalKind::Rest,
+            None if super::goals::trade_run::pack_busy(ctx)
+                || super::goals::fish::carries_catch(ctx) =>
+            {
+                GoalKind::Rest
+            }
             None => GoalKind::Wander,
         };
         self.start_goal(ctx, kind, None);
@@ -653,8 +662,12 @@ impl Brain {
         let mut blocked = self.disabled | self.gated_goals(ctx);
         // (asked again here: the gate answer is cached, a pack can start or end in between)
         let pack_busy = super::goals::trade_run::pack_busy(ctx);
+        let fish_busy = super::goals::fish::carries_catch(ctx);
         if pack_busy {
             blocked |= super::goals::trade_run::pack_block_mask();
+        }
+        if fish_busy {
+            blocked |= !(1 << GoalKind::Fish.index());
         }
         for g in GoalKind::ALL {
             if self.cooldown_until.active(g, ctx.now_ms) {
@@ -672,12 +685,16 @@ impl Brain {
         own_scores(ctx, &self.base, blocked, &mut s);
         let work = GoalKind::Work.index();
         s[work] = own_score(blocked, work, || super::goals::work::score(ctx));
+        let fish = GoalKind::Fish.index();
+        s[fish] = own_score(blocked, fish, || super::goals::fish::score(ctx));
         // the population director's goal multipliers (all 1.0 unless its policy sets some)
         ctx.hub.pop.bias.apply(&mut s);
         if let Some((_, role, master)) = profession::membership(ctx) {
             let available = !master && self.guild_service_available(ctx.now_ms);
             for kind in role.goals() {
-                if !pack_busy || *kind != GoalKind::TradeRun {
+                if !(pack_busy && *kind == GoalKind::TradeRun
+                    || fish_busy && *kind == GoalKind::Fish)
+                {
                     s[kind.index()] *= if available { 2.0 } else { 0.0 };
                 }
             }
@@ -693,6 +710,9 @@ impl Brain {
 
     fn guild_work_allowed(&self, ctx: &Ctx<'_>, kind: GoalKind) -> bool {
         if kind == GoalKind::TradeRun && super::goals::trade_run::pack_busy(ctx) {
+            return true;
+        }
+        if kind == GoalKind::Fish && super::goals::fish::carries_catch(ctx) {
             return true;
         }
         profession::membership(ctx).is_none_or(|(_, profession, master)| {
@@ -878,6 +898,16 @@ impl Brain {
         if let Some(guild) = self.guild_work_context(ctx) {
             situation.push_str(&guild);
             situation.push('\n');
+        }
+        if scored.iter().any(|&(goal, _)| goal == GoalKind::Fish) {
+            use std::fmt::Write;
+            hub.journal.read(id, |j| {
+                let _ = writeln!(
+                    situation,
+                    "Sport fishing history: {} catches sold for {} copper in total.",
+                    j.fish_turn_ins, j.fish_sale_copper
+                );
+            });
         }
         if scored.iter().any(|&(goal, _)| goal == GoalKind::TradeRun) {
             use std::fmt::Write;

@@ -269,6 +269,8 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
         .collect();
     o.zones_seen = journal.seen.zones.len() as u32;
     o.thief_history = journal.thief_history;
+    o.fish_turn_ins = journal.fish_turn_ins;
+    o.fish_sale_copper = journal.fish_sale_copper;
     o.relationships = journal
         .relationships
         .entries

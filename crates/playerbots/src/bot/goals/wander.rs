@@ -64,6 +64,36 @@ pub fn settlement_market(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
     Some([market.pos.x, market.pos.y])
 }
 
+/// A configured tavern, campfire or other place to linger within the bot's local area.
+pub fn settlement_hangout(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
+    if !ctx.cfg.behavior.settlement_visits || ctx.state.place.in_instance() {
+        return None;
+    }
+    let [x, y, _] = ctx.pos();
+    let faction = ctx.state.me.faction;
+    ctx.cfg
+        .behavior
+        .settlement_hangouts
+        .iter()
+        .copied()
+        .map(|[a, b]| ((a - x).hypot(b - y), [a, b]))
+        .filter(|(distance, [a, b])| {
+            (15.0..=850.0).contains(distance)
+                && !ctx.in_war_zone(*a, *b)
+                && super::walkable(ctx.world, *a, *b)
+                && !super::quest::progress::cut_off(ctx.world, (x, y), (*a, *b))
+                && !super::quest::progress::deadly(
+                    ctx.world,
+                    faction,
+                    ctx.state.me.level,
+                    (x, y),
+                    (*a, *b),
+                )
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, at)| at)
+}
+
 /// Strolling around. See the module docs.
 #[derive(Debug, Default, Clone)]
 pub struct Wander {
@@ -79,6 +109,7 @@ pub struct Wander {
     /// When the trip to `target` is given up.
     travel_until_ms: u64,
     walker: Walker,
+    lingering: bool,
 }
 
 impl Wander {
@@ -101,7 +132,7 @@ impl Wander {
     /// Called once when the brain picks the goal.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
         if self.target.is_none() && ctx.cfg.behavior.settlement_visits && ctx.rng.u8(0..4) == 0 {
-            self.target = settlement_market(ctx);
+            self.target = settlement_hangout(ctx).or_else(|| settlement_market(ctx));
         }
         self.home = ctx.pos();
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
@@ -140,9 +171,17 @@ impl Wander {
             return GoalStatus::Done;
         }
         if now < self.pause_until_ms {
+            if self.lingering {
+                manner::rest_tick(ctx);
+                return GoalStatus::Running;
+            }
             // (in front of a player the bot looks around while it pauses)
             manner::wander_pause(ctx);
             return GoalStatus::Running;
+        }
+        if self.lingering {
+            manner::rest_end(ctx);
+            self.lingering = false;
         }
         match random_point(ctx.world, ctx.rng, self.home, LEG_MIN_M, LEG_MAX_M, 8)
             .filter(|&(x, y)| !ctx.in_war_zone(x, y))
@@ -184,7 +223,14 @@ impl Wander {
                 ctx.motion.face(t[0], t[1]);
                 self.home = ctx.pos();
                 self.end_ms = now + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
-                self.pause_until_ms = now + jitter_ms(ctx.rng, PAUSE_MS.0, PAUSE_MS.1);
+                self.lingering = ctx.cfg.behavior.settlement_visits
+                    && ctx.cfg.behavior.settlement_hangouts.contains(&t);
+                self.pause_until_ms = if self.lingering {
+                    manner::rest_begin(ctx);
+                    now + jitter_ms(ctx.rng, 30_000, 55_000)
+                } else {
+                    now + jitter_ms(ctx.rng, PAUSE_MS.0, PAUSE_MS.1)
+                };
                 GoalStatus::Running
             }
         }
@@ -192,6 +238,9 @@ impl Wander {
 
     /// Called when the goal ends.
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        if self.lingering {
+            manner::rest_end(ctx);
+        }
         if self.walking || self.target.is_some() {
             ctx.motion.stop();
             self.walking = false;

@@ -583,6 +583,17 @@ impl World {
         self.doodads.templates.get(template)
     }
 
+    pub fn fish_sales(&self) -> &[crate::doodad::FishSale] {
+        &self.doodads.fish_sales
+    }
+
+    pub fn school_fish(&self, phase: u32) -> &[u32] {
+        self.doodads
+            .fish_schools
+            .get(&phase)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Static spawn positions of a doodad template.
     pub fn doodad_spawns(&self, template: u32) -> &[Vec3] {
         self.doodad_spawns.of(template)

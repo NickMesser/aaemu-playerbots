@@ -37,7 +37,8 @@ impl Profession {
             Self::Trader => &[TradeRun, Auction, Market],
             Self::Adventurer => &[Dungeon, Grind],
             Self::BountyHunter => &[Warzone],
-            Self::Crafter | Self::Gatherer => &[Work],
+            Self::Crafter => &[Work],
+            Self::Gatherer => &[Work, Fish],
         }
     }
 

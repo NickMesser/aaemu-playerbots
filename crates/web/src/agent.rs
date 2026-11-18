@@ -163,6 +163,9 @@ pub struct Observation {
     pub thief_history: bool,
     /// Persistent relationship summaries, most recently updated last.
     pub relationships: Vec<RelationshipView>,
+    /// Completed sport fishing sales and the copper paid by fish stands.
+    pub fish_turn_ins: u32,
+    pub fish_sale_copper: u64,
     /// Zones it has been in.
     pub zones_seen: u32,
     /// Seconds since the bot last filled in `eligible`, `plan`, `nearby` and `mp_pct` (`None`:

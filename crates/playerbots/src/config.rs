@@ -264,6 +264,10 @@ pub struct BehaviorCfg {
     pub emotes: bool,
     /// Idle wander goals sometimes visit a nearby settlement market.
     pub settlement_visits: bool,
+    /// World coordinates of benches, taverns, fires or other settlement gathering spots.
+    pub settlement_hangouts: Vec<[f32; 2]>,
+    /// Sport fish near active schools and sell the caught packs.
+    pub sport_fishing: bool,
 }
 
 impl Default for BehaviorCfg {
@@ -288,6 +292,8 @@ impl Default for BehaviorCfg {
             jump_rate: 1.0,
             emotes: true,
             settlement_visits: false,
+            settlement_hangouts: Vec::new(),
+            sport_fishing: false,
         }
     }
 }

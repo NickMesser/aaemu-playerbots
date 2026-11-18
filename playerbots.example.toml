@@ -105,6 +105,10 @@ jump_rate = 1.0
 emotes = true
 # Idle bots sometimes visit a friendly auctioneer in a nearby settlement.
 settlement_visits = false
+# Optional world [x, y] coordinates for taverns, campfires or other places to linger.
+settlement_hangouts = []
+# Catch sport fish from active schools and sell the pack at a fish stand.
+sport_fishing = false
 
 [dungeons]
 # Count the server's entry limit (three entries per zone group and four hours) and skip a dungeon

@@ -349,8 +349,19 @@ it also sees recent route outcomes and gross price estimates. External agents se
 as `guild_work` in `observe`.
 
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
-auctioneer and stroll around the market. The director can also choose a destination offered by
-the settlement planner.
+auctioneer and stroll around the market. Add places such as taverns or campfires to
+`settlement_hangouts = [[x, y], ...]`. Bots linger at those places for 30 to 55 seconds and
+can sit when their usual emote rules allow it. The director can choose a nearby settlement visit.
+
+### Sport fishing
+
+Set `[behavior] sport_fishing = true` to enable the `fish` goal. Start with a sport-fishing
+rod, lure item 27319, labor, an empty backpack equipment slot, and baked terrain. A bot in range
+of an active school can cast into the water, reel in its own fish, loot the catch, and travel
+to a stand that accepts that fish. An already-equipped fish goes straight to turn-in. Fish stand
+eligibility, the sale skill, and the expected copper payment come from the compact database.
+The journal records a sale after the catch leaves the backpack slot and the purse receives the
+expected payment. Agents can read `fish_turn_ins` and `fish_sale_copper` in `observe`.
 
 **See it.** The web UI's bot list carries each bot's guild with its members (`guild` in
 `/api/bots`); the bot's log has the `guild:` lines (invited, joined, handed over, left). Server
