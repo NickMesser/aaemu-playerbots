@@ -70,6 +70,7 @@ pub struct FishCue {
     pub object: u32,
     index: u32,
     pub skill: u32,
+    pub seen_ms: u64,
 }
 
 /// Who the bot saw hit an NPC first (the server's tag).
@@ -1151,18 +1152,17 @@ impl BotState {
     }
 
     fn note_fish_cue(&mut self, object: u32, index: u32, skill: u32) {
-        let cue = self.fish_cue.get_or_insert_with(|| {
-            Box::new(FishCue {
-                object,
-                index,
-                skill,
-            })
-        });
-        **cue = FishCue {
+        let update = FishCue {
             object,
             index,
             skill,
+            seen_ms: self.now_ms,
         };
+        if let Some(cue) = self.fish_cue.as_deref_mut() {
+            *cue = update;
+        } else {
+            self.fish_cue = Some(Box::new(update));
+        }
     }
 
     /// Notes that character `obj`'s backpack slot holds `template` (0 = nothing now).

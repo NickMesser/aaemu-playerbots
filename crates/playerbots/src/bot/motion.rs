@@ -267,6 +267,8 @@ enum TripMode {
     },
     /// Flying down a ledge (boxed: a `Motion` is part of every `Bot` and must stay small).
     Glide(Box<Glide>),
+    /// Walking or swimming around the observed surface of a freshwater fishing school.
+    Freshwater(Box<LocalWater>),
 }
 
 /// Longest a glide may last, ms (the glide buff in the 1.2 data is 180 s; the bot is
@@ -277,6 +279,19 @@ const MAX_GLIDE_MS: u64 = 30_000;
 const GLIDE_RUN_UP_MS: u64 = 2_000;
 /// Height above the ground from which the bot counts as airborne (metres).
 const GLIDE_AIRBORNE_M: f32 = 0.5;
+
+/// A surface observed at a fishing school. It applies only to a short stretch of water
+/// around the cast, so it cannot change elevations along the trip to a fish stand.
+#[derive(Debug)]
+struct LocalWater {
+    center: [f32; 3],
+}
+
+impl LocalWater {
+    fn swim_z(&self, pos: [f32; 3]) -> Option<f32> {
+        (dist2d(pos, self.center) <= 100.0).then_some(self.center[2] - (SEA_LEVEL - SWIM_Z))
+    }
+}
 
 /// The movement controller of one bot. See the module docs.
 #[derive(Debug)]
@@ -337,6 +352,21 @@ impl Motion {
             nav: None,
             life: None,
         }
+    }
+
+    pub fn note_water_surface(&mut self, position: [f32; 3]) {
+        if position[2] > SEA_LEVEL
+            && position.iter().all(|coord| coord.is_finite())
+            && matches!(self.mode, TripMode::None | TripMode::Freshwater(_))
+        {
+            self.mode = TripMode::Freshwater(Box::new(LocalWater { center: position }));
+        }
+    }
+
+    fn is_swimming(&self) -> bool {
+        self.pos[2] == SWIM_Z
+            || matches!(&self.mode, TripMode::Freshwater(water)
+                if water.swim_z(self.pos) == Some(self.pos[2]))
     }
 
     /// Makes the bot move like a person (see [`super::manner`]). Without it the controller walks
@@ -659,7 +689,9 @@ impl Motion {
         );
         self.radius = radius.max(0.0);
         self.pace = pace;
-        self.mode = TripMode::None;
+        if !matches!(self.mode, TripMode::Freshwater(_)) {
+            self.mode = TripMode::None;
+        }
         self.started_ms = now_ms;
         self.stuck.reset(now_ms, self.pos);
         self.force_send = true;
@@ -811,7 +843,9 @@ impl Motion {
             l.pause_until_ms = 0;
         }
         self.path.clear();
-        self.mode = TripMode::None;
+        if !matches!(self.mode, TripMode::Freshwater(_)) {
+            self.mode = TripMode::None;
+        }
         self.status = MotionStatus::Idle;
         let pos = self.pos;
         if let Some(n) = self.nav.as_deref_mut() {
@@ -959,7 +993,7 @@ impl Motion {
             || l.emotes.sitting
             || env.combat
             || !matches!(self.mode, TripMode::None)
-            || self.pos[2] == SWIM_Z
+            || self.is_swimming()
             || env.out.iter().any(range_checked)
         {
             return;
@@ -1012,7 +1046,7 @@ impl Motion {
                 self.mode = TripMode::None;
             }
             TripMode::Glide(_) => return self.glide_tick(env, dt_ms),
-            TripMode::None => {}
+            TripMode::None | TripMode::Freshwater(_) => {}
         }
         if self.path.is_empty() {
             if self.stop_due {
@@ -1071,6 +1105,19 @@ impl Motion {
             Some(NavOutcome::Moved { heading, speed }) => (heading, speed),
             None => self.walk_straight(env, dt_ms),
         };
+        if let TripMode::Freshwater(water) = &self.mode {
+            if let Some(swim_z) = water.swim_z(self.pos) {
+                if env
+                    .ground
+                    .ground_z(self.pos[0], self.pos[1])
+                    .is_some_and(|ground| ground < swim_z && self.pos[2] <= water.center[2])
+                {
+                    self.pos[2] = swim_z;
+                }
+            } else {
+                self.mode = TripMode::None;
+            }
+        }
         if heading != (0.0, 0.0) {
             self.yaw = cs::yaw_towards((0.0, 0.0), heading);
         }
@@ -1431,7 +1478,7 @@ impl Motion {
         vel: (f32, f32),
         air: Option<AirStep>,
     ) -> Out {
-        let swimming = self.pos[2] == SWIM_Z;
+        let swimming = self.is_swimming();
         let gliding = self.gliding();
         let (lift, vz, jump) = if let TripMode::Glide(g) = &self.mode {
             (0.0, -g.descent, cs::JumpPhase::Air)
@@ -1894,6 +1941,22 @@ mod tests {
         assert_eq!(surface_z(Some(99.0), 0.0), 99.0);
         assert_eq!(surface_z(Some(300.0), 0.0), 300.0);
         assert_eq!(surface_z(None, 7.0), 7.0);
+    }
+
+    #[test]
+    fn freshwater_surface_lets_the_bot_swim_above_the_lakebed() {
+        let ground = |x: f32, _: f32| Some(if x < 15.0 { 131.0 } else { 119.0 });
+        let mut rig = Rig::new([10.0, 10.0, 131.0]);
+        rig.motion.note_water_surface([25.0, 10.0, 129.0]);
+        rig.motion.go_to(35.0, 10.0, 0.0, Pace::Run, rig.now);
+        while rig.tick(&ground, 250, 250) == MotionStatus::Moving {}
+        assert_eq!(rig.motion.pos()[2], 127.5);
+        assert!(rig.motion.is_swimming());
+
+        rig.motion.go_to(140.0, 10.0, 0.0, Pace::Run, rig.now);
+        while rig.tick(&ground, 250, 250) == MotionStatus::Moving {}
+        assert_eq!(rig.motion.pos()[2], 119.0);
+        assert!(!rig.motion.is_swimming());
     }
 
     #[test]

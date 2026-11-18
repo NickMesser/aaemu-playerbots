@@ -16,6 +16,15 @@ const CAST: u32 = 21578;
 const LURE: u32 = 27319;
 // The sport-cast plot channels for up to 220 seconds and rolls for a bite every 20 seconds.
 const HOOK_WAIT_MS: u64 = 230_000;
+// The shortest authored hooked-fish status lasts five minutes.
+const FIGHT_WAIT_MS: u64 = 300_000;
+// Each reel action is a 5.6-second repeating plot. Start it on a new cue to
+// keep its checks in the same direction and avoid overlapping two plots.
+const REEL_CHANNEL_MS: u64 = 5_600;
+const REEL_CUE_MAX_AGE_MS: u64 = 1_500;
+const FOLLOW_FISH_M: f32 = 55.0;
+const KEEP_FISH_M: f32 = 38.0;
+const LOOT_REACH_M: f32 = 4.0;
 const ROD_CHANGE_BUFF: u32 = 5795;
 const ROD_CHANGE_MS: u64 = 40_000;
 // Unwrapped sport rods in the r208022 item catalogue.
@@ -201,6 +210,11 @@ enum Step {
         object: u32,
         due: u64,
         deadline: u64,
+        hp: i32,
+    },
+    Land {
+        object: u32,
+        deadline: u64,
     },
     Loot {
         deadline: u64,
@@ -341,70 +355,122 @@ impl Fish {
                 if now >= deadline {
                     return timeout;
                 }
-                if let Some((&object, _)) = ctx.state.units.iter().find(|(_, fish)| {
+                if let Some((&object, fish)) = ctx.state.units.iter().find(|(_, fish)| {
                     fish.kind == UnitKind::Npc
                         && fish.flags & U_MY_SUMMON != 0
                         && !fish.dead()
                         && ctx.world.is_sport_fish(fish.id)
                         && dist3d(at, fish.pos) < 15.0
                 }) {
-                    ctx.log
-                        .say(format!("sport fishing: hooked owned fish {object}"));
+                    ctx.motion.note_water_surface(at);
+                    ctx.log.say(format!(
+                        "sport fishing: hooked owned fish {object} (template {}, {} HP)",
+                        fish.id, fish.hp
+                    ));
                     self.step = Reel {
                         object,
                         due: now,
-                        deadline: now + 120_000,
+                        deadline: now + FIGHT_WAIT_MS,
+                        hp: fish.hp,
                     };
                 }
             }
             Reel {
                 object,
-                due,
+                mut due,
                 deadline,
+                hp,
             } => {
                 if now >= deadline {
                     return timeout;
                 }
                 let Some(unit) = ctx.state.units.get(&object) else {
+                    ctx.log.debug(format!(
+                        "sport fishing: fish {object} left view with last observed HP {hp}"
+                    ));
                     return GoalStatus::Failed(FailReason::NoTarget);
                 };
                 if unit.kind != UnitKind::Npc || unit.flags & U_MY_SUMMON == 0 {
                     return GoalStatus::Failed(FailReason::NoTarget);
                 }
                 let pos = unit.pos;
+                let current_hp = unit.hp;
+                let distance = dist3d(ctx.pos(), pos);
                 if unit.dead() {
-                    if !unit.has_loot() {
-                        return GoalStatus::Running;
-                    }
-                    match self.walker.step(ctx, [pos[0], pos[1]], 1.5) {
-                        Walk::Going => return GoalStatus::Running,
-                        Walk::Stuck => return GoalStatus::Failed(FailReason::Stuck),
-                        Walk::There => {}
-                    }
-                    ctx.send(cs::loot_open_bag(object, true));
-                    self.step = Loot {
-                        deadline: now + 8_000,
+                    ctx.log.debug(format!(
+                        "sport fishing: fish {object} died at {pos:?}, lootable={}",
+                        unit.has_loot()
+                    ));
+                    self.step = Land {
+                        object,
+                        deadline: now + 18_000,
                     };
+                    return GoalStatus::Running;
+                } else if distance > FOLLOW_FISH_M
+                    || (ctx.motion.is_moving() && distance > KEEP_FISH_M)
+                {
+                    if ctx.in_war_zone(pos[0], pos[1])
+                        || self.walker.step(ctx, [pos[0], pos[1]], KEEP_FISH_M - 2.0) == Walk::Stuck
+                    {
+                        return GoalStatus::Failed(FailReason::Stuck);
+                    }
                 } else if now >= due && !rod_changing(ctx) {
                     let skill = ctx
                         .state
                         .fish_cue
                         .as_ref()
-                        .filter(|cue| cue.object == object)
+                        .filter(|cue| {
+                            cue.object == object
+                                && now.saturating_sub(cue.seen_ms) <= REEL_CUE_MAX_AGE_MS
+                        })
                         .and_then(|cue| ctx.world.skill(cue.skill));
                     if let Some(skill) = skill.filter(|skill| {
                         ctx.state.cooldown_ready(skill.id, now)
                             && (f32::from(skill.min_range)..=f32::from(skill.max_range))
-                                .contains(&dist3d(ctx.pos(), pos))
+                                .contains(&distance)
                     }) {
+                        ctx.motion.stop();
                         ctx.send(cs::start_skill_unit(skill.id, ctx.state.me.obj, object));
-                        self.step = Reel {
-                            object,
-                            due: now + u64::from(skill.casting_time).max(1_500),
-                            deadline,
-                        };
+                        due = now + REEL_CHANNEL_MS.max(u64::from(skill.casting_time));
                     }
                 }
+                self.step = Reel {
+                    object,
+                    due,
+                    deadline,
+                    hp: current_hp,
+                };
+            }
+            Land { object, deadline } => {
+                if carries_catch(ctx) {
+                    return self.begin_turn_in(ctx);
+                }
+                if now >= deadline {
+                    return timeout;
+                }
+                let Some(unit) = ctx.state.units.get(&object) else {
+                    return GoalStatus::Failed(FailReason::NoTarget);
+                };
+                if !unit.dead() || !ctx.world.is_sport_fish(unit.id) {
+                    return GoalStatus::Failed(FailReason::NoTarget);
+                }
+                let pos = unit.pos;
+                if !unit.has_loot() {
+                    return GoalStatus::Running;
+                }
+                if dist3d(ctx.pos(), pos) > LOOT_REACH_M {
+                    return match self.walker.step(ctx, [pos[0], pos[1]], 1.5) {
+                        Walk::Going => GoalStatus::Running,
+                        Walk::Stuck | Walk::There => GoalStatus::Failed(FailReason::Stuck),
+                    };
+                }
+                ctx.motion.stop();
+                ctx.send(cs::loot_open_bag(object, true));
+                ctx.log
+                    .debug(format!("sport fishing: taking loot from fish {object}"));
+                self.step = Loot {
+                    deadline: now + 8_000,
+                };
             }
             Loot { deadline } => {
                 if carries_catch(ctx) {
@@ -525,7 +591,7 @@ impl Fish {
             Step::Chumming { .. } => "Chumming a sport fishing school",
             Step::Start | Step::Hook { .. } => "Casting for a sport fish",
             Step::Reel { .. } => "Reeling in a sport fish",
-            Step::Loot { .. } => "Taking the catch",
+            Step::Land { .. } | Step::Loot { .. } => "Taking the catch",
             Step::TurnIn { .. } | Step::Payment { .. } => "Selling the catch at a fish stand",
         });
     }
