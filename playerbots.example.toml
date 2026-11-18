@@ -201,6 +201,7 @@ auction_flips = false
 # bounty_reward_copper can be added to pay for a server-confirmed Bounty Hunter patrol kill.
 # siege_zones = { "42" = [33] }  # join announced sieges as the attacking or defending guild
 # territory_patrols = { "42" = [{ zone_group = 20, position = [15437.0, 11479.0] }] }
+# rift_patrols = { "42" = [3] }  # patrol the active Crimson Rift during an eligible war
 # Bots may found guilds. false = they only join existing ones.
 found = true
 # A bot founds or joins a guild from this level on.

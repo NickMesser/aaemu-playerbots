@@ -510,6 +510,8 @@ pub struct GuildCfg {
     pub voyage_buyers: std::collections::BTreeMap<String, u32>,
     /// Resource or route sites a castle-holding guild can patrol in active conflict.
     pub territory_patrols: std::collections::BTreeMap<String, Vec<TerritoryPatrol>>,
+    /// Authored rift definitions a castle-holding guild may patrol during an active war.
+    pub rift_patrols: std::collections::BTreeMap<String, Vec<u32>>,
     /// Long-run percentage of play that can go to professional goals.
     pub work_percent: u8,
     /// Master switch of the guild features (goal `guild`). Off: no bot founds, joins or runs a
@@ -550,6 +552,7 @@ impl Default for GuildCfg {
             siege_zones: Default::default(),
             voyage_buyers: Default::default(),
             territory_patrols: Default::default(),
+            rift_patrols: Default::default(),
             work_percent: 60,
             enabled: false,
             found: true,
@@ -1466,6 +1469,16 @@ impl Config {
             "guild.territory_patrols must name guilds with siege zones and valid patrol sites"
         );
         ensure!(
+            g.rift_patrols.len() <= 16
+                && g.rift_patrols.iter().all(|(guild, definitions)| {
+                    g.siege_zones.contains_key(guild)
+                        && !definitions.is_empty()
+                        && definitions.len() <= 16
+                        && definitions.iter().all(|&id| id != 0)
+                }),
+            "guild.rift_patrols must name guilds with siege zones and nonzero event definitions"
+        );
+        ensure!(
             (50..=75).contains(&g.work_percent),
             "guild.work_percent must be in 50..=75"
         );
@@ -2300,6 +2313,7 @@ emote = true
         assert_eq!((g.min_level, g.party_size, g.max_guilds), (5, 5, 3));
         let ex = Config::parse(Config::example()).unwrap().guild;
         assert!(!ex.enabled && ex.found && !ex.accept_player_invites);
+        assert!(g.rift_patrols.is_empty() && ex.rift_patrols.is_empty());
         assert_eq!((ex.min_level, ex.party_size, ex.max_guilds), (5, 5, 3));
         assert_documented(
             "guild",
@@ -2324,6 +2338,8 @@ emote = true
         assert_eq!(g.churn_per_hour, 6.0);
         for bad in [
             "[guild]\nfounds = true\n",
+            "[guild]\nrift_patrols = { \"42\" = [3] }\n",
+            "[guild]\nsiege_zones = { \"42\" = [33] }\nrift_patrols = { \"42\" = [0] }\n",
             "[guild]\nenabled = 1\n",
             "[guild]\nmin_level = 0\n",
             "[guild]\nmin_level = 256\n",
@@ -2337,6 +2353,11 @@ emote = true
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
+        let patrolling = Config::parse(
+            "[guild]\nsiege_zones = { \"42\" = [33] }\nrift_patrols = { \"42\" = [3] }\n",
+        )
+        .unwrap();
+        assert_eq!(patrolling.guild.rift_patrols["42"], [3]);
     }
 
     #[test]

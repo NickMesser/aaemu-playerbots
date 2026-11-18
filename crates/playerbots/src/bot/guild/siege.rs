@@ -286,23 +286,38 @@ pub fn context(ctx: &Ctx<'_>) -> Option<String> {
 
 pub fn patrol_sites<'a>(ctx: &Ctx<'a>) -> &'a [crate::config::TerritoryPatrol] {
     let cfg = &ctx.cfg.guild;
-    if !cfg.enabled || cfg.territory_patrols.is_empty() {
+    if cfg.territory_patrols.is_empty() {
         return &[];
     }
-    let Some(guild) = ctx.state.guild.get() else {
+    holding_guild(ctx)
+        .and_then(|key| cfg.territory_patrols.get(&key))
+        .map_or(&[], Vec::as_slice)
+}
+
+pub fn rift_patrols<'a>(ctx: &Ctx<'a>) -> &'a [u32] {
+    let cfg = &ctx.cfg.guild;
+    if cfg.rift_patrols.is_empty() {
         return &[];
-    };
+    }
+    holding_guild(ctx)
+        .and_then(|key| cfg.rift_patrols.get(&key))
+        .map_or(&[], Vec::as_slice)
+}
+
+fn holding_guild(ctx: &Ctx<'_>) -> Option<String> {
+    let cfg = &ctx.cfg.guild;
+    let guild = ctx.state.guild.get()?;
     let log = &guild.log;
     let character = ctx.state.me.char_id;
-    if !log.in_guild()
+    if !cfg.enabled
+        || !log.in_guild()
         || log.is_owner(character)
         || log.member(character).is_none()
         || !ctx.hub.is_bot_char(log.owner)
     {
-        return &[];
+        return None;
     }
     let key = log.id.to_string();
-    let sites = cfg.territory_patrols.get(&key);
     let holds = cfg.siege_zones.get(&key).is_some_and(|zones| {
         zones.iter().any(|group| {
             guild
@@ -312,11 +327,7 @@ pub fn patrol_sites<'a>(ctx: &Ctx<'a>) -> &'a [crate::config::TerritoryPatrol] {
                 .is_some_and(|site| site.owner == log.id)
         })
     });
-    if holds {
-        sites.map_or(&[], Vec::as_slice)
-    } else {
-        &[]
-    }
+    holds.then_some(key)
 }
 
 #[cfg(test)]

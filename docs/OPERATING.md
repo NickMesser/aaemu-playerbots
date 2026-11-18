@@ -414,6 +414,12 @@ warzone play enabled, members prioritize reachable sites in active conflict, pat
 surroundings and use the usual PvP rules. These patrols use guild work time and stop after the
 guild loses its last configured castle.
 
+Add `[guild] rift_patrols = { "43" = [3] }` to give a castle-holding guild an occasional
+patrol around an announced rift. The values are authored event IDs, such as `3` for Crimson
+Rift. Members can engage eligible opponents within 130 metres of the rally point while the
+zone is at war. They leave when the event or war ends, or after six minutes, and wait at least
+45 minutes before taking another rift patrol. The cooldown survives reconnects.
+
 With `[behavior] settlement_visits = true`, idle wander goals sometimes choose a nearby friendly
 auctioneer and stroll around the market. They can also visit an authored innkeeper, bench or
 campfire within reach. Add other places with `settlement_hangouts = [[x, y], ...]`. Bots linger

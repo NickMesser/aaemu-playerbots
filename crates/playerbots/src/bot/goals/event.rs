@@ -509,7 +509,7 @@ fn rally_of(def: &EventDef, view: &View, from: [f32; 3]) -> Option<[f32; 3]> {
 
 /// [`rally_of`], but the defended unit's own position when the bot sees it: the target of a rift
 /// walks a path, and the server's list only gives where it stood when the list was sent.
-fn live_rally(ctx: &Ctx<'_>, def: &EventDef, view: &View) -> Option<[f32; 3]> {
+pub(super) fn live_rally(ctx: &Ctx<'_>, def: &EventDef, view: &View) -> Option<[f32; 3]> {
     if let Some(u) = view.target.and_then(|(obj, _)| ctx.state.unit(obj)) {
         return Some(u.pos);
     }
