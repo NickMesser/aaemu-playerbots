@@ -39,6 +39,7 @@ pub mod grind;
 pub mod guild;
 pub mod housing;
 pub mod market;
+mod mediation;
 pub mod quest;
 pub mod rest;
 pub mod sail;

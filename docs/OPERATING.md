@@ -441,6 +441,13 @@ It travels within sight of the named bot and reports where it was seen and wheth
 a trade pack. A sighting uses the member's guild work time and adds a journal note and a
 `scouting_reports` count. The requester can whisper `spy cancel`.
 
+Whisper `mediate` to ask whether the bot has a disagreement you can help resolve. If it
+remembers a negative relationship with another nearby bot, it can ask you to visit them.
+Whisper `mediate Vonurn` to that bot with the original bot's name. Only you can carry out
+that request. The other bot decides whether to accept based on trust and temperament, and a
+successful conversation eases existing grudges without turning them into positive trust.
+The outcome is recorded in both journals and the request expires after 20 minutes.
+
 ### Trade escorts
 
 With `[party] trade_escorts = true`, the leader of a player party can whisper `escort` to an Adventurer

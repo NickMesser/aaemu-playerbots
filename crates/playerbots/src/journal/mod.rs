@@ -43,7 +43,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub use companions::{Preference, Relationships};
+pub use companions::{Mediation, MediationReply, Preference, Relationships};
 pub use gear::GearNotes;
 pub use notes::{Note, Notes, MAX_NOTES, MAX_NOTE_CHARS};
 pub use seen::{Seen, MAX_ZONES};
@@ -75,6 +75,12 @@ pub struct Journal {
     pub thief_history: bool,
     /// Structured memories of characters the bot has played with.
     pub relationships: Relationships,
+    /// Outstanding request to speak to another bot about a damaged relationship.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediation: Option<Mediation>,
+    /// Last time a player brought this bot a reply to a mediation request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_mediation_ms: Option<u64>,
     /// Number of production orders with a confirmed inventory increase.
     pub production_completed: u32,
     /// Number of proficiency-training recipes with a confirmed result.

@@ -1,8 +1,83 @@
 use serde::{Deserialize, Serialize};
 
+use super::JournalBook;
+
 const MAX_COMPANIONS: usize = 32;
 const SESSION_GAP_SECS: u64 = 30 * 60;
 const BLOODLUST_MEMORY_GAP_SECS: u64 = 15 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mediation {
+    pub requester: u32,
+    pub recipient: u32,
+    pub expires_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediationReply {
+    NoOffer,
+    Declined,
+    Accepted,
+}
+
+impl JournalBook {
+    pub fn finish_mediation(
+        &self,
+        origin: (u32, u32, &str),
+        recipient: (u32, u32, &str),
+        requester: u32,
+        now: u64,
+        min_trust: i8,
+    ) -> MediationReply {
+        let (origin_bot, origin_char, origin_name) = origin;
+        let (recipient_bot, recipient_char, recipient_name) = recipient;
+        if origin_bot == recipient_bot || origin_char == recipient_char {
+            return MediationReply::NoOffer;
+        }
+        let mut book = self.inner.lock();
+        let Some(source) = book.get(&origin_bot) else {
+            return MediationReply::NoOffer;
+        };
+        if !source.mediation.is_some_and(|quest| {
+            quest.requester == requester
+                && quest.recipient == recipient_char
+                && quest.expires_ms > now
+        }) {
+            return MediationReply::NoOffer;
+        }
+        let origin_trust = source.relationships.trust(recipient_char);
+        let target = book.entry(recipient_bot).or_default();
+        let target_trust = target.relationships.trust(origin_char);
+        let accepted = origin_trust < 0 && target_trust >= min_trust;
+        if accepted {
+            target.relationships.ease_grudge(origin_char);
+            target.notes.push_clean(
+                now / 1_000,
+                &format!("I talked through my disagreement with {origin_name} with a mediator."),
+            );
+        }
+        let source = book.entry(origin_bot).or_default();
+        source.mediation = None;
+        source.last_mediation_ms = Some(now);
+        if accepted {
+            source.relationships.ease_grudge(recipient_char);
+            source.notes.push_clean(
+                now / 1_000,
+                &format!(
+                    "A mediator helped me talk through my disagreement with {recipient_name}."
+                ),
+            );
+        }
+        drop(book);
+        self.dirty.store(true, std::sync::atomic::Ordering::Release);
+        self.wake.notify_one();
+        if accepted {
+            MediationReply::Accepted
+        } else {
+            MediationReply::Declined
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +172,17 @@ impl Relationships {
         self.entries.iter().find(|r| r.character == character)
     }
 
+    fn trust(&self, character: u32) -> i8 {
+        self.get(character).map_or(0, |r| r.trust)
+    }
+
+    fn ease_grudge(&mut self, character: u32) {
+        let trust = self.trust(character);
+        if trust < 0 {
+            self.update(character, |r| r.change_trust(8.min(trust.saturating_neg())));
+        }
+    }
+
     pub fn update(&mut self, character: u32, apply: impl FnOnce(&mut Relationship)) {
         if character == 0 {
             return;
@@ -120,6 +206,54 @@ impl Relationships {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mediation_requires_the_appointed_player_and_consumes_the_offer() {
+        let book = JournalBook::memory();
+        book.update(1, |j| {
+            j.relationships.update(20, |r| r.change_trust(-17));
+            j.mediation = Some(Mediation {
+                requester: 30,
+                recipient: 20,
+                expires_ms: 2_000,
+            });
+        });
+        book.update(2, |j| j.relationships.update(10, |r| r.change_trust(-5)));
+        let finish = |requester, now, minimum| {
+            book.finish_mediation(
+                (1, 10, "Vonurn"),
+                (2, 20, "Farsignal"),
+                requester,
+                now,
+                minimum,
+            )
+        };
+        assert_eq!(finish(31, 1_000, -30), MediationReply::NoOffer);
+        assert_eq!(finish(30, 2_000, -30), MediationReply::NoOffer);
+        assert_eq!(finish(30, 1_001, -30), MediationReply::Accepted);
+        assert_eq!(finish(30, 1_002, -30), MediationReply::NoOffer);
+        book.read(1, |j| {
+            assert_eq!(j.relationships.trust(20), -9);
+            assert_eq!(j.last_mediation_ms, Some(1_001));
+            assert_eq!(j.notes.lines.len(), 1);
+        });
+        book.read(2, |j| {
+            assert_eq!(j.relationships.trust(10), 0);
+            assert_eq!(j.notes.lines.len(), 1);
+        });
+
+        book.update(1, |j| {
+            j.mediation = Some(Mediation {
+                requester: 30,
+                recipient: 20,
+                expires_ms: 3_000,
+            });
+        });
+        book.update(2, |j| j.relationships.update(10, |r| r.change_trust(-60)));
+        assert_eq!(finish(30, 2_001, -30), MediationReply::Declined);
+        assert_eq!(book.read(1, |j| j.relationships.trust(20)), -9);
+        assert_eq!(book.read(2, |j| j.relationships.trust(10)), -60);
+    }
 
     #[test]
     fn witnessed_bloodlust_respects_personality_and_survives_reconnect() {

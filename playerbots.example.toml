@@ -109,7 +109,7 @@ settlement_visits = false
 settlement_hangouts = []
 # Catch sport fish from active schools and sell the pack at a fish stand.
 sport_fishing = false
-# Accept short message-delivery jobs from nearby players by whisper.
+# Accept nearby player whispers for delivery, scouting, and mediation.
 delivery_contracts = false
 # Form nearby bot parties to explore or grind together.
 field_parties = false

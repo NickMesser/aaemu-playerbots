@@ -64,8 +64,22 @@ fn recipient(ctx: &Ctx<'_>, order: &DeliveryOrder) -> Option<([f32; 3], bool)> {
     })
 }
 
-fn tell(ctx: &mut Ctx<'_>, who: &str, text: &str) {
+pub(super) fn tell(ctx: &mut Ctx<'_>, who: &str, text: &str) {
     ctx.out.extend(social::whisper_packet(who, text));
+}
+
+pub(super) fn nearby_requester<'a>(ctx: &Ctx<'_>, line: &'a ChatIn) -> Option<(u32, &'a str)> {
+    let who = social::strip_gm(&line.name);
+    let unit = ctx.state.units.get(&line.sender_obj).filter(|u| {
+        u.kind == UnitKind::Character
+            && !u.dead()
+            && !ctx.hub.is_bot_char(u.id)
+            && u.name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(who))
+            && dist3d(ctx.pos(), u.pos) <= 30.0
+    })?;
+    Some((unit.id, who))
 }
 
 /// Consumes a nearby player's explicit delivery request or cancellation.
@@ -84,18 +98,9 @@ pub fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> bool {
     } else {
         return false;
     };
-    let who = social::strip_gm(&line.name);
-    let Some(unit) = ctx.state.units.get(&line.sender_obj).filter(|u| {
-        u.kind == UnitKind::Character
-            && !ctx.hub.is_bot_char(u.id)
-            && u.name
-                .as_deref()
-                .is_some_and(|n| n.eq_ignore_ascii_case(who))
-            && dist3d(ctx.pos(), u.pos) <= 30.0
-    }) else {
+    let Some((requester, who)) = nearby_requester(ctx, line) else {
         return false;
     };
-    let requester = unit.id;
     if ctx.state.team().is_some_and(|team| {
         team.in_team()
             && !team

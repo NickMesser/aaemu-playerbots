@@ -268,7 +268,7 @@ pub struct BehaviorCfg {
     pub settlement_hangouts: Vec<[f32; 2]>,
     /// Sport fish near active schools and sell the caught packs.
     pub sport_fishing: bool,
-    /// Accept player-issued courier work via whisper.
+    /// Accept nearby player whispers for delivery, scouting, and mediation.
     pub delivery_contracts: bool,
     /// Form bot-only open-world parties.
     pub field_parties: bool,
