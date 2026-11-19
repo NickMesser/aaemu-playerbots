@@ -459,14 +459,15 @@ fn the_server_event_parser_routes_the_answers() {
 
 #[test]
 fn the_listing_fee_follows_the_server() {
-    // buyout * 0.01 * (duration + 1), capped (E/auction.rs:480-487)
+    // The percentage is rounded, with a minimum charge and an upper cap.
     assert_eq!(listing_fee(900, duration::H48), 36);
+    assert_eq!(listing_fee(945, duration::H48), 38);
     assert_eq!(listing_fee(1000, duration::H6), 10);
     assert_eq!(listing_fee(1000, duration::H12), 20);
     assert_eq!(listing_fee(1000, duration::H24), 30);
     assert_eq!(listing_fee(1000, duration::H48), 40);
-    assert_eq!(listing_fee(0, duration::H48), 0);
-    assert_eq!(listing_fee(-5, duration::H48), 0);
+    assert_eq!(listing_fee(0, duration::H48), 1);
+    assert_eq!(listing_fee(1, duration::H6), 1);
     assert_eq!(listing_fee(100_000_000, duration::H48), MAX_LISTING_FEE);
     assert_eq!(listing_fee(i32::MAX, duration::H6), MAX_LISTING_FEE);
 }

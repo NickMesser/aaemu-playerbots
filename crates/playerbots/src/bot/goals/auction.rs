@@ -149,6 +149,10 @@ pub trait Env {
         false
     }
     fn note_resale_buy(&mut self, _lot: &aa_proto::auction::Lot, _cost: i64) {}
+    /// The purchased resale stack, once its mail attachment has reached the bag.
+    fn ready_resale(&self) -> Option<Stack> {
+        None
+    }
     fn resale_ask(&self, _stack: Stack) -> Option<Option<Ask>> {
         None
     }
@@ -274,6 +278,10 @@ impl Env for Live<'_, '_> {
 
     fn note_resale_buy(&mut self, lot: &aa_proto::auction::Lot, cost: i64) {
         resale::bought(self.0, lot, cost);
+    }
+
+    fn ready_resale(&self) -> Option<Stack> {
+        resale::stack(self.0)
     }
 
     fn resale_ask(&self, stack: Stack) -> Option<Option<Ask>> {

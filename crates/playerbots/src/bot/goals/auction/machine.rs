@@ -189,6 +189,7 @@ pub struct Run {
     /// The lot being bought, or cancelled.
     lot: Option<Lot>,
     buying_for_resale: bool,
+    relist_after_buy: bool,
     budget: i64,
     bought: u8,
     posted: u8,
@@ -232,6 +233,7 @@ impl Run {
             best: None,
             lot: None,
             buying_for_resale: false,
+            relist_after_buy: false,
             budget: 0,
             bought: 0,
             posted: 0,
@@ -1195,6 +1197,7 @@ impl Run {
                 self.budget -= i64::from(done.money);
                 if self.buying_for_resale && done.buyout {
                     env.note_resale_buy(&lot, i64::from(done.money));
+                    self.relist_after_buy = true;
                 }
                 let name = env
                     .item_name(done.template)
@@ -1227,6 +1230,7 @@ impl Run {
             env.mem().expect_win(lot.id, lot.template, now);
             if self.buying_for_resale {
                 env.note_resale_buy(&lot, i64::from(lot.buyout));
+                self.relist_after_buy = true;
             }
             env.say(&format!(
                 "auction: the money for {item} was taken but no answer came"
@@ -1281,6 +1285,14 @@ impl Run {
             self.begin_linger(env);
         }
         if env.now_ms() < self.linger_until {
+            if self.relist_after_buy && usize::from(self.posted) < MAX_LISTINGS {
+                if let Some(stack) = env.ready_resale() {
+                    self.relist_after_buy = false;
+                    self.budget = 0;
+                    self.sell.push(stack);
+                    self.enter(env, Phase::Next, "Auction: listing the purchased resale");
+                }
+            }
             return GoalStatus::Running;
         }
         let total = super::summary(env.mem());

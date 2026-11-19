@@ -1,6 +1,6 @@
 //! One funded resale per Trader guild member, accounted for after the sale mail pays.
 
-use aa_proto::auction::Lot;
+use aa_proto::auction::{duration, listing_fee, Lot};
 use serde::{Deserialize, Serialize};
 
 use super::Stack;
@@ -30,6 +30,20 @@ struct Listing {
     name: String,
     buyout: i32,
     fee: i32,
+}
+
+impl Resale {
+    fn sale_profit(&self, details: &SaleDetails, copper: i64) -> Option<i64> {
+        let listing = self.listing.as_ref()?;
+        // Journals written before the deposit rounding was corrected can have a lower estimate.
+        let fees = [listing.fee, listing_fee(listing.buyout, duration::H48)];
+        (self.quantity == details.quantity
+            && listing.buyout == details.buyout
+            && fees.contains(&details.fee)
+            && listing.name.eq_ignore_ascii_case(&details.item)
+            && copper == i64::from(details.paid))
+        .then(|| copper - self.cost - i64::from(details.fee))
+    }
 }
 
 fn guild(ctx: &Ctx<'_>) -> Option<u32> {
@@ -145,18 +159,9 @@ pub(super) fn settle(ctx: &Ctx<'_>, details: &SaleDetails, copper: i64) -> bool 
     let Some(resale) = current(ctx) else {
         return false;
     };
-    let Some(listing) = resale.listing.as_ref() else {
+    let Some(profit) = resale.sale_profit(details, copper) else {
         return false;
     };
-    if resale.quantity != details.quantity
-        || listing.buyout != details.buyout
-        || listing.fee != details.fee
-        || !listing.name.eq_ignore_ascii_case(&details.item)
-        || copper != i64::from(details.paid)
-    {
-        return false;
-    }
-    let profit = copper - resale.cost - i64::from(listing.fee);
     let contribute = guild(ctx) == Some(resale.guild) && profit > 0;
     ctx.hub.journal.update(ctx.persona.id, |j| {
         j.auction_resale = None;
@@ -169,4 +174,37 @@ pub(super) fn settle(ctx: &Ctx<'_>, details: &SaleDetails, copper: i64) -> bool 
         "auction: a guild resale earned {profit} copper after costs"
     ));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_native_receipt_uses_the_charged_fee_even_with_an_old_estimate() {
+        let resale = Resale {
+            guild: 42,
+            item_id: 10,
+            template: 14702,
+            quantity: 1,
+            cost: 200,
+            expires: 1_000,
+            listing: Some(Listing {
+                name: "Kobold Haversack".to_owned(),
+                buyout: 945,
+                fee: 37,
+            }),
+        };
+        let mut sale = SaleDetails {
+            item: "Kobold Haversack".to_owned(),
+            quantity: 1,
+            paid: 850,
+            buyout: 945,
+            fee: 38,
+        };
+        assert_eq!(resale.sale_profit(&sale, 850), Some(612));
+        assert_eq!(resale.sale_profit(&sale, 849), None);
+        sale.fee = 39;
+        assert_eq!(resale.sale_profit(&sale, 850), None);
+    }
 }

@@ -95,6 +95,9 @@ pub fn market_units(lots: &[Lot], template: u32, grade: u8, me: u32) -> Vec<u32>
 /// out minus the listing fee that was taken up front (copper, can be negative).
 pub fn net_of(buyout: i64, duration: u8) -> i64 {
     let b = buyout.clamp(0, i64::from(i32::MAX));
+    if b == 0 {
+        return 0;
+    }
     let share = (b as f64 * SELLER_SHARE_PCT) as i64;
     share - i64::from(listing_fee(b as i32, duration))
 }
@@ -323,8 +326,9 @@ mod tests {
         assert_eq!(net_of(1000, duration::H6), 900 - 10);
         assert_eq!(net_of(0, duration::H48), 0);
         assert_eq!(net_of(-3, duration::H48), 0);
-        // the server truncates both
-        assert_eq!(net_of(99, duration::H48), 89 - 3);
+        // The server truncates the seller's share and rounds the fee.
+        assert_eq!(net_of(99, duration::H48), 89 - 4);
+        assert_eq!(net_of(945, duration::H48), 850 - 38);
     }
 
     #[test]
@@ -355,8 +359,8 @@ mod tests {
         let a = ask(facts, 20, Some(q), 97, duration::H48).unwrap();
         assert_eq!(a.buyout, 1940);
         assert_eq!(a.start, 1746);
-        assert_eq!(a.fee, 77);
-        assert_eq!(a.net, 1746 - 77);
+        assert_eq!(a.fee, 78);
+        assert_eq!(a.net, 1746 - 78);
         assert_eq!(a.unit, 97);
         // vendor: 400. Market at 26 each (520): the floor is 503, the bot's 96% would be 499: floor
         let q = Quote {

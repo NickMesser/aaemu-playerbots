@@ -595,6 +595,19 @@ impl Env for Fake {
     fn note_resale_buy(&mut self, lot: &Lot, cost: i64) {
         self.resale_cost = Some((lot.item_id, cost));
     }
+    fn ready_resale(&self) -> Option<Stack> {
+        let (id, _) = self.resale_cost?;
+        let item = self.st.bag.values().find(|item| item.id == id)?;
+        Some(Stack {
+            item_id: item.id,
+            template: item.template,
+            count: item.count as u32,
+        })
+    }
+    fn resale_ask(&self, stack: Stack) -> Option<Option<Ask>> {
+        let (id, cost) = self.resale_cost?;
+        (stack.item_id == id).then(|| price::resale_ask(500.0, stack.count, cost))
+    }
     fn error_since(&self, since_ms: u64) -> Option<(i16, u32)> {
         self.err.filter(|e| e.0 >= since_ms).map(|e| (e.1, 0))
     }
@@ -974,6 +987,40 @@ fn a_guild_resale_records_the_actual_buyer_debit_against_the_purchased_item() {
     assert_eq!(status, GoalStatus::Done);
     assert_eq!(f.resale_cost, Some((item, 550)));
     assert_eq!(f.st.me.money, 50_000 - 550);
+    assert!(f.packets(op::CSAuctionPostPacket).is_empty());
+}
+
+#[test]
+fn a_guild_resale_collected_during_the_visit_is_listed_once() {
+    let mut f = buyer();
+    let lot = f.lot(ORE, 5, 550, 77);
+    let stack = item(lot.item_id, lot.template, lot.count);
+    f.resale_buyout = Some(lot.buyout);
+    f.market.push(lot);
+    let mut run = Run::new(f.now);
+    let mut deliver_at = None;
+    let mut status = GoalStatus::Running;
+    for _ in 0..3_000 {
+        f.now += 250;
+        f.walk_a_step();
+        if f.resale_cost.is_some() {
+            let delivery = *deliver_at.get_or_insert(f.now + 6_000);
+            if f.now == delivery {
+                assert!(f.packets(op::CSAuctionPostPacket).is_empty());
+                f.st.bag.insert(0, stack);
+            }
+        }
+        status = run.step(&mut f);
+        f.serve();
+        if status != GoalStatus::Running {
+            break;
+        }
+    }
+    assert_eq!(status, GoalStatus::Done);
+    assert_eq!(f.packets(op::CSAuctionPostPacket).len(), 1);
+    assert_eq!(f.own.len(), 1);
+    assert_eq!(f.own[0].item_id, stack.id);
+    assert_eq!(f.own[0].buyout, 2_250);
 }
 
 #[test]

@@ -82,16 +82,12 @@ pub mod sort_order {
     pub const DESC: u8 = 1;
 }
 
-/// The listing fee in copper the server takes when a lot is posted: `buyout * 0.01 * (duration + 1)`
-/// (1% of the buyout price for a 6 hour lot, 4% for 48 hours), truncated, at most
-/// [`MAX_LISTING_FEE`] (`E/auction.rs:480-487`). It is charged at posting and never refunded.
-pub fn listing_fee(buyout: i32, duration: u8) -> i32 {
-    let fee = f64::from(buyout.max(0)) * 0.01 * f64::from(i32::from(duration) + 1);
-    if fee > f64::from(MAX_LISTING_FEE) {
-        MAX_LISTING_FEE
-    } else {
-        fee as i32
-    }
+/// The deposit for a listing's price, using the buyout when one is offered or the starting bid.
+/// The server rounds the percentage to the nearest copper and charges at least one copper.
+pub fn listing_fee(price: i32, duration: u8) -> i32 {
+    let rate = f64::from(i32::from(duration) + 1);
+    let fee = (f64::from(price) * 0.01 * rate + 0.5).floor();
+    (fee as i32).clamp(1, MAX_LISTING_FEE)
 }
 
 /// One lot as `AuctionLot.Write` writes it (`E/auction.rs:126-150`). The item is reduced to the
