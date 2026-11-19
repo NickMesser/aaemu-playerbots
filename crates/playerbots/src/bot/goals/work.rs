@@ -3,6 +3,7 @@
 mod treasure;
 
 use aa_proto::cs;
+use aa_world::geom::Vec3;
 use serde::Deserialize;
 
 use super::{FailReason, GoalStatus};
@@ -12,6 +13,10 @@ use crate::bot::goals::grind::Grind;
 use crate::bot::guild::profession::{membership, Profession};
 use crate::bot::pvp::walk::{Walk, Walker};
 use crate::bot::state::dist3d;
+
+const GATHER_SEARCH_M: f32 = 240.0;
+const GATHER_MISSING_M: f32 = 40.0;
+const GATHER_STREAM_WAIT_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -171,7 +176,7 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
         Order::Hunt { .. } => return None,
     };
     let pos = ctx.pos();
-    let (&object, target) = ctx
+    let visible = ctx
         .state
         .doodads
         .iter()
@@ -184,15 +189,37 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
             dist3d(pos, a.pos)
                 .total_cmp(&dist3d(pos, b.pos))
                 .then(id_a.cmp(id_b))
-        })?;
+        });
+    let (object, template, destination) = if let Some((&object, target)) = visible {
+        (object, target.template, target.pos)
+    } else {
+        let Order::Gather { doodad, .. } = order else {
+            return None;
+        };
+        let from = Vec3::new(pos[0], pos[1], pos[2]);
+        let spawn = ctx
+            .world
+            .doodad_spawns(doodad)
+            .iter()
+            .filter_map(|spawn| {
+                let distance = from.dist2d(*spawn);
+                ((GATHER_MISSING_M..=GATHER_SEARCH_M).contains(&distance)
+                    && !ctx.world.zone_closed_at(spawn.x, spawn.y)
+                    && !ctx.in_war_zone(spawn.x, spawn.y))
+                .then_some((spawn, distance))
+            })
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))?
+            .0;
+        (0, doodad, [spawn.x, spawn.y, spawn.z])
+    };
     Some(Job {
         order,
         training,
         item,
         increase,
         object,
-        template: target.template,
-        destination: target.pos,
+        template,
+        destination,
     })
 }
 
@@ -244,6 +271,7 @@ pub struct Work {
     walker: Walker,
     deadline: u64,
     expected: Option<i64>,
+    arrived_ms: Option<u64>,
 }
 
 impl Work {
@@ -254,6 +282,13 @@ impl Work {
             }
             Some((order, training)) => self.job = plan(ctx, order, training),
             None => self.treasure = treasure::find(ctx).map(Box::new),
+        }
+        if let Some(job) = self.job.filter(|job| job.object == 0) {
+            let [x, y, _] = job.destination;
+            ctx.log.say(format!(
+                "guild production: looking for a source of item {} at {x:.0}, {y:.0}",
+                job.item
+            ));
         }
         self.deadline = ctx.now_ms + 90_000;
     }
@@ -298,17 +333,40 @@ impl Work {
             Walk::Stuck => return GoalStatus::Failed(FailReason::Stuck),
             Walk::There => {}
         }
-        let Some(target) = ctx.state.doodads.get(&job.object) else {
+        let home = ctx.pos();
+        let matches = |target: &crate::bot::state::Doodad| {
+            target.template == job.template
+                && dist3d(home, target.pos) <= 3.5
+                && !ctx.in_war_zone(target.pos[0], target.pos[1])
+        };
+        let object = if job.object != 0 {
+            ctx.state
+                .doodads
+                .get(&job.object)
+                .filter(|target| matches(target))
+                .map(|_| job.object)
+        } else {
+            ctx.state
+                .doodads
+                .iter()
+                .filter(|(_, target)| matches(target))
+                .min_by_key(|(&id, _)| id)
+                .map(|(&id, _)| id)
+        };
+        let Some(object) = object else {
+            if job.object == 0 {
+                let arrived = *self.arrived_ms.get_or_insert(ctx.now_ms);
+                if ctx.now_ms - arrived < GATHER_STREAM_WAIT_MS {
+                    return GoalStatus::Running;
+                }
+            }
             return GoalStatus::Failed(FailReason::NoTarget);
         };
-        if target.template != job.template || dist3d(ctx.pos(), target.pos) > 3.5 {
-            return GoalStatus::Failed(FailReason::NoTarget);
-        }
         let packet = match job.order {
-            Order::Craft { recipe, .. } => cs::execute_craft(recipe, job.object, 1),
+            Order::Craft { recipe, .. } => cs::execute_craft(recipe, object, 1),
             Order::Gather { doodad, .. } => {
                 let skill = ctx.world.doodad_use_skill(doodad);
-                cs::start_skill_doodad(skill, ctx.state.me.obj, job.object)
+                cs::start_skill_doodad(skill, ctx.state.me.obj, object)
             }
             Order::Hunt { .. } => return GoalStatus::Failed(FailReason::NoTarget),
         };
