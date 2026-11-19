@@ -430,8 +430,14 @@ fn a_gm_run_crafts_carries_sells_and_waits_for_the_payment() {
 
     // the pack leaves the backpack: sold, payment pending
     f.sell_pack();
+    assert!(
+        g.checkout_pending(),
+        "keep the goal until it observes the turn-in"
+    );
     steps(&mut g, &mut f, 1);
     assert_eq!(g.phase, Phase::Payment);
+    assert!(!g.checkout_pending());
+    assert_eq!(f.st.econ.packs_sold, 1);
     assert_eq!(f.st.econ.awaiting(), 1);
     assert_eq!(steps(&mut g, &mut f, 3), GoalStatus::Running);
 

@@ -811,6 +811,11 @@ impl TradeRun {
             .is_some_and(|sail| sail.owns_combat())
     }
 
+    /// The pack can leave inventory before this goal records the turn-in on its next tick.
+    pub fn checkout_pending(&self) -> bool {
+        self.phase == Phase::Selling
+    }
+
     /// Called when the goal ends. A run that is cut short while the bot carries a pack is noted
     /// in the ledger: the goal that takes over (a rest) can give the run back afterwards, see
     /// [`carried_pack_of`].

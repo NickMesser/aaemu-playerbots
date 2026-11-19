@@ -443,6 +443,7 @@ impl Brain {
         // but its trade run: no market deal, trade, party, event or duel.
         let pack_busy = super::goals::trade_run::pack_busy(ctx)
             || super::goals::fish::carries_catch(ctx)
+            || matches!(&self.goal, Some(Goal::TradeRun(run)) if run.checkout_pending())
             || self
                 .goal
                 .as_ref()
