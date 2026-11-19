@@ -22,7 +22,7 @@
 //!   ([`super::entry`]).
 //! * **Load**: between `SCProcessingInstance` / `SCLoadInstance` and the bot's answer.
 //! * **Clear**: inside; the goal works through the route until it is done, the time is up, the
-//!   party is gone, or too many deaths.
+//!   party is gone, too many deaths, or two party wipes.
 //! * **Leave**: walk to the exit doodad and cast its skill; when that does nothing, leave the team
 //!   (the server then moves the bot out after about 15 s).
 //! * **Out**: back in the main world: members leave the team, the leader dismisses it last.
@@ -30,8 +30,9 @@
 use super::entry::{self, EntryError, Reaction};
 use crate::bot::party::MAX_PARTY;
 
-/// Waiting for a party order.
-pub const GATHER_MS: u64 = 150_000;
+/// Waiting for a party order: longer than the relax wait, so a small party can still form after
+/// it (the coordinator drops a wish before this and the bot gives up here).
+pub const GATHER_MS: u64 = 660_000;
 /// Waiting for the level raise to show.
 pub const PREP_MS: u64 = 20_000;
 /// Building the team.
@@ -57,6 +58,11 @@ pub const MOTION_RETRIES: u8 = 5;
 pub const MUSTER_M: f32 = 20.0;
 /// Waiting for the others at the entrance (plus the walk of the farthest, see [`muster_patience_ms`]).
 pub const MUSTER_MS: u64 = 90_000;
+/// After a member died on the way, the party waits this long for it to come back before it goes
+/// in without it. (The live run's leader waited eight minutes at the entrance.)
+pub const MUSTER_DEAD_MS: u64 = 120_000;
+/// Party wipes after which the run is given up (the party leaves through the exit).
+pub const WIPE_LIMIT: u8 = 2;
 /// Delay between two members entering.
 pub const STAGGER_MS: u64 = 1_800;
 /// Gap between two casts of the entrance skill.
@@ -156,10 +162,19 @@ impl Phase {
         }
     }
 
-    /// Whether a run goes on after the bot dies in this phase: inside the dungeon, which includes
-    /// the load (the monsters at the entrance are quick). Before that the bot has not entered.
+    /// Whether a run goes on after the bot dies in this phase: inside the dungeon (the load and
+    /// the exit included), and on the way there, so a member that dies before the entrance
+    /// resurrects and walks back to the party. The leader waits for it a bounded time.
     pub fn survives_death(self) -> bool {
-        matches!(self, Phase::Load | Phase::Clear | Phase::Leave)
+        matches!(
+            self,
+            Phase::Travel
+                | Phase::Muster
+                | Phase::Enter
+                | Phase::Load
+                | Phase::Clear
+                | Phase::Leave
+        )
     }
 }
 
@@ -212,6 +227,12 @@ pub struct Facts {
     pub raise_ok: bool,
     /// Deaths of the bot in this run.
     pub deaths: u8,
+    /// The bot is dead (waiting for a resurrection does not count against a trip or a muster).
+    pub dead: bool,
+    /// Online members of the party that are dead right now.
+    pub muster_dead: u8,
+    /// Party wipes in this run (everybody dead at once).
+    pub wipes: u8,
     /// The bot is in an instance world.
     pub in_instance: bool,
     /// A load is under way (between the server's notice and the bot's answer).
@@ -280,6 +301,8 @@ pub enum Fail {
     WrongWorld,
     /// The exit does nothing.
     ExitStuck,
+    /// The party was wiped twice.
+    Wiped,
 }
 
 impl Fail {
@@ -299,6 +322,7 @@ impl Fail {
             Fail::NoLoad => "the server did not load the dungeon",
             Fail::WrongWorld => "the server loaded another world",
             Fail::ExitStuck => "the exit does nothing",
+            Fail::Wiped => "the party was wiped twice",
         }
     }
 }
@@ -352,6 +376,8 @@ pub struct Machine {
     travel_dist: f32,
     /// The farthest a member was from the entrance since the muster began.
     muster_far: f32,
+    /// When a dead member was first seen at the muster (0 = none); caps the wait for it.
+    death_wait_ms: u64,
     posted: bool,
     raised_ms: u64,
     left_stale: bool,
@@ -384,6 +410,7 @@ impl Machine {
             trips_failed: 0,
             travel_dist: 0.0,
             muster_far: 0.0,
+            death_wait_ms: 0,
             posted: false,
             raised_ms: 0,
             left_stale: false,
@@ -439,6 +466,7 @@ impl Machine {
         self.tries = 0;
         self.travel_dist = 0.0;
         self.muster_far = 0.0;
+        self.death_wait_ms = 0;
     }
 
     /// The team the bot belonged to is gone (it was kicked or dismissed).
@@ -549,6 +577,11 @@ impl Machine {
         if self.lost(f) {
             return Intent::Fail(Fail::TeamBroke);
         }
+        if f.dead {
+            // a death on the way: the walk back starts when the bot is resurrected
+            self.since_ms = now;
+            return Intent::Stand;
+        }
         self.travel_dist = self.travel_dist.max(f.door_dist);
         if now.saturating_sub(self.since_ms) > travel_budget_ms(self.travel_dist) {
             return Intent::Fail(Fail::Timeout);
@@ -575,6 +608,11 @@ impl Machine {
         if self.lost(f) {
             return Intent::Fail(Fail::TeamBroke);
         }
+        if f.dead {
+            // the corpse lies at the door; the bot walks back after the resurrection
+            self.since_ms = now;
+            return Intent::Stand;
+        }
         if !f.at_door {
             // pushed away from the entrance (knocked back, a late teleport)
             return Intent::GoToDoor;
@@ -584,7 +622,16 @@ impl Machine {
         if self.ready_ms == 0 {
             // (once the party was complete the others walking in one by one do not undo it)
             if !f.muster_ready {
-                if waited <= muster_patience_ms(self.muster_far) {
+                if f.muster_dead > 0 && self.death_wait_ms == 0 {
+                    self.death_wait_ms = now.max(1);
+                }
+                let over = if self.death_wait_ms != 0 {
+                    // a member died on the way: wait a bounded time for it, not the whole walk
+                    now.saturating_sub(self.death_wait_ms) > MUSTER_DEAD_MS
+                } else {
+                    waited > muster_patience_ms(self.muster_far)
+                };
+                if !over {
                     return Intent::Stand;
                 }
                 // the others did not come in time: go with those who did, if any
@@ -705,6 +752,7 @@ impl Machine {
             || f.party_leaving
             || f.leader_gone
             || f.deaths >= MAX_DEATHS
+            || f.wipes >= WIPE_LIMIT
             || self.lost(f)
             || now.saturating_sub(self.entered_ms) > RUN_LIMIT_MS;
         if over {
@@ -793,19 +841,18 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn only_the_phases_inside_the_dungeon_survive_a_death() {
-        for p in [Phase::Load, Phase::Clear, Phase::Leave] {
-            assert!(p.survives_death(), "{p:?}");
-        }
+    fn the_run_survives_a_death_inside_or_on_the_way_to_the_dungeon() {
         for p in [
-            Phase::Gather,
-            Phase::Prep,
-            Phase::Team,
             Phase::Travel,
             Phase::Muster,
             Phase::Enter,
-            Phase::Out,
+            Phase::Load,
+            Phase::Clear,
+            Phase::Leave,
         ] {
+            assert!(p.survives_death(), "{p:?}");
+        }
+        for p in [Phase::Gather, Phase::Prep, Phase::Team, Phase::Out] {
             assert!(!p.survives_death(), "{p:?}");
         }
     }
@@ -1095,6 +1142,63 @@ mod tests {
         assert_eq!(m.step(&f(100 + TRAVEL_MS + 60_000, 900.0)), Intent::Wait);
         // the budget is the one of the start distance, not of the distance now
         assert_eq!(m.step(&f(100 + ms + 1, 300.0)), Intent::Fail(Fail::Timeout));
+    }
+
+    #[test]
+    fn a_death_on_the_way_does_not_use_up_the_trip_or_the_muster_wait() {
+        let mut m = at_travel();
+        let team = in_team(3, 0);
+        let dead = Facts {
+            team,
+            dead: true,
+            door_dist: 500.0,
+            ..facts(100 + TRAVEL_MS + 1)
+        };
+        assert_eq!(m.step(&dead), Intent::Stand);
+        assert_eq!(m.phase(), Phase::Travel);
+        // resurrected: the walk (and its budget) starts again from here
+        let alive = Facts {
+            dead: false,
+            trip: Trip::Moving,
+            ..dead
+        };
+        assert_eq!(m.step(&alive), Intent::Wait);
+        assert_eq!(
+            m.step(&Facts {
+                now_ms: alive.now_ms + TRAVEL_MS + 1,
+                ..alive
+            }),
+            Intent::Fail(Fail::Timeout)
+        );
+    }
+
+    #[test]
+    fn a_party_waits_a_bounded_time_for_a_member_that_died_on_the_way() {
+        let mut m = at_muster(0);
+        let team = in_team(3, 0);
+        let waiting = |now, dead| Facts {
+            team,
+            at_door: true,
+            muster_ready: false,
+            muster_near: 2,
+            muster_far: 3_000.0,
+            muster_dead: dead,
+            rank: 0,
+            ..facts(now)
+        };
+        assert_eq!(m.step(&waiting(1_000, 0)), Intent::Stand);
+        assert_eq!(m.step(&waiting(1_500, 1)), Intent::Stand);
+        // the walk of the farthest would allow much longer; the death caps it
+        assert_eq!(
+            m.step(&waiting(1_500 + MUSTER_DEAD_MS - 1, 1)),
+            Intent::Stand
+        );
+        assert_eq!(
+            m.step(&waiting(1_500 + MUSTER_DEAD_MS + 1, 1)),
+            Intent::Wait,
+            "the party goes in without the dead member"
+        );
+        assert_eq!(m.phase(), Phase::Enter);
     }
 
     #[test]
@@ -1514,6 +1618,20 @@ mod tests {
         m.step(&Facts {
             leader_gone: true,
             ..inside(6_000)
+        });
+        assert_eq!(m.phase(), Phase::Leave);
+        // the party was wiped twice: leave through the exit
+        let mut m = at_clear();
+        assert_eq!(
+            m.step(&Facts {
+                wipes: WIPE_LIMIT - 1,
+                ..inside(10_000)
+            }),
+            Intent::Clear
+        );
+        m.step(&Facts {
+            wipes: WIPE_LIMIT,
+            ..inside(11_000)
         });
         assert_eq!(m.phase(), Phase::Leave);
     }

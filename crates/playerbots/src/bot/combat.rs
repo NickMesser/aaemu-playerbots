@@ -30,9 +30,11 @@ use super::goals::duel::{Answer, DuelPhase, DuelWatch};
 use super::motion::{MotionStatus, Pace};
 use super::pvp;
 use super::rotation::{
-    self, CastKind, Decision, Inputs, LearnCtx, Learner, RotState, Rotation, SkillBook, TargetView,
+    self, CastKind, Decision, Inputs, LearnCtx, Learner, PartyView, RotState, Rotation, SkillBook,
+    TargetView,
 };
-use super::state::{dist2d, Unit, UnitKind, U_MY_SUMMON};
+use super::state::{dist2d, BotState, Unit, UnitKind, U_MY_SUMMON};
+use super::survival::{self, PullBlock, PullFacts};
 use super::watch::classify::{self, Refusal};
 use super::watch::Finding;
 
@@ -90,6 +92,10 @@ const OBSTACLE_GIVE_UP: u8 = 4;
 const OBSTACLE_HOLD_MS: u64 = 1_500;
 /// The rift's Overpowering Aura allows only skill 24082, which the combat rotation never uses.
 const OVERPOWERING_AURA: u32 = 2104;
+
+pub(super) fn normal_skills_blocked(state: &BotState) -> bool {
+    state.buffs.iter().any(|&(_, id)| id == OVERPOWERING_AURA)
+}
 /// Angle (degrees around the target) of the first position tried after a blocked cast, and what
 /// each further blocked cast adds.
 const SIDESTEP_DEG: (f32, f32) = (50.0, 25.0);
@@ -130,6 +136,14 @@ const KITE_MS: u64 = 2_500;
 const KITE_GAP_MS: u64 = 7_000;
 /// Hit points (percent) below which an unexpected duel challenge is declined.
 const DUEL_MIN_HP_PCT: u8 = 50;
+/// A monster fight the bot runs from lasts at most this long.
+const MONSTER_FLEE_MS: u64 = 12_000;
+/// ... and ends once the monster is this far behind.
+const MONSTER_FLEE_SAFE_M: f32 = 35.0;
+/// After running from a monster it is left alone this long.
+const FLEE_SHUN_MS: u64 = 8_000;
+/// A blocked pull is not tried again this soon.
+pub const PULL_RETRY_MS: u64 = 5_000;
 
 /// What one combat step came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -532,6 +546,14 @@ pub struct Combat {
     immune_refused: u32,
     /// The bot is running from a fight with a character (see [`pvp::fight::start_flee`]).
     fleeing: bool,
+    /// The monster the bot runs from (0 = the run is from a character).
+    flee_from: u32,
+    /// Until when the run from that monster lasts.
+    flee_until_ms: u64,
+    /// The bot's hit points when the fight began.
+    start_hp_pct: u8,
+    /// The bot's mana when the fight began.
+    start_mp_pct: u8,
 }
 
 impl Default for Combat {
@@ -579,6 +601,10 @@ impl Combat {
             obstructed: 0,
             immune_refused: 0,
             fleeing: false,
+            flee_from: 0,
+            flee_until_ms: 0,
+            start_hp_pct: 0,
+            start_mp_pct: 0,
         }
     }
 
@@ -677,9 +703,16 @@ impl Combat {
         self.fleeing = on;
     }
 
-    /// Whether the bot is running from a fight with a character.
+    /// Whether the bot is running from a fight.
     pub fn fleeing(&self) -> bool {
         self.fleeing
+    }
+
+    /// The hit points and mana (percent) the current fight started with, once the controller has
+    /// seen the target.
+    pub fn fight_start(&self) -> Option<(u8, u8)> {
+        self.engaged_at_ms
+            .map(|_| (self.start_hp_pct, self.start_mp_pct))
     }
 
     /// The result of the last [`Combat::tick`].
@@ -967,7 +1000,11 @@ impl Combat {
         let carrying = crate::bot::goals::trade_run::carried_pack_of(ctx).is_some();
         let travelling = ctx.combat.travelling(now) || carrying;
         if ctx.combat.fleeing {
-            // running from a character: no new fight until the run is over
+            // running from a monster or a character: no new fight until the run is over
+            if ctx.combat.flee_from != 0 {
+                Self::monster_flee_step(ctx);
+                return CombatStatus::Idle;
+            }
             if pvp::fight::flee_step(ctx) {
                 return CombatStatus::Idle;
             }
@@ -1009,7 +1046,16 @@ impl Combat {
             Self::loot_step(ctx);
             return CombatStatus::Idle;
         };
-        let engaged_at = *ctx.combat.engaged_at_ms.get_or_insert(now);
+        let engaged_at = match ctx.combat.engaged_at_ms {
+            Some(t) => t,
+            None => {
+                // what the bot had when the fight began, for the death line
+                ctx.combat.engaged_at_ms = Some(now);
+                ctx.combat.start_hp_pct = ctx.state.me.hp_pct();
+                ctx.combat.start_mp_pct = ctx.state.me.mp_pct();
+                now
+            }
+        };
 
         let Some((upos, dead, is_char, target_hp)) = ctx
             .state
@@ -1036,6 +1082,19 @@ impl Combat {
         let dist = dist2d(me, upos);
         // a fight with a character outside a duel is a pvp fight (`bot/pvp`): it has limits
         let pvp_fight = is_char && !ctx.combat.duel.in_duel();
+        // a monster fight that is going badly is left instead of fought to the death
+        let attackers = u8::try_from(ctx.state.threats.len())
+            .unwrap_or(u8::MAX)
+            .max(1);
+        if !is_char
+            && ctx.combat.duel_opponent == 0
+            && survival::should_flee(&ctx.cfg.survival, ctx.state.me.hp_pct(), attackers)
+        {
+            if Self::start_monster_flee(ctx, obj, upos) {
+                return CombatStatus::Idle;
+            }
+            return Self::lose(ctx, LostReason::Retreat);
+        }
         let (lost_at, timeout) = if pvp_fight {
             (pvp::fight::LOST_DISTANCE, pvp::fight::FIGHT_TIMEOUT_MS)
         } else if is_char {
@@ -1105,13 +1164,7 @@ impl Combat {
         }
         // The aura is refreshed while its source affects us. Resume when the server removes it
         // instead of cycling through the rotation and basic attack while they are blocked.
-        if now < ctx.combat.watch.hold_until_ms
-            || ctx
-                .state
-                .buffs
-                .iter()
-                .any(|&(_, id)| id == OVERPOWERING_AURA)
-        {
+        if now < ctx.combat.watch.hold_until_ms || normal_skills_blocked(ctx.state) {
             if ctx.motion.is_moving() {
                 ctx.motion.face(upos[0], upos[1]);
             }
@@ -1264,6 +1317,58 @@ impl Combat {
         }
     }
 
+    /// Starts running from monster `obj` at `upos`: a recall point of the bot's own side within
+    /// reach, else straight away from it. Returns whether there is somewhere to run to.
+    fn start_monster_flee(ctx: &mut Ctx<'_>, obj: u32, upos: [f32; 3]) -> bool {
+        let name = monster_name(ctx, obj);
+        let Some(dest) = pvp::fight::flee_destination(ctx, upos) else {
+            return false;
+        };
+        let now = ctx.now_ms;
+        let hp = ctx.state.me.hp_pct();
+        let c = &mut *ctx.combat;
+        c.flee_from = obj;
+        c.flee_until_ms = now + MONSTER_FLEE_MS;
+        c.set_fleeing(true);
+        c.last_goto = None;
+        ctx.motion.chase_to(dest[0], dest[1], 4.0, Pace::Run, now);
+        ctx.log
+            .say(format!("survival: {hp}% hit points, running from {name}"));
+        true
+    }
+
+    /// One tick of a run from a monster; true while it lasts. The target is left alone for a
+    /// moment afterwards, so the controller does not turn round and fight it again at once.
+    fn monster_flee_step(ctx: &mut Ctx<'_>) -> bool {
+        let now = ctx.now_ms;
+        let from = ctx.combat.flee_from;
+        let me = ctx.state.me.pos;
+        let threat = ctx
+            .state
+            .units
+            .get(&from)
+            .filter(|u| u.kind == UnitKind::Npc && !u.dead())
+            .map(|u| u.dist2d(me));
+        let safe = threat.is_none_or(|d| d > MONSTER_FLEE_SAFE_M);
+        let over = now >= ctx.combat.flee_until_ms || safe || ctx.state.me.dead;
+        if !over && ctx.motion.is_moving() {
+            return true;
+        }
+        ctx.combat.flee_from = 0;
+        ctx.combat.set_fleeing(false);
+        ctx.combat.disengage();
+        if ctx.motion.is_moving() {
+            ctx.motion.stop();
+        }
+        if ctx.state.me.dead {
+            return false;
+        }
+        ctx.state.avoid_mut().ignore_obj(from, now + FLEE_SHUN_MS);
+        ctx.log
+            .debug(format!("survival: the run from unit {from} is over"));
+        false
+    }
+
     /// Leaves `obj` alone after the controller gave it up. A goal that picked the fight does the
     /// same on its own terms (and for the whole kind); this covers what nobody picked: a defence
     /// would take up the same unit again as soon as it targets the bot, and a unit the server
@@ -1349,6 +1454,52 @@ impl Combat {
                 enemies.push(dist);
             }
         }
+        let me_state = &ctx.state.me;
+        // The party members the rotation may heal: the bot itself and the members the team
+        // packets placed in the same world (their hit points come from those packets).
+        let mut party: SmallVec<[PartyView; 6]> = SmallVec::new();
+        party.push(PartyView {
+            obj: me_state.obj,
+            pos: me,
+            dist: 0.0,
+            hp_pct: me_state.hp_pct(),
+            dead: me_state.dead,
+        });
+        if let Some(team) = ctx.state.team().filter(|t| t.in_team()) {
+            let instance = ctx.state.place.instance_id();
+            for r in &team.remote {
+                if r.char_id == me_state.char_id || !r.online || r.obj_id == 0 {
+                    continue;
+                }
+                if r.instance_id != instance {
+                    continue;
+                }
+                let (Some(remote_pct), true) = (r.hp_pct(), r.located()) else {
+                    continue;
+                };
+                let unit = ctx.state.units.get(&r.obj_id);
+                let pos = unit.map_or(r.pos, |u| u.pos);
+                if !pos[0].is_finite() || !pos[1].is_finite() {
+                    continue;
+                }
+                // (the unit packets of a member in view are fresher than the party snapshot)
+                let (hp_pct, dead) = match unit {
+                    Some(u) if u.dead() => (0, true),
+                    Some(u) if u.hp > 0 && r.hp_max > 0 => (
+                        (i64::from(u.hp) * 100 / i64::from(r.hp_max)).clamp(0, 100) as u8,
+                        false,
+                    ),
+                    _ => (remote_pct, r.hp <= 0),
+                };
+                party.push(PartyView {
+                    obj: r.obj_id,
+                    pos,
+                    dist: dist2d(me, pos),
+                    hp_pct,
+                    dead,
+                });
+            }
+        }
         let c = &mut *ctx.combat;
         let casting = c
             .target_cast
@@ -1359,7 +1510,6 @@ impl Combat {
                     .map_or(1500, |f| u64::from(f.cast_ms).max(500));
                 now.saturating_sub(at) < cast_ms
             });
-        let me_state = &ctx.state.me;
         let inp = Inputs {
             now_ms: now,
             book: world,
@@ -1380,6 +1530,7 @@ impl Combat {
                 character: is_char,
                 casting,
             }),
+            party: &party,
             enemies: &enemies,
             gcd_until_ms: c.gcd_until_ms,
             casting_until_ms: c.casting_until_ms,
@@ -1391,6 +1542,7 @@ impl Combat {
     fn send_rotation_cast(ctx: &mut Ctx<'_>, skill: u32, kind: CastKind) {
         let now = ctx.now_ms;
         let me_obj = ctx.state.me.obj;
+        let enemy = ctx.combat.target;
         let (cooldown, cast_time) = ctx.world.skill(skill).map_or((0, 0), |s| {
             (u64::from(s.cooldown_time), u64::from(s.casting_time))
         });
@@ -1404,13 +1556,29 @@ impl Combat {
             ctx.state
                 .set_cooldown(skill, now + cast_time + cooldown + COOLDOWN_SLACK_MS);
         }
-        ctx.out.push(match kind {
-            CastKind::SelfCast => cs::start_skill_unit(skill, me_obj, me_obj),
-            CastKind::Unit(t) => cs::start_skill_unit(skill, me_obj, t),
-            CastKind::Position(p) => {
-                cs::start_skill_position(skill, me_obj, (p[0], p[1], p[2]), ctx.state.me.yaw)
+        match kind {
+            CastKind::SelfCast => ctx.out.push(cs::start_skill_unit(skill, me_obj, me_obj)),
+            CastKind::Unit(t) => ctx.out.push(cs::start_skill_unit(skill, me_obj, t)),
+            CastKind::Ally(t) => {
+                // The server takes the cast on the ally we target for it; the bot's own target
+                // goes back to the enemy at once so the fight (and the next damage skill) keeps
+                // it.
+                ctx.out.push(cs::change_target(t));
+                ctx.out.push(cs::start_skill_unit(skill, me_obj, t));
+                if let Some(enemy) = enemy {
+                    ctx.out.push(cs::change_target(enemy));
+                    ctx.combat.announced = true;
+                }
             }
-        });
+            CastKind::Position(p) => {
+                ctx.out.push(cs::start_skill_position(
+                    skill,
+                    me_obj,
+                    (p[0], p[1], p[2]),
+                    ctx.state.me.yaw,
+                ));
+            }
+        }
         ctx.log.debug(format!(
             "cast {skill} ({}) {kind:?}",
             ctx.world.skill(skill).map_or("?", |s| &*s.name)
@@ -1606,6 +1774,91 @@ fn char_name(ctx: &Ctx<'_>, char_id: u32) -> String {
         .find(|u| u.kind == UnitKind::Character && u.id == char_id)
         .and_then(|u| u.name.as_deref())
         .map_or_else(|| format!("character {char_id}"), str::to_owned)
+}
+
+/// The name of a monster: the template's when the unit is gone.
+fn monster_name(ctx: &Ctx<'_>, obj: u32) -> String {
+    let Some(u) = ctx.state.units.get(&obj) else {
+        return format!("unit {obj}");
+    };
+    ctx.world
+        .npc(u.id)
+        .map_or_else(|| format!("unit {obj}"), |t| t.name.to_string())
+}
+
+/// Whether the bot must not start a fight with monster `obj` (`[survival]`), and why. Counts the
+/// monsters around the target that would aggro with it (aggressive, linked by `npc_aggro_links`
+/// or already on the bot), the target included; passive bystanders do not count. A character
+/// target is never gated here (PvP has its own rules).
+pub fn pull_blocked(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlock> {
+    pull_blocked_with(ctx, obj, false)
+}
+
+/// Like [`pull_blocked`] for a quest objective: a bot in a party is weighed with the party
+/// members in range (their highest level, one more pack per member, bosses from
+/// `[survival] party_boss_min` on) instead of alone.
+pub fn pull_blocked_quest(ctx: &Ctx<'_>, obj: u32) -> Option<PullBlock> {
+    pull_blocked_with(ctx, obj, true)
+}
+
+fn pull_blocked_with(ctx: &Ctx<'_>, obj: u32, party: bool) -> Option<PullBlock> {
+    let cfg = &ctx.cfg.survival;
+    if !cfg.enabled {
+        return None;
+    }
+    let me = &ctx.state.me;
+    let u = ctx.state.units.get(&obj)?;
+    let template = attackable(ctx.world, me.faction, u)?;
+    let target_level = if u.level != 0 {
+        u.level
+    } else {
+        template.level
+    };
+    let (party_members, level) = if party {
+        let (members, party_level) = ctx.state.team().map_or((1, 0), |t| {
+            t.strength_near(
+                me.char_id,
+                me.pos,
+                me.zone_id,
+                ctx.state.place.instance_id(),
+                cfg.party_range_m,
+            )
+        });
+        (members.max(1), party_level.max(me.level))
+    } else {
+        (1, me.level)
+    };
+    // the target, plus every monster near it that the pull would bring along
+    let mut hostiles = 1u8;
+    let radius = cfg.pack_radius_m.max(0.0);
+    for (&other_obj, other) in &ctx.state.units {
+        if other_obj == obj || other.dist2d(u.pos) > radius {
+            continue;
+        }
+        let Some(other_template) = attackable(ctx.world, me.faction, other) else {
+            continue;
+        };
+        let targets_bot = ctx.state.threats.iter().any(|(o, _)| *o == other_obj);
+        if survival::joins_pull(
+            other_template.aggressive,
+            ctx.world.aggro_linked(template.id, other.id),
+            targets_bot,
+        ) {
+            hostiles = hostiles.saturating_add(1);
+        }
+    }
+    survival::pull_block(
+        cfg,
+        &PullFacts {
+            hp_pct: me.hp_pct(),
+            mp_pct: me.mp_pct(),
+            level,
+            target_level,
+            target_grade: template.grade,
+            hostiles,
+            party_members,
+        },
+    )
 }
 
 /// The name of the unit with object id `obj` if it is a character in view.

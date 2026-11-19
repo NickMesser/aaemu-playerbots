@@ -24,7 +24,7 @@ use aa_world::World;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use super::state::{BotState, Unit, UnitKind};
+use super::state::{dist2d, BotState, Unit, UnitKind};
 
 mod remote;
 
@@ -34,9 +34,16 @@ pub use remote::{LootRule, Remote};
 pub const MAX_PARTY: usize = 5;
 /// The smallest party that runs a dungeon.
 pub const MIN_PARTY: usize = 2;
+/// The smallest party the planner fills before it waits for the rest of a five-player dungeon: a
+/// tank, a healer and two damage dealers. A party of fewer bots is formed only after the long
+/// relax wait, never 120 s into the rally (the live run's two-bot parties).
+pub const RALLY_MIN: usize = 4;
+/// Seconds the bots of a rally wait for one more asker before a [`RALLY_MIN`] party starts.
+pub const RALLY_WINDOW_SECS: u64 = 90;
 /// Default seconds a wish waits for a full party before a smaller one is formed
-/// (`[dungeons] relax_after_secs`).
-pub const RELAX_AFTER_SECS: u64 = 120;
+/// (`[dungeons] relax_after_secs`). Long on purpose: the live runs formed two-bot parties after
+/// 120 s, before the third and fourth asker had picked the goal.
+pub const RELAX_AFTER_SECS: u64 = 600;
 /// Bots of one party start at most this far from each other (metres) ...
 pub const PARTY_NEAR_M: f32 = 800.0;
 /// ... plus this much for every second the longest-waiting member has waited.
@@ -91,6 +98,9 @@ pub struct PartyOrder {
     pub leader: u32,
     /// Bot ids of every member, the leader included.
     pub members: SmallVec<[u32; MAX_PARTY]>,
+    /// The role of each member, aligned with `members` (empty for a party formed for something
+    /// other than a dungeon).
+    pub roles: SmallVec<[PartyRole; MAX_PARTY]>,
     /// What the party is for.
     pub purpose: PartyPurpose,
 }
@@ -104,6 +114,15 @@ impl PartyOrder {
     /// Whether bot `bot` is a member.
     pub fn has_member(&self, bot: u32) -> bool {
         self.members.contains(&bot)
+    }
+
+    /// The role of bot `bot` (`Dps` when the order names none).
+    pub fn role_of(&self, bot: u32) -> PartyRole {
+        self.members
+            .iter()
+            .position(|&m| m == bot)
+            .and_then(|i| self.roles.get(i).copied())
+            .unwrap_or(PartyRole::Dps)
     }
 
     /// The zone group of the dungeon the party is for.
@@ -208,6 +227,39 @@ impl TeamLog {
     /// Number of members (the bot included).
     pub fn size(&self) -> usize {
         self.members.len()
+    }
+
+    /// The party's strength for a pull: the members in range of the bot (the bot included) and
+    /// the highest level among them. A member counts when it is online, its position was told,
+    /// it is in the same zone and instance and within `range` metres. A bot in no team, or with
+    /// nobody else in range, is a party of one.
+    pub fn strength_near(
+        &self,
+        me_char: u32,
+        me_pos: [f32; 3],
+        me_zone: u32,
+        me_instance: u32,
+        range: f32,
+    ) -> (u8, u8) {
+        if !self.in_team() {
+            return (1, 0);
+        }
+        let mut members = 1u8;
+        let mut level = 0u8;
+        for r in &self.remote {
+            if r.char_id == me_char || !r.online || !r.located() {
+                continue;
+            }
+            if r.zone_id != me_zone || r.instance_id != me_instance {
+                continue;
+            }
+            if dist2d(r.pos, me_pos) > range {
+                continue;
+            }
+            members = members.saturating_add(1);
+            level = level.max(r.level);
+        }
+        (members, level)
     }
 
     /// Applies one activity event. Returns whether anything about the team changed.
@@ -579,6 +631,40 @@ pub fn sites(world: &World) -> Vec<Site> {
         .collect()
 }
 
+/// What a bot does in a party (derived from its class build, see [`PartyRole::of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord)]
+pub enum PartyRole {
+    /// Pulls and holds the monsters' attention.
+    Tank,
+    /// Heals the others and stays back.
+    Healer,
+    /// Anything else.
+    #[default]
+    Dps,
+}
+
+impl PartyRole {
+    /// The role of a class build: a healer build heals, a tank build (or a shield-and-plate build)
+    /// tanks, everything else deals damage.
+    pub fn of(a: &crate::archetype::Archetype) -> PartyRole {
+        use crate::archetype::Role;
+        match a.role {
+            Role::Healer => PartyRole::Healer,
+            Role::Tank => PartyRole::Tank,
+            _ if a.uses_shield && a.armor_type == 3 => PartyRole::Tank,
+            _ => PartyRole::Dps,
+        }
+    }
+
+    /// Tanks lead a party (they pull); without a tank the highest level does.
+    pub fn lead_rank(self) -> u8 {
+        match self {
+            PartyRole::Tank => 0,
+            PartyRole::Healer | PartyRole::Dps => 1,
+        }
+    }
+}
+
 /// A bot that wants a dungeon.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Wish {
@@ -590,14 +676,14 @@ pub struct Wish {
     pub level: u8,
     /// Its alliance (the server refuses invitations between hostile factions).
     pub alliance: u32,
+    /// What it does in a party.
+    pub role: PartyRole,
     /// Dungeons it cannot enter now, a bit per [`Site::idx`].
     pub skip: u32,
     /// The bot may raise its level to a dungeon's minimum (GM).
     pub raise: bool,
     /// The bot can travel far at once (GM `/move`).
     pub jump: bool,
-    /// Party role requested by the bot, or zero when unknown.
-    pub role: u8,
 }
 
 impl Wish {
@@ -629,14 +715,16 @@ fn dist((ax, ay): (f32, f32), (bx, by): (f32, f32)) -> f32 {
 /// Chooses one party out of `wishes` (each with the seconds it has waited), or `None`.
 ///
 /// Every wish in turn, longest-waiting first, is a seed; for each dungeon its bot can run, the
-/// planner takes nearby bots of the same alliance that can run it too, favoring compatible levels
-/// and a tank and healer when available, up to the
-/// dungeon's player limit ([`Site::max_party`], never more than [`MAX_PARTY`]) and within a
-/// distance that grows with the waiting time. A full party is formed at once, a smaller one
-/// ([`MIN_PARTY`]) only after the seed waited `relax_after_secs`. Among the dungeons the cheapest
-/// wins (walking distance to the entrance plus a level-mismatch penalty); the leader is the member
-/// with the highest level. Without GM travel a dungeon farther than [`WALK_NEAR_M`] (growing with
-/// the waiting time) is out of reach.
+/// planner takes other bots of the same alliance that can run it too, up to the dungeon's player
+/// limit ([`Site::max_party`], never more than [`MAX_PARTY`]) and within a distance that grows
+/// with the waiting time. It fills tank and healer roles first and favors compatible levels and
+/// familiar members. A full party is formed at once. A party of [`RALLY_MIN`] or more starts
+/// after [`RALLY_WINDOW_SECS`] of rallying for one more. A smaller one ([`MIN_PARTY`]) waits
+/// until the seed has waited `relax_after_secs`. Among the dungeons the cheapest
+/// wins (walking distance to the entrance plus a level-mismatch penalty); the leader is a tank
+/// when there is one, else the member with the highest level (the stable sort keeps the seed
+/// first on a tie). Without GM travel a dungeon farther than [`WALK_NEAR_M`] (growing with the
+/// waiting time) is out of reach.
 pub fn plan(wishes: &[(Wish, u64)], sites: &[Site], relax_after_secs: u64) -> Option<Formation> {
     plan_with(wishes, sites, relax_after_secs, |_, _| 0)
 }
@@ -648,8 +736,6 @@ pub fn plan_with(
     relax_after_secs: u64,
     trust: impl Fn(usize, usize) -> i8,
 ) -> Option<Formation> {
-    use aa_proto::cs::team_role::{HEALER, TANK};
-
     let mut seeds: SmallVec<[usize; 16]> = (0..wishes.len()).collect();
     seeds.sort_by_key(|&i| std::cmp::Reverse(wishes[i].1));
     for seed in seeds {
@@ -675,26 +761,37 @@ pub fn plan_with(
                 .collect();
             let mut members: SmallVec<[usize; MAX_PARTY]> = smallvec::smallvec![seed];
             while members.len() < want {
+                let role_priority = |index: usize| {
+                    let role = wishes[index].0.role;
+                    if members.iter().any(|&m| wishes[m].0.role == role) {
+                        return 2;
+                    }
+                    match role {
+                        PartyRole::Tank => 0,
+                        PartyRole::Healer => 1,
+                        PartyRole::Dps => 2,
+                    }
+                };
                 let next = mates
                     .iter()
                     .enumerate()
                     .filter(|(_, (_, mate))| members.iter().all(|&m| trust(m, *mate) > -40))
                     .min_by(|(_, a), (_, b)| {
-                        let cost = |&(distance, index): &(f32, usize)| {
-                            let role = wishes[index].0.role;
-                            let missing = matches!(role, TANK | HEALER)
-                                && !members.iter().any(|&m| wishes[m].0.role == role);
-                            distance - if missing { 200.0 } else { 0.0 }
-                        };
-                        cost(a).total_cmp(&cost(b)).then_with(|| a.1.cmp(&b.1))
+                        role_priority(a.1)
+                            .cmp(&role_priority(b.1))
+                            .then_with(|| a.0.total_cmp(&b.0))
+                            .then_with(|| a.1.cmp(&b.1))
                     })
                     .map(|(i, _)| i);
                 let Some(next) = next else { break };
                 members.push(mates.swap_remove(next).1);
             }
             let size = members.len();
-            let enough = size >= want || (size >= MIN_PARTY && waited >= relax_after_secs);
-            if !enough {
+            let youngest = members.iter().map(|&j| wishes[j].1).min().unwrap_or(waited);
+            let full = size >= want;
+            let rallied = size >= RALLY_MIN.min(want) && youngest >= RALLY_WINDOW_SECS;
+            let relaxed = size >= MIN_PARTY && waited >= relax_after_secs;
+            if !(full || rallied || relaxed) {
                 continue;
             }
             // far dungeons need GM travel from everyone
@@ -714,8 +811,13 @@ pub fn plan_with(
             }
             let cost = entrance_m + LEVEL_WEIGHT_M * mismatch;
             if best.as_ref().is_none_or(|b| cost < b.0) {
-                // the leader: the highest level (the stable sort keeps the seed first on a tie)
-                members.sort_by_key(|&m| std::cmp::Reverse(wishes[m].0.level));
+                // A tank leads when possible, with the highest level preferred.
+                members.sort_by_key(|&m| {
+                    (
+                        wishes[m].0.role.lead_rank(),
+                        std::cmp::Reverse(wishes[m].0.level),
+                    )
+                });
                 best = Some((
                     cost,
                     Formation {
@@ -853,12 +955,25 @@ mod tests {
             party_id: 7,
             leader: 3,
             members: SmallVec::from_slice(&[3, 4, 9]),
+            roles: Default::default(),
             purpose: PartyPurpose::Dungeon { zone_group: 12 },
         };
         assert!(o.is_leader(3) && !o.is_leader(4));
         assert!(o.has_member(9) && !o.has_member(5));
         assert_eq!(o.zone_group(), 12);
         assert!(!o.members.spilled());
+        // roles are aligned with the members; a party without them is all damage
+        assert_eq!(o.role_of(3), PartyRole::Dps);
+        let with_roles = PartyOrder {
+            roles: [PartyRole::Tank, PartyRole::Healer, PartyRole::Dps]
+                .into_iter()
+                .collect(),
+            ..o.clone()
+        };
+        assert_eq!(with_roles.role_of(3), PartyRole::Tank);
+        assert_eq!(with_roles.role_of(4), PartyRole::Healer);
+        assert_eq!(with_roles.role_of(9), PartyRole::Dps);
+        assert_eq!(with_roles.role_of(99), PartyRole::Dps, "not a member");
     }
 
     #[test]
@@ -1277,10 +1392,17 @@ mod tests {
             at,
             level,
             alliance: 148,
+            role: PartyRole::Dps,
             skip: 0,
             raise: false,
             jump: false,
-            role: 0,
+        }
+    }
+
+    fn wish_as(bot: u32, at: (f32, f32), level: u8, role: PartyRole) -> Wish {
+        Wish {
+            role,
+            ..wish(bot, at, level)
         }
     }
 
@@ -1290,6 +1412,75 @@ mod tests {
 
     fn bots(f: &Formation, wishes: &[(Wish, u64)]) -> Vec<u32> {
         f.members.iter().map(|&i| wishes[i].0.bot).collect()
+    }
+
+    #[test]
+    fn the_class_builds_give_the_party_roles() {
+        let a = crate::archetype::Archetypes::builtin().unwrap();
+        assert_eq!(
+            PartyRole::of(a.get("Abolisher").unwrap()),
+            PartyRole::Tank,
+            "the shield-and-plate build tanks"
+        );
+        assert_eq!(PartyRole::of(a.get("Templar").unwrap()), PartyRole::Healer);
+        assert_eq!(PartyRole::of(a.get("Cleric").unwrap()), PartyRole::Healer);
+        for name in ["Darkrunner", "Primeval", "Reaper", "Daggerspell"] {
+            assert_eq!(
+                PartyRole::of(a.get(name).unwrap()),
+                PartyRole::Dps,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rally_prefers_a_tank_and_a_healer_and_the_tank_leads() {
+        let sites = [site(0, 50, 18, 55, 4, (0.0, 0.0))];
+        let w = [
+            at_secs(wish(1, (0.0, 0.0), 30), 0),
+            at_secs(wish_as(2, (30.0, 0.0), 20, PartyRole::Tank), 0),
+            at_secs(wish_as(3, (40.0, 0.0), 19, PartyRole::Healer), 0),
+            at_secs(wish(4, (5.0, 0.0), 25), 0),
+            at_secs(wish(5, (6.0, 0.0), 24), 0),
+        ];
+        let f = plan(&w, &sites, RELAX_AFTER_SECS).expect("a party");
+        let chosen = bots(&f, &w);
+        assert_eq!(f.members.len(), 4, "the dungeon holds four");
+        assert!(chosen.contains(&2), "the tank goes: {chosen:?}");
+        assert!(chosen.contains(&3), "the healer goes: {chosen:?}");
+        assert!(
+            chosen.contains(&1) && chosen.contains(&4),
+            "the seed and the nearest damage dealer fill the rest: {chosen:?}"
+        );
+        assert_eq!(w[f.members[0]].0.bot, 2, "the tank leads, not the level 30");
+        // a party without a tank stays led by its highest level
+        let w = [
+            at_secs(wish(1, (0.0, 0.0), 20), 0),
+            at_secs(wish_as(2, (5.0, 0.0), 25, PartyRole::Healer), 0),
+            at_secs(wish(3, (6.0, 0.0), 30), 0),
+        ];
+        let f = plan(&w, &[site(0, 50, 18, 55, 3, (0.0, 0.0))], RELAX_AFTER_SECS).expect("a party");
+        assert_eq!(w[f.members[0]].0.bot, 3);
+    }
+
+    #[test]
+    fn four_bots_rally_for_a_fifth_before_they_start() {
+        let sites = [site(0, 50, 18, 55, 5, (0.0, 0.0))];
+        let w = [
+            at_secs(wish(1, (0.0, 0.0), 20), RALLY_WINDOW_SECS),
+            at_secs(wish(2, (1.0, 0.0), 21), RALLY_WINDOW_SECS + 10),
+            at_secs(wish(3, (2.0, 0.0), 22), RALLY_WINDOW_SECS + 20),
+            at_secs(wish(4, (3.0, 0.0), 23), RALLY_WINDOW_SECS - 1),
+        ];
+        assert!(
+            plan(&w, &sites, RELAX_AFTER_SECS).is_none(),
+            "the newest asker is still inside the rally window"
+        );
+        let mut patient = w;
+        patient[3].1 = RALLY_WINDOW_SECS;
+        let f = plan(&patient, &sites, RELAX_AFTER_SECS).expect("a party of four");
+        assert_eq!(f.members.len(), 4);
+        assert_eq!(patient[f.members[0]].0.level, 23);
     }
 
     #[test]
@@ -1322,21 +1513,21 @@ mod tests {
             at_secs(wish(3, (25.0, 0.0), 20), 0),
             at_secs(
                 Wish {
-                    role: aa_proto::cs::team_role::HEALER,
+                    role: PartyRole::Healer,
                     ..wish(4, (60.0, 0.0), 20)
                 },
                 0,
             ),
             at_secs(
                 Wish {
-                    role: aa_proto::cs::team_role::TANK,
+                    role: PartyRole::Tank,
                     ..wish(5, (70.0, 0.0), 20)
                 },
                 0,
             ),
             at_secs(
                 Wish {
-                    role: aa_proto::cs::team_role::TANK,
+                    role: PartyRole::Tank,
                     ..wish(6, (10.0, 0.0), 20)
                 },
                 0,
@@ -1514,5 +1705,50 @@ mod tests {
         let f = plan(&w, &sites, RELAX_AFTER_SECS).unwrap();
         let chosen = bots(&f, &w);
         assert!(chosen.iter().all(|b| (1..=3).contains(b)), "{chosen:?}");
+    }
+
+    #[test]
+    fn party_strength_counts_only_members_in_range_of_the_same_world() {
+        fn remote(id: u32, level: u8, at: [f32; 3], zone: u32, instance: u32, seen: u64) -> Remote {
+            Remote {
+                char_id: id,
+                name: format!("C{id}").into(),
+                role: 0,
+                online: true,
+                level,
+                obj_id: 0x100 + id,
+                zone_id: zone,
+                instance_id: instance,
+                hp: 100,
+                hp_max: 100,
+                mp: 100,
+                mp_max: 100,
+                pos: at,
+                seen_ms: seen,
+            }
+        }
+        let mut t = TeamLog {
+            team_id: 1,
+            owner: 1,
+            remote: smallvec::smallvec![
+                remote(1, 20, [0.0, 0.0, 0.0], 7, 0, 1),
+                remote(2, 22, [10.0, 0.0, 0.0], 7, 0, 1),
+                remote(3, 40, [PARTY_NEAR_M, 0.0, 0.0], 7, 0, 1),
+                remote(4, 30, [5.0, 0.0, 0.0], 8, 0, 1),
+                remote(5, 50, [5.0, 0.0, 0.0], 7, 9, 1),
+                remote(6, 60, [5.0, 0.0, 0.0], 7, 0, 0),
+            ],
+            ..Default::default()
+        };
+        // the bot (level 20) counts itself; #2 is near, #3 beyond 40 m, #4 another zone,
+        // #5 another instance, #6 was never located
+        let (members, level) = t.strength_near(1, [0.0; 3], 7, 0, 40.0);
+        assert_eq!((members, level), (2, 22));
+        // a member that walks into range raises the level used by the pull gate
+        t.remote[2].pos = [30.0, 0.0, 0.0];
+        assert_eq!(t.strength_near(1, [0.0; 3], 7, 0, 40.0), (3, 40));
+        // a bot in no team is a party of one
+        t.team_id = 0;
+        assert_eq!(t.strength_near(1, [0.0; 3], 7, 0, 40.0), (1, 0));
     }
 }

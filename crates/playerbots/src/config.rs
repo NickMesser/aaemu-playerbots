@@ -32,6 +32,9 @@ pub struct Config {
     pub behavior: BehaviorCfg,
     /// Instance dungeons: the party size aim and the server's entry limit.
     pub dungeons: DungeonsCfg,
+    /// Survival rules: when a bot may start a fight, when it runs and how it rests after a
+    /// resurrection.
+    pub survival: SurvivalCfg,
     /// Sailing: which boat the bots sail.
     pub sail: SailCfg,
     /// Mounts and gliders: summon a ride and glide down ledges.
@@ -304,6 +307,109 @@ impl Default for BehaviorCfg {
     }
 }
 
+/// The strongest NPC grade a bot pulls (`[survival] max_grade`), by `NpcGradeType`:
+/// 1 Normal, 2 Elite, 3 BossA, 4 BossB, 5 BossC, 6 Weak, 7 Strong, 8 BossS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GradeLimit {
+    /// Normal and weak monsters only.
+    Normal,
+    /// Also elites and strong monsters (the default; 1.2 quest elites are routine).
+    #[default]
+    Elite,
+    /// Everything, bosses included.
+    Boss,
+}
+
+/// `[survival]`: when a bot may pull, when it runs, and how it rests after a death.
+///
+/// The defaults come from the 2026-11-11 death journal (1,407 deaths in 9.6 h, about three per
+/// bot-hour): bots kept pulling at low hit points, pulled packs and bosses, walked into
+/// higher-level aggressive spawns while travelling, fought on below 40 % and went back to work
+/// right after a resurrection instead of resting first.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SurvivalCfg {
+    /// Master switch of the survival rules. Off: the old engagement, resting and travel
+    /// behaviour, with only the death line still logged.
+    pub enabled: bool,
+    /// A bot does not start a new fight below this many percent of its hit points.
+    pub pull_min_hp_pct: u8,
+    /// ... or below this many percent of its mana.
+    pub pull_min_mp_pct: u8,
+    /// A goal ends and the brain rests below this many percent of hit points.
+    pub rest_hp_pct: u8,
+    /// Monsters this many levels above the bot are not pulled (quest kills included). 1.2 quests
+    /// routinely send a player at monsters 2-3 levels above it.
+    pub max_level_gap: u8,
+    /// The strongest monster grade a bot pulls: `normal` (Normal, Weak), `elite` (also Elite and
+    /// Strong) or `boss` (everything). Bosses (BossA/B/C/S) are refused solo and allowed from
+    /// [`SurvivalCfg::party_boss_min`] members in range on.
+    pub max_grade: GradeLimit,
+    /// Most hostile monsters near a target (the target included) a bot pulls into; a party may
+    /// pull this many per member in range.
+    pub max_pack: u8,
+    /// Monsters within this many metres of a target count as its pack, when they would aggro
+    /// themselves (aggressive or linked by `npc_aggro_links`) or already target the bot. Passive
+    /// bystanders do not count.
+    pub pack_radius_m: f32,
+    /// How far a party member counts as part of the party's strength (metres).
+    pub party_range_m: f32,
+    /// A party of at least this many members in range may pull bosses (0 = never).
+    pub party_boss_min: u8,
+    /// A monster fight is given up and the bot runs below this many percent of hit points
+    /// (0 = never run from a monster).
+    pub flee_hp_pct: u8,
+    /// ... or with at least this many attackers (0 = the hit point line alone decides).
+    pub flee_adds: u8,
+    /// ... while below this many percent of hit points.
+    pub flee_adds_hp_pct: u8,
+    /// After a resurrection the bot rests until this many percent of hit points (at least).
+    pub post_rez_hp_pct: u8,
+    /// ... and for at most this long.
+    pub post_rez_rest_ms: u64,
+    /// A resting bot walks this far from a hostile within [`SurvivalCfg::rest_hostile_m`].
+    pub rest_safe_spot_m: f32,
+    /// ... that is this close.
+    pub rest_hostile_m: f32,
+    /// While resting, a heal the rotation has is cast below this many percent of hit points.
+    pub heal_hp_pct: u8,
+    /// While travelling, a monster this many levels above the bot makes the bot detour.
+    pub travel_danger_gap: u8,
+    /// The aggro radius kept clear of such monsters (metres).
+    pub travel_aggro_m: f32,
+    /// Nothing farther ahead than this is looked at (metres).
+    pub travel_lookahead_m: f32,
+}
+
+impl Default for SurvivalCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pull_min_hp_pct: 60,
+            pull_min_mp_pct: 20,
+            rest_hp_pct: 50,
+            max_level_gap: 3,
+            max_grade: GradeLimit::Elite,
+            max_pack: 2,
+            pack_radius_m: 8.0,
+            party_range_m: 40.0,
+            party_boss_min: 2,
+            flee_hp_pct: 40,
+            flee_adds: 3,
+            flee_adds_hp_pct: 60,
+            post_rez_hp_pct: 75,
+            post_rez_rest_ms: 120_000,
+            rest_safe_spot_m: 40.0,
+            rest_hostile_m: 20.0,
+            heal_hp_pct: 60,
+            travel_danger_gap: 4,
+            travel_aggro_m: 15.0,
+            travel_lookahead_m: 60.0,
+        }
+    }
+}
+
 /// `[dungeons]`: how dungeon parties are formed and whether the server's entry limit is counted.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -312,9 +418,10 @@ pub struct DungeonsCfg {
     /// skip a dungeon whose entries are used up. Off by default: the 1.2 server has no dungeon
     /// entry limit (`Dungeons.EntryLimit`). A refusal for the limit is answered either way.
     pub entry_limit: bool,
-    /// Seconds a bot waits for a full party (the dungeon's `max_players`, at most five) before it
-    /// goes with a smaller one. At most 140: the coordinator drops a wish after 150 s, so a longer
-    /// wait would never form the smaller party.
+    /// Seconds a wish waits for a full party (the dungeon's `max_players`, at most five) before
+    /// it goes with a smaller one. At most
+    /// [`MAX_RELAX_SECS`](crate::bot::coordinator::MAX_RELAX_SECS); the bot waits up to
+    /// [`GATHER_MS`](crate::bot::goals::dungeon::machine::GATHER_MS) for an order.
     pub relax_after_secs: u64,
 }
 
@@ -1498,9 +1605,10 @@ impl Config {
         ensure!(
             self.dungeons.relax_after_secs <= crate::bot::coordinator::MAX_RELAX_SECS,
             "dungeons.relax_after_secs {} is above {}: the coordinator drops a party wish after \
-             150 s, so a longer wait would never form the smaller party",
+             {} s, so a longer wait would never form the smaller party",
             self.dungeons.relax_after_secs,
-            crate::bot::coordinator::MAX_RELAX_SECS
+            crate::bot::coordinator::MAX_RELAX_SECS,
+            crate::bot::coordinator::WISH_TTL.as_secs()
         );
         ensure!(
             self.market.ad_interval_secs >= 60,
@@ -2152,14 +2260,14 @@ trade_with_players = true
         let d = Config::default().dungeons;
         assert!(!d.entry_limit, "the 1.2 server has no entry limit");
         assert_eq!(d.relax_after_secs, crate::bot::party::RELAX_AFTER_SECS);
-        assert_eq!(d.relax_after_secs, 120);
+        assert_eq!(d.relax_after_secs, 600);
         // the example file documents both keys with the defaults
         let ex = Config::parse(Config::example()).unwrap().dungeons;
         assert!(!ex.entry_limit);
-        assert_eq!(ex.relax_after_secs, 120);
+        assert_eq!(ex.relax_after_secs, 600);
         assert_documented(
             "dungeons",
-            &["entry_limit = false", "relax_after_secs = 120"],
+            &["entry_limit = false", "relax_after_secs = 600"],
         );
         // each key can be set on its own
         let cfg = Config::parse(
@@ -2171,10 +2279,11 @@ relax_after_secs = 45
         .unwrap();
         assert!(cfg.dungeons.entry_limit);
         assert_eq!(cfg.dungeons.relax_after_secs, 45);
-        // a wish is dropped after 150 s: the longest wait that can still form a party is 140 s
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 140\n").is_ok());
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 141\n").is_err());
-        assert!(Config::parse("[dungeons]\nrelax_after_secs = 150\n").is_err());
+        // the wish lifetime and the sweep period cap the wait below the gather window
+        let cap = crate::bot::coordinator::MAX_RELAX_SECS;
+        assert_eq!(cap, 600);
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {cap}\n")).is_ok());
+        assert!(Config::parse(&format!("[dungeons]\nrelax_after_secs = {}\n", cap + 1)).is_err());
         assert!(Config::parse("[dungeons]\nentry_limit = 1\n").is_err());
         assert!(Config::parse("[dungeons]\nentry_limits = true\n").is_err());
     }

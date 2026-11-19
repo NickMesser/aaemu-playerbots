@@ -15,8 +15,8 @@ pub mod learn;
 pub mod model;
 
 pub use eval::{
-    aim_of, decide, gate, reach_of, Aim, Cast, CastKind, Decision, Gate, Inputs, RotState,
-    SkillBook, SkillFacts, TargetView, GCD_MS, MELEE_REACH, RANGE_SLACK,
+    aim_of, decide, gate, reach_of, Aim, Cast, CastKind, Decision, Gate, Inputs, PartyView,
+    RotState, SkillBook, SkillFacts, TargetView, GCD_MS, MELEE_REACH, RANGE_SLACK,
 };
 pub use learn::{LearnCtx, Learner};
 pub use model::Rotation;
