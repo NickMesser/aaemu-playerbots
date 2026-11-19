@@ -262,8 +262,14 @@ fn choose(ctx: &Ctx<'_>, item: Option<u32>) -> Result<Job, &'static str> {
     let st: &BotState = ctx.state;
     let mem = st.gear.as_deref();
     let worn = gear::worn_of(st, mem, facts, &fit);
+    let reserved = super::work::customer::gear_reservation(ctx);
     let mut bag = Vec::new();
     for (&slot, it) in &st.bag {
+        if reserved.is_some_and(|(template, stock)| {
+            it.template == template && stock.is_none_or(|id| id == it.id)
+        }) {
+            continue;
+        }
         if facts.item(it.template).is_some() || facts.gem(it.template).is_some() {
             bag.push(eval::BagPiece {
                 slot,

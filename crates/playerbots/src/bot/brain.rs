@@ -464,12 +464,26 @@ impl Brain {
         }
         // Trade requests no goal asked for are answered here; the house marker follows `houses`.
         // (a pack carrier declines: the run is not interrupted for a trade)
-        if super::goals::trade::unsolicited(
-            ctx,
-            self.goal.as_ref().map(Goal::kind),
-            self.base[GoalKind::Trade.index()],
-            self.is_disabled(GoalKind::Trade) || pack_busy,
-        ) {
+        let running = self.goal.as_ref().map(Goal::kind);
+        let craft_sale = super::goals::work::customer::requested_sale(ctx);
+        if craft_sale
+            && !pack_busy
+            && !ctx.combat.busy()
+            && self.choice == GoalChoice::Auto
+            && matches!(running, None | Some(GoalKind::Rest | GoalKind::Wander))
+            && !self.is_disabled(GoalKind::Work)
+            && !self.cooldown_until.active(GoalKind::Work, now)
+            && self.guild_work_allowed(ctx, GoalKind::Work)
+        {
+            self.start_goal(ctx, GoalKind::Work, None);
+        } else if !matches!(&self.goal, Some(Goal::Work(work)) if work.handles_trade())
+            && super::goals::trade::unsolicited(
+                ctx,
+                running,
+                self.base[GoalKind::Trade.index()],
+                self.is_disabled(GoalKind::Trade) || pack_busy || craft_sale,
+            )
+        {
             self.start_goal(ctx, GoalKind::Trade, None);
         }
         super::goals::dungeon::unsolicited(ctx, self.goal.as_ref().map(Goal::kind));
@@ -883,6 +897,9 @@ impl Brain {
             context.push_str(&format!(
                 " Production order: {order}. Lifetime orders completed: {done}. Training crafts: {training}."
             ));
+        }
+        if let Some(order) = super::goals::work::customer::summary(ctx) {
+            context.push_str(&order);
         }
         if let Some(recipe) = profession::trade_pack_order(ctx).and_then(|id| ctx.world.craft(id)) {
             let pack = ctx

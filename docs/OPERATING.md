@@ -352,7 +352,10 @@ Crafter, Gatherer and Adventurer members can run `work` for a configured product
 `production_orders = { "44" = { kind = "craft", recipe = 123 } }` for a Crafter guild, or
 `{ "45" = { kind = "gather", doodad = 456, item = 789 } }` for a Gatherer guild.
 Crafting and gathering need compatible world templates, a nearby visible bench or node, and
-sufficient labor. Set `{ "46" = { kind = "hunt", item = 789, count = 4 } }` for an Adventurer
+sufficient labor. Gatherers can also walk to a nearby authored source and wait for the node to
+appear. Use `member_production_orders = { "44" = { "8" = { kind = "craft", recipe = 123 } } }`
+to assign a specific recipe to character ID 8 in guild 44. Members without an individual order
+follow their guild's order. Set `{ "46" = { kind = "hunt", item = 789, count = 4 } }` for an Adventurer
 guild. Members look for nearby hostile monsters that can drop the tradeable material and
 replenish stock until the server confirms the requested quantity in their bags.
 With trade ads enabled, Gatherer and Adventurer orders can also request missing material from
@@ -363,6 +366,14 @@ Crafting reads proficiency from the server. Set `training_recipe` alongside `rec
 lower-tier recipe in the same vocation until the main recipe's requirement is met. Crafter members
 with trade-chat shopping enabled seek missing materials for their current recipe using the normal
 market prices and trade confirmation.
+
+With `[guild] player_craft_orders = true` and `[market] enabled = true`, a nearby player can
+whisper a Crafter member `craft Stone Brick for 100c`. The item must be the tradeable output of
+the member's assigned recipe. The Crafter makes one batch using its own supplies and holds it
+for the buyer for up to one hour. The player sends a trade request when it's ready and pays the
+agreed amount in the trade window. They can withdraw the order with `craft cancel`. Each member
+handles one order at a time and saves it across restarts. Confirmed payments count toward the
+guild's market commission.
 
 The guildmaster skips the profession's autonomous goals and continues to manage recruitment and
 membership. Members recover personal time after each professional goal based on its actual elapsed

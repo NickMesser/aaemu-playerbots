@@ -38,6 +38,9 @@ impl QuestNeeds {
                 needs.add(item, count);
             }
         }
+        if let Some((item, count)) = work::customer::reserved(ctx) {
+            needs.add(item, count);
+        }
         needs
     }
 

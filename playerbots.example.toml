@@ -201,6 +201,8 @@ work_percent = 60
 # production_orders = { "44" = { kind = "craft", recipe = 123 } }
 # member_production_orders = { "44" = { "12" = { kind = "craft", recipe = 456, training_recipe = 789 } } }
 # The inner key is a server character ID. Other members keep the guild-wide production order.
+# Nearby players can whisper "craft Stone Brick for 100c" to order one batch of a Crafter's recipe.
+player_craft_orders = false
 auction_flips = false
 treasure_hunts = false
 # trade_pack_orders = { "43" = 6223 }  # a Trader guild's assigned pack recipe and ingredient order

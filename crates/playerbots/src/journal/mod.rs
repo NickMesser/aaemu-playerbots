@@ -85,6 +85,9 @@ pub struct Journal {
     pub production_completed: u32,
     /// Number of proficiency-training recipes with a confirmed result.
     pub production_training_completed: u32,
+    /// A customer's pending craft and the stock reserved for the exchange.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub craft_commission: Option<crate::bot::goals::work::customer::Commission>,
     /// Trade runs by pack item and destination buyer, most recent first.
     pub trade_routes: Vec<TradeRoute>,
     /// Sport fishing turn-ins confirmed by equipment removal and purse credit.

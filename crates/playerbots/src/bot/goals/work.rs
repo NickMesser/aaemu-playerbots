@@ -1,5 +1,6 @@
 //! Guild production orders, completed only when the server delivers the item.
 
+pub mod customer;
 mod treasure;
 
 use aa_proto::cs;
@@ -222,6 +223,13 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
+    if let Some(commission) = customer::active(ctx).filter(|c| c.ready()) {
+        return if customer::can_trade(ctx, &commission) {
+            1.0
+        } else {
+            0.0
+        };
+    }
     match available_order(ctx) {
         Some((Order::Hunt { item, count }, _)) if Hunt::start(ctx, item, count).is_some() => 1.0,
         Some((order, training)) if plan(ctx, order, training).is_some() => 1.0,
@@ -266,6 +274,7 @@ pub struct Work {
     job: Option<Job>,
     hunt: Option<Box<Hunt>>,
     treasure: Option<Box<treasure::Hunt>>,
+    sale: Option<Box<customer::Sale>>,
     walker: Walker,
     deadline: u64,
     expected: Option<i64>,
@@ -274,6 +283,10 @@ pub struct Work {
 
 impl Work {
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
+        if let Some(commission) = customer::active(ctx).filter(|c| c.ready()) {
+            self.sale = customer::Sale::start(ctx, commission).map(Box::new);
+            return;
+        }
         match available_order(ctx) {
             Some((Order::Hunt { item, count }, _)) => {
                 self.hunt = Hunt::start(ctx, item, count).map(Box::new);
@@ -295,7 +308,14 @@ impl Work {
         self.hunt.is_some()
     }
 
+    pub fn handles_trade(&self) -> bool {
+        self.sale.is_some()
+    }
+
     pub fn tick(&mut self, ctx: &mut Ctx<'_>, combat: CombatStatus) -> GoalStatus {
+        if let Some(sale) = &mut self.sale {
+            return sale.tick(ctx);
+        }
         if let Some(treasure) = &mut self.treasure {
             return treasure.tick(ctx, &mut self.walker);
         }
@@ -317,6 +337,9 @@ impl Work {
             .is_some_and(|expected| ctx.state.item_count(job.item) >= expected)
         {
             note_receipt(ctx, job.item, job.training);
+            if let (Order::Craft { recipe, .. }, false) = (job.order, job.training) {
+                customer::crafted(ctx, recipe);
+            }
             return GoalStatus::Done;
         }
         if ctx.now_ms >= self.deadline {
@@ -375,6 +398,9 @@ impl Work {
     }
 
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        if let Some(sale) = &mut self.sale {
+            sale.stop(ctx);
+        }
         if let Some(hunt) = &mut self.hunt {
             hunt.grind.stop(ctx);
         }
@@ -382,6 +408,10 @@ impl Work {
     }
 
     pub fn describe(&self, out: &mut String) {
+        if self.sale.is_some() {
+            out.push_str("work: delivering a customer's craft order");
+            return;
+        }
         if self.treasure.is_some() {
             out.push_str("work: opening a Pirate Treasure Chest");
             return;

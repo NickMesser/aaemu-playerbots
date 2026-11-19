@@ -101,7 +101,7 @@ const MINT_WAIT_MS: u64 = 7_000;
 /// How often the initiator re-aims at a partner that is not at the meeting point.
 const CHASE_MS: u64 = 3_000;
 /// A request older than the server's invitation (60 s) is dropped.
-const INVITE_TTL_MS: u64 = 60_000;
+pub(super) const INVITE_TTL_MS: u64 = 60_000;
 
 /// Item templates that turned out to be bound: the server cancelled a trade right after a put-up
 /// with `TRADE_SOUL_BOUND_ITEM`. Shared by all bots (the bind type belongs to the template).
