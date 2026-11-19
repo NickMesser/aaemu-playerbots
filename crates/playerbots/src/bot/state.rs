@@ -439,6 +439,8 @@ pub struct BotState {
     pub bag: FxHashMap<u16, Item>,
     /// Coordinates from the details of treasure maps in the bag, indexed by instance id.
     pub treasure_maps: FxHashMap<u64, [i64; 2]>,
+    /// Temporarily inaccessible or missing treasure map sites, using the bot clock.
+    pub treasure_sites_to_retry: FxHashMap<[i64; 2], u64>,
     /// Number of item receipts for doodad interactions, used to confirm chest loot.
     pub doodad_loot_receipts: u64,
     /// Equipped items.
@@ -1507,6 +1509,9 @@ impl BotState {
     fn prune_treasure_maps(&mut self) {
         self.treasure_maps
             .retain(|id, _| self.bag.values().any(|item| item.id == *id));
+        self.treasure_sites_to_retry.retain(|position, until| {
+            *until > self.now_ms && self.treasure_maps.values().any(|other| other == position)
+        });
     }
 
     /// Tells the gear memory about an item change that carries a gear fact (a grade, gems).

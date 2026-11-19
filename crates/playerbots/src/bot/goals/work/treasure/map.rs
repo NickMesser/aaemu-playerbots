@@ -11,6 +11,7 @@ pub(crate) const MAP: u32 = 24_581;
 const DIG: u32 = 18_349;
 const LABOR: i16 = 50;
 const MAX_DISTANCE: f32 = 600.0;
+const RETRY_MS: u64 = 10 * 60_000;
 
 #[derive(Clone, Copy, Debug)]
 struct Chest {
@@ -85,6 +86,11 @@ pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
         .filter_map(|pos| {
             let [x, y] = pos.map(|n| n as f32 / 4_096.0);
             if (me[0] - x).hypot(me[1] - y) > MAX_DISTANCE
+                || ctx
+                    .state
+                    .treasure_sites_to_retry
+                    .get(&pos)
+                    .is_some_and(|&until| ctx.now_ms < until)
                 || ctx.world.zone_closed_at(x, y)
                 || ctx.in_war_zone(x, y)
             {
@@ -111,6 +117,12 @@ pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
 }
 
 impl Hunt {
+    fn retry_later(&self, ctx: &mut Ctx<'_>) {
+        ctx.state
+            .treasure_sites_to_retry
+            .insert(self.coordinates, ctx.now_ms + RETRY_MS);
+    }
+
     pub(super) fn tick(&mut self, ctx: &mut Ctx<'_>, walker: &mut Walker) -> GoalStatus {
         if let Stage::Taking { object, receipts } = self.stage {
             let gone = ctx
@@ -139,7 +151,11 @@ impl Hunt {
                 if dist3d(ctx.pos(), self.spot) > 3.5 {
                     return match walker.step(ctx, [x, y], 1.5) {
                         Walk::Stuck => GoalStatus::Failed(FailReason::Stuck),
-                        _ => GoalStatus::Running,
+                        Walk::Going => GoalStatus::Running,
+                        Walk::There => {
+                            self.retry_later(ctx);
+                            GoalStatus::Failed(FailReason::NoTarget)
+                        }
                     };
                 }
                 let object = ctx.state.doodads.iter().find_map(|(&object, d)| {
@@ -154,6 +170,7 @@ impl Hunt {
                     return if ctx.now_ms - since < 3_000 {
                         GoalStatus::Running
                     } else {
+                        self.retry_later(ctx);
                         GoalStatus::Failed(FailReason::NoTarget)
                     };
                 };
