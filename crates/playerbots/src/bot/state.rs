@@ -782,7 +782,21 @@ impl BotState {
     fn apply_world(&mut self, ev: &WorldEvent) {
         self.vehicle.observe_naval(ev);
         match route(ev) {
-            Route::Travel => return self.travel.on_event(ev, self.me.obj, self.now_ms),
+            Route::Travel => {
+                if let WorldEvent::SkillStarted {
+                    caster_obj,
+                    skill,
+                    result,
+                    ..
+                } = *ev
+                {
+                    if caster_obj != 0 && caster_obj == self.me.obj && result != 0 {
+                        self.push_error(StateError::Skill { skill, result });
+                    }
+                }
+                self.travel.on_event(ev, self.me.obj, self.now_ms);
+                return;
+            }
             Route::Vehicle => {
                 self.vehicle.on_event(ev, self.me.obj);
                 self.travel.on_vehicle_event(ev, self.me.obj, self.now_ms);
@@ -2961,6 +2975,35 @@ mod tests {
             msg: "me".into(),
         }));
         assert_eq!(s.inbox.len(), before);
+    }
+
+    #[test]
+    fn own_skill_refusals_reach_the_action_error_history() {
+        let mut state = in_world();
+        state.now_ms = 37;
+        let answer = |caster_obj, result| {
+            world(WorldEvent::SkillStarted {
+                caster_obj,
+                skill: 13_986,
+                tl: 1,
+                target_obj: 0,
+                result,
+            })
+        };
+        state.apply(&answer(0x500, 34));
+        state.apply(&answer(0x400, 0));
+        assert!(state.errors.is_empty());
+        state.apply(&answer(0x400, 34));
+        assert_eq!(
+            state.errors.as_slice(),
+            &[(
+                37,
+                StateError::Skill {
+                    skill: 13_986,
+                    result: 34,
+                },
+            )]
+        );
     }
 
     fn chat(kind: i16, n: u32) -> WorldEvent {

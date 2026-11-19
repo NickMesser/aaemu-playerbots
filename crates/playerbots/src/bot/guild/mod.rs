@@ -68,6 +68,7 @@ pub struct Mem {
     pub treasury: treasury::Treasury,
     pub leases: leases::Book,
     pub sieges: siege::Book,
+    pub(crate) gather_backoff: crate::bot::goals::work::GatherBackoff,
 }
 
 /// What a bot knows about its guild (one pointer until the first guild packet or duty tick).

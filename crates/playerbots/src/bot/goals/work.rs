@@ -14,11 +14,59 @@ use crate::bot::ctx::Ctx;
 use crate::bot::goals::grind::Grind;
 use crate::bot::guild::profession::{membership, Profession};
 use crate::bot::pvp::walk::{Walk, Walker};
-use crate::bot::state::dist3d;
+use crate::bot::state::{dist3d, StateError};
 
 const GATHER_SEARCH_M: f32 = 240.0;
 const GATHER_MISSING_M: f32 = 40.0;
 const GATHER_STREAM_WAIT_MS: u64 = 3_000;
+const GATHER_BACKOFF_MS: u64 = 5 * 60_000;
+const MAX_GATHER_REFUSALS: usize = 8;
+const INVALID_TARGET: u8 = 0x22;
+
+#[derive(Debug, Clone, Copy)]
+struct RefusedSite {
+    template: u32,
+    position: [f32; 2],
+    until_ms: u64,
+}
+
+impl RefusedSite {
+    fn matches(&self, template: u32, position: [f32; 2]) -> bool {
+        self.template == template
+            && (self.position[0] - position[0]).hypot(self.position[1] - position[1]) <= 1.5
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct GatherBackoff(Vec<RefusedSite>);
+
+impl GatherBackoff {
+    fn blocks(&self, template: u32, position: [f32; 2], now_ms: u64) -> bool {
+        self.0
+            .iter()
+            .any(|site| site.until_ms > now_ms && site.matches(template, position))
+    }
+
+    fn refused(&mut self, template: u32, position: [f32; 2], now_ms: u64) {
+        self.0
+            .retain(|site| site.until_ms > now_ms && !site.matches(template, position));
+        if self.0.len() >= MAX_GATHER_REFUSALS {
+            self.0.remove(0);
+        }
+        self.0.push(RefusedSite {
+            template,
+            position,
+            until_ms: now_ms.saturating_add(GATHER_BACKOFF_MS),
+        });
+    }
+}
+
+fn gather_blocked(ctx: &Ctx<'_>, template: u32, position: [f32; 2]) -> bool {
+    ctx.state
+        .guild
+        .get()
+        .is_some_and(|guild| guild.gather_backoff.blocks(template, position, ctx.now_ms))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -183,6 +231,8 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
             doodads.contains(&d.template)
                 && dist3d(pos, d.pos) <= 120.0
                 && !ctx.in_war_zone(d.pos[0], d.pos[1])
+                && (!matches!(order, Order::Gather { .. })
+                    || !gather_blocked(ctx, d.template, [d.pos[0], d.pos[1]]))
         })
         .min_by(|(id_a, a), (id_b, b)| {
             dist3d(pos, a.pos)
@@ -204,7 +254,8 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
                 let distance = from.dist2d(*spawn);
                 ((GATHER_MISSING_M..=GATHER_SEARCH_M).contains(&distance)
                     && !ctx.world.zone_closed_at(spawn.x, spawn.y)
-                    && !ctx.in_war_zone(spawn.x, spawn.y))
+                    && !ctx.in_war_zone(spawn.x, spawn.y)
+                    && !gather_blocked(ctx, doodad, [spawn.x, spawn.y]))
                 .then_some((spawn, distance))
             })
             .min_by(|(_, left), (_, right)| left.total_cmp(right))?
@@ -279,6 +330,25 @@ pub struct Work {
     deadline: u64,
     expected: Option<i64>,
     arrived_ms: Option<u64>,
+    gather_cast: Option<GatherCast>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GatherCast {
+    skill: u32,
+    sent_ms: u64,
+    position: [f32; 2],
+}
+
+impl GatherCast {
+    fn refusal(&self, errors: &[(u64, StateError)]) -> Option<u8> {
+        errors.iter().rev().find_map(|&(at, error)| match error {
+            StateError::Skill { skill, result } if at >= self.sent_ms && skill == self.skill => {
+                Some(result)
+            }
+            _ => None,
+        })
+    }
 }
 
 impl Work {
@@ -346,6 +416,23 @@ impl Work {
             return GoalStatus::Failed(FailReason::Timeout);
         }
         if self.expected.is_some() {
+            if let Some(cast) = self.gather_cast {
+                let Some(result) = cast.refusal(&ctx.state.errors) else {
+                    return GoalStatus::Running;
+                };
+                if result == INVALID_TARGET {
+                    ctx.state.guild.mem().gather_backoff.refused(
+                        job.template,
+                        cast.position,
+                        ctx.now_ms,
+                    );
+                }
+                ctx.log.say(format!(
+                    "guild production: gathering skill {} was refused with result {result}",
+                    cast.skill
+                ));
+                return GoalStatus::Failed(FailReason::Other("gathering skill refused"));
+            }
             return GoalStatus::Running;
         }
         let [x, y, _] = job.destination;
@@ -359,22 +446,24 @@ impl Work {
             target.template == job.template
                 && dist3d(home, target.pos) <= 3.5
                 && !ctx.in_war_zone(target.pos[0], target.pos[1])
+                && (!matches!(job.order, Order::Gather { .. })
+                    || !gather_blocked(ctx, job.template, [target.pos[0], target.pos[1]]))
         };
         let object = if job.object != 0 {
             ctx.state
                 .doodads
                 .get(&job.object)
                 .filter(|target| matches(target))
-                .map(|_| job.object)
+                .map(|target| (job.object, target.pos))
         } else {
             ctx.state
                 .doodads
                 .iter()
                 .filter(|(_, target)| matches(target))
                 .min_by_key(|(&id, _)| id)
-                .map(|(&id, _)| id)
+                .map(|(&id, target)| (id, target.pos))
         };
-        let Some(object) = object else {
+        let Some((object, position)) = object else {
             if job.object == 0 {
                 let arrived = *self.arrived_ms.get_or_insert(ctx.now_ms);
                 if ctx.now_ms - arrived < GATHER_STREAM_WAIT_MS {
@@ -387,6 +476,11 @@ impl Work {
             Order::Craft { recipe, .. } => cs::execute_craft(recipe, object, 1),
             Order::Gather { doodad, .. } => {
                 let skill = ctx.world.doodad_use_skill(doodad);
+                self.gather_cast = Some(GatherCast {
+                    skill,
+                    sent_ms: ctx.now_ms,
+                    position: [position[0], position[1]],
+                });
                 cs::start_skill_doodad(skill, ctx.state.me.obj, object)
             }
             Order::Hunt { .. } => return GoalStatus::Failed(FailReason::NoTarget),
@@ -458,6 +552,37 @@ fn note_receipt(ctx: &Ctx<'_>, item: u32, training: bool) {
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
+
+    use super::{GatherBackoff, GatherCast, StateError, GATHER_BACKOFF_MS, INVALID_TARGET};
+
+    #[test]
+    fn a_gathering_refusal_applies_to_the_active_cast_and_site() {
+        let cast = GatherCast {
+            skill: 13986,
+            sent_ms: 1_000,
+            position: [10.0, 20.0],
+        };
+        let failure = StateError::Skill {
+            skill: cast.skill,
+            result: INVALID_TARGET,
+        };
+        let other = StateError::Skill {
+            skill: 13625,
+            result: INVALID_TARGET,
+        };
+        assert_eq!(cast.refusal(&[(999, failure), (1_001, other)]), None);
+        assert_eq!(
+            cast.refusal(&[(1_001, failure), (1_002, other)]),
+            Some(INVALID_TARGET)
+        );
+
+        let mut sites = GatherBackoff::default();
+        sites.refused(1671, cast.position, 1_001);
+        assert!(sites.blocks(1671, [10.0, 21.0], 1_002));
+        assert!(!sites.blocks(1671, [10.0, 24.0], 1_002));
+        assert!(!sites.blocks(2246, cast.position, 1_002));
+        assert!(!sites.blocks(1671, cast.position, 1_001 + GATHER_BACKOFF_MS));
+    }
 
     #[test]
     fn production_orders_require_a_matching_profession() {
