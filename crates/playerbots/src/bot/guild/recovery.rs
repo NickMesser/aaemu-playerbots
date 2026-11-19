@@ -5,6 +5,7 @@ use serde::Deserialize;
 use smallvec::SmallVec;
 
 use super::profession::{self, Profession};
+use super::treasury::allowance_budget;
 use crate::bot::{ctx::Ctx, market::ads::Need};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -79,24 +80,7 @@ pub fn shopping(ctx: &Ctx<'_>) -> SmallVec<[Need; 2]> {
     let Some((guild, supplies)) = supplies(ctx) else {
         return needs;
     };
-    let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()) else {
-        return needs;
-    };
-    let ready_cash = ctx
-        .state
-        .me
-        .money
-        .saturating_sub(i64::from(terms.reserve_copper))
-        .max(0) as u64;
-    let mut balance = ctx
-        .hub
-        .journal
-        .read(ctx.persona.id, |journal| {
-            journal.guild_treasury.get(&guild).map_or(0, |a| {
-                a.support_received.saturating_sub(a.support_supplies_spent)
-            })
-        })
-        .min(ready_cash);
+    let mut balance = allowance_budget(ctx, guild);
     for supply in supplies.into_iter().flatten() {
         if needs.iter().any(|need: &Need| need.template == supply.item)
             || !ctx
@@ -140,11 +124,7 @@ pub fn note_purchase(ctx: &Ctx<'_>, item: u32, quantity: i64, total: i64) {
             return false;
         };
         let total = total as u64;
-        if total
-            > account
-                .support_received
-                .saturating_sub(account.support_supplies_spent)
-        {
+        if total > account.allowance_balance() {
             return false;
         }
         account.support_supplies_spent += total;

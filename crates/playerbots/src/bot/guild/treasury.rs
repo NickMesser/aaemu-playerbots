@@ -43,6 +43,8 @@ pub struct Terms {
     pub reserve_copper: u32,
     /// Rank-scaled weekly allowance, paid only from confirmed contributions.
     pub weekly_support_copper: u32,
+    /// Let eligible members buy gear with their unspent rank allowance.
+    pub fund_gear: bool,
     /// Reward at the time the server confirms a guild bounty kill.
     pub bounty_reward_copper: u32,
     /// Maximum principal for a Trader member short of buying money for an assigned pack.
@@ -56,6 +58,7 @@ impl Default for Terms {
             commission_percent: 5,
             reserve_copper: 10_000,
             weekly_support_copper: 0,
+            fund_gear: false,
             bounty_reward_copper: 0,
             trade_loan_copper: 0,
         }
@@ -67,6 +70,7 @@ impl Terms {
         self.weekly_dues_copper <= 100_000
             && self.commission_percent <= 25
             && self.weekly_support_copper <= 100_000
+            && (!self.fund_gear || self.weekly_support_copper > 0)
             && self.bounty_reward_copper <= 100_000
             && self.trade_loan_copper <= 100_000
     }
@@ -87,6 +91,7 @@ pub struct Account {
     pub contributions_this_week: u64,
     pub support_received: u64,
     pub support_supplies_spent: u64,
+    pub support_gear_spent: u64,
     pub bounty_earned: u32,
     pub bounty_paid: u32,
     #[serde(skip_serializing_if = "loan::Loan::unused")]
@@ -94,6 +99,12 @@ pub struct Account {
 }
 
 impl Account {
+    pub fn allowance_balance(&self) -> u64 {
+        self.support_received
+            .saturating_sub(self.support_supplies_spent)
+            .saturating_sub(self.support_gear_spent)
+    }
+
     fn add_contributions(&mut self, week: u64, copper: u64) {
         if self.contribution_week != week {
             self.contribution_week = week;
@@ -108,6 +119,63 @@ impl Account {
         } else {
             0
         }
+    }
+}
+
+pub fn allowance_budget(ctx: &Ctx<'_>, guild: u32) -> u64 {
+    let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()) else {
+        return 0;
+    };
+    let available_cash = ctx
+        .state
+        .me
+        .money
+        .saturating_sub(i64::from(terms.reserve_copper))
+        .max(0) as u64;
+    ctx.hub
+        .journal
+        .read(ctx.persona.id, |journal| {
+            journal
+                .guild_treasury
+                .get(&guild)
+                .map_or(0, Account::allowance_balance)
+        })
+        .min(available_cash)
+}
+
+pub fn gear_allowance(ctx: &Ctx<'_>) -> Option<(u32, u32)> {
+    if ctx.cfg.guild.treasuries.is_empty() {
+        return None;
+    }
+    let (guild, _, false) = profession::membership(ctx)? else {
+        return None;
+    };
+    if !ctx.cfg.guild.treasuries.get(&guild.to_string())?.fund_gear {
+        return None;
+    }
+    let budget = allowance_budget(ctx, guild).min(u64::from(u32::MAX)) as u32;
+    (budget > 0).then_some((guild, budget))
+}
+
+pub fn record_gear_purchase(ctx: &Ctx<'_>, guild: u32, price: u32) {
+    if profession::membership(ctx).is_none_or(|(id, _, owner)| id != guild || owner) {
+        return;
+    }
+    let spent = ctx.hub.journal.update(ctx.persona.id, |journal| {
+        let Some(account) = journal.guild_treasury.get_mut(&guild) else {
+            return false;
+        };
+        let price = u64::from(price);
+        if price == 0 || price > account.allowance_balance() {
+            return false;
+        }
+        account.support_gear_spent += price;
+        true
+    });
+    if spent {
+        ctx.log.say(format!(
+            "guild gear: spent {price} copper from rank allowances"
+        ));
     }
 }
 

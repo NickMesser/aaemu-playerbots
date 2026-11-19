@@ -61,6 +61,7 @@ fn every_build_mints_a_sane_piece_at_every_tier() {
         socket: false,
         regrade: false,
         max_spend_pct: 30,
+        guild_budget: 0,
     };
     let archetypes = Archetypes::builtin().unwrap();
     for a in archetypes.all() {
@@ -130,6 +131,7 @@ fn a_lunagem_for_the_chest_and_a_quest_reward() {
         socket: true,
         regrade: false,
         max_spend_pct: 30,
+        guild_budget: 0,
     };
     let mut bot = me(35, &fit, &worn, &[]);
     bot.fetched = &[];

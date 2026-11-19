@@ -549,6 +549,7 @@ pub fn rules(ctx: &Ctx<'_>) -> Rules {
         socket: g.socket,
         regrade: g.regrade && gm,
         max_spend_pct: g.max_spend_pct,
+        guild_budget: super::guild::treasury::gear_allowance(ctx).map_or(0, |(_, budget)| budget),
     }
 }
 

@@ -178,6 +178,7 @@ fn all_rules() -> Rules {
         socket: true,
         regrade: true,
         max_spend_pct: 30,
+        guild_budget: 0,
     }
 }
 
@@ -362,6 +363,7 @@ fn minting_picks_the_best_piece_of_the_build_at_the_tier_grade() {
         socket: false,
         regrade: false,
         max_spend_pct: 30,
+        guild_budget: 0,
     };
     assert_eq!(bot.choose(&shop, &nothing, None), Err("nothing to upgrade"));
 }
@@ -406,6 +408,24 @@ fn an_operators_item_is_taken_from_the_bag_bought_or_minted() {
         worn.choose(&shop, &all_rules(), Some(CHEST_20)),
         Err("already wears it")
     );
+}
+
+#[test]
+fn a_rank_allowance_covers_gear_above_the_personal_limit() {
+    let mut bot = Bot::new(25);
+    bot.money = 1_000;
+    let shop = shop();
+    let mut rules = Rules {
+        mint: false,
+        max_spend_pct: 1,
+        ..all_rules()
+    };
+    assert!(bot.choose(&shop, &rules, Some(LEGS_14)).is_err());
+    rules.guild_budget = 500;
+    assert!(matches!(
+        bot.choose(&shop, &rules, Some(LEGS_14)),
+        Ok(Job::Buy { price: 500, .. })
+    ));
 }
 
 #[test]
@@ -709,11 +729,13 @@ fn a_purchase_walks_to_the_merchant_buys_and_puts_the_piece_on() {
     assert_eq!(rig.step(&mut m), GoalStatus::Running);
     assert!(!rig.sent(|a| matches!(a, Act::Buy { .. })));
     rig.bag.push((900, LEGS_14));
+    rig.money -= 500;
     assert_eq!(rig.step(&mut m), GoalStatus::Running);
     assert!(rig.sent(|a| *a
         == Act::Journal(Entry::Bought {
             template: LEGS_14,
-            price: 500
+            price: 500,
+            confirmed_debit: true,
         })));
     assert_eq!(m.phase(), Phase::Equip);
     assert_eq!(

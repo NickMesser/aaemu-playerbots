@@ -50,12 +50,16 @@ pub struct Gear {
     /// What the goal was started with (`None`: the bot's own choice).
     args: Option<Box<GoalArgs>>,
     run: Option<Box<Machine>>,
+    funding: Option<(u32, u32)>,
 }
 
 impl Gear {
     /// A fresh goal (the brain starts it with [`Goal::with_args`](super::Goal::with_args)).
     pub fn new(args: Option<Box<GoalArgs>>) -> Gear {
-        Gear { args, run: None }
+        Gear {
+            args,
+            ..Self::default()
+        }
     }
 
     /// The arguments it was started with.
@@ -71,12 +75,18 @@ impl Gear {
     /// Called once when the brain picks the goal: chooses the job.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
         self.run = None;
+        self.funding = None;
         if !ctx.cfg.gear.enabled {
             return;
         }
         let item = self.args.as_ref().and_then(|a| a.item);
         match choose(ctx, item) {
             Ok(job) => {
+                if let Job::Buy { price, .. } = job {
+                    self.funding = crate::bot::guild::treasury::gear_allowance(ctx)
+                        .filter(|&(_, budget)| price <= budget)
+                        .map(|(guild, _)| (guild, price));
+                }
                 ctx.log
                     .say(format!("goal: gear ({})", describe_job(ctx, &job)));
                 self.run = Some(Box::new(Machine::new(job, ctx.now_ms)));
@@ -104,7 +114,7 @@ impl Gear {
         }
         let mut mem = ctx.state.gear.take().unwrap_or_default();
         let mut acts = Vec::new();
-        let status = {
+        let mut status = {
             let facts = ctx.world.gear();
             let world = ctx.world;
             let fit = Fit::of(&ctx.persona.archetype);
@@ -155,11 +165,20 @@ impl Gear {
             };
             machine.step(&io, &mut mem, &mut acts)
         };
+        if let Some((guild, price)) = self.funding {
+            if acts.iter().any(|act| matches!(act, Act::Buy { .. }))
+                && crate::bot::guild::treasury::gear_allowance(ctx)
+                    .is_none_or(|(id, budget)| id != guild || budget < price)
+            {
+                acts.retain(|act| !matches!(act, Act::Buy { .. }));
+                status = GoalStatus::Failed(FailReason::Other("rank allowance unavailable"));
+            }
+        }
         if matches!(status, GoalStatus::Failed(_)) {
             mem.quiet_until_ms = ctx.now_ms + FAIL_QUIET_MS;
         }
         ctx.state.gear = Some(mem);
-        apply(ctx, acts);
+        apply(ctx, acts, self.funding);
         status
     }
 
@@ -169,7 +188,7 @@ impl Gear {
         if let Some(mut machine) = self.run.take() {
             let mut acts = Vec::new();
             machine.stop(&mut acts);
-            apply(ctx, acts);
+            apply(ctx, acts, None);
         }
         if let Some(mem) = ctx.state.gear.as_deref_mut() {
             mem.want = Want::default();
@@ -362,7 +381,7 @@ fn nearest_merchant(state: &BotState, template: u32, me: [f32; 3]) -> Option<(u3
 }
 
 /// Carries out what the machine asked for.
-fn apply(ctx: &mut Ctx<'_>, acts: Vec<Act>) {
+fn apply(ctx: &mut Ctx<'_>, acts: Vec<Act>, funding: Option<(u32, u32)>) {
     for act in acts {
         match act {
             Act::Say(text) => ctx.log.say(text),
@@ -406,6 +425,19 @@ fn apply(ctx: &mut Ctx<'_>, acts: Vec<Act>) {
                 ));
             }
             Act::Journal(e) => {
+                if let (
+                    Some((guild, expected)),
+                    Entry::Bought {
+                        price,
+                        confirmed_debit: true,
+                        ..
+                    },
+                ) = (funding, e)
+                {
+                    if expected == price {
+                        crate::bot::guild::treasury::record_gear_purchase(ctx, guild, price);
+                    }
+                }
                 let unix = gear::unix_now();
                 let last = ctx
                     .state

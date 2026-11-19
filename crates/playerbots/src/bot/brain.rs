@@ -938,6 +938,9 @@ impl Brain {
                     if a.support_supplies_spent > 0 {
                         context.push_str(&format!(" I spent {} of my rank allowance on recovery supplies.", a.support_supplies_spent));
                     }
+                    if a.support_gear_spent > 0 {
+                        context.push_str(&format!(" I spent {} of my rank allowance on gear.", a.support_gear_spent));
+                    }
                     let pending = a.bounty_earned.saturating_sub(a.bounty_paid);
                     if pending > 0 {
                         context.push_str(&format!(" I earned {pending} copper in bounty rewards awaiting collection."));

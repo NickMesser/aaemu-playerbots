@@ -49,6 +49,15 @@ pub struct Rules {
     pub regrade: bool,
     /// The most a purchase may cost, in percent of the bot's money.
     pub max_spend_pct: u8,
+    /// Unspent rank allowance available for a gear purchase.
+    pub guild_budget: u32,
+}
+
+impl Rules {
+    fn can_buy(&self, price: u32, money: i64) -> bool {
+        (price != 0 && price <= self.guild_budget && i64::from(price) <= money)
+            || affordable(price, money, self.max_spend_pct)
+    }
 }
 
 /// A merchant that sells a piece.
@@ -327,7 +336,7 @@ fn choose_item(me: &Me<'_>, rules: &Rules, cat: &dyn Catalog, t: u32) -> Result<
     if rules.buy {
         for o in cat.offers().iter().filter(|o| o.item == t) {
             let price = cat.price(t);
-            if !affordable(price, me.money, rules.max_spend_pct) {
+            if !rules.can_buy(price, me.money) {
                 continue;
             }
             if let Some(vendor) = cat.vendor(&o.npcs) {
@@ -378,7 +387,7 @@ fn best_offer(me: &Me<'_>, rules: &Rules, cat: &dyn Catalog) -> Option<Job> {
             continue;
         }
         let price = cat.price(o.item);
-        if !affordable(price, me.money, rules.max_spend_pct) {
+        if !rules.can_buy(price, me.money) {
             continue;
         }
         let Some(vendor) = cat.vendor(&o.npcs) else {

@@ -421,6 +421,11 @@ up to its stock target at the listed price, using confirmed allowance money abov
 reserve. The journal charges the allowance after the inventory and coin both confirm the trade.
 Members hold these items for rest and can use one per rest when low on the pool it restores.
 Valid items use an authored self-targeted health or mana restoration skill.
+Set `fund_gear = true` on a guild's treasury terms to let members spend their
+remaining rank allowance on merchant gear when `[gear] enabled` and `buy` are on. This can
+cover a piece above the ordinary personal spending limit. Purchases still require enough
+copper above the reserve. Gear and recovery supplies draw from the same allowance, and gear
+charges require both the new item and the quoted purse debit.
 
 Set `[guild] treasure_hunts = true` to let Thief and Bounty Hunter guild members hunt for treasure.
 With an owned coordinate map and at least 50 labor, a bot can walk to its authored dig site up to

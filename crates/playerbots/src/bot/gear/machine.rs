@@ -109,6 +109,8 @@ pub enum Entry {
         template: u32,
         /// The price.
         price: u32,
+        /// The purchase also reduced the purse by the quoted amount.
+        confirmed_debit: bool,
     },
     /// A piece was minted.
     Minted {
@@ -253,6 +255,7 @@ pub struct Machine {
     tries: u8,
     sent_ms: u64,
     before: Option<u64>,
+    purchase_money: Option<i64>,
     got: u64,
     vendor_seen_ms: u64,
     skill: u32,
@@ -282,6 +285,7 @@ impl Machine {
             tries: 0,
             sent_ms: 0,
             before: None,
+            purchase_money: None,
             got: 0,
             vendor_seen_ms: 0,
             skill: 0,
@@ -363,7 +367,14 @@ impl Machine {
                 mem.fetched_now(template);
                 mem.stats.bought += 1;
                 mem.stats.spent += i64::from(price);
-                acts.push(Act::Journal(Entry::Bought { template, price }));
+                let confirmed_debit = self
+                    .purchase_money
+                    .is_some_and(|before| before.saturating_sub(io.money) == i64::from(price));
+                acts.push(Act::Journal(Entry::Bought {
+                    template,
+                    price,
+                    confirmed_debit,
+                }));
                 acts.push(Act::Say(format!(
                     "gear: bought {template} for {price} copper"
                 )));
@@ -401,6 +412,7 @@ impl Machine {
                         item: template,
                         grade,
                     });
+                    self.purchase_money.get_or_insert(io.money);
                     self.tries += 1;
                     self.sent_ms = io.now_ms;
                 }
