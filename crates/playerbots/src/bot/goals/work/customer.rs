@@ -72,8 +72,7 @@ fn recipe<'a>(ctx: &Ctx<'a>) -> Option<(u32, &'a aa_world::Craft)> {
     let (guild, profession::Profession::Crafter, false) = profession::membership(ctx)? else {
         return None;
     };
-    let Order::Craft { recipe, .. } = ctx.cfg.guild.production_for(guild, ctx.state.me.char_id)?
-    else {
+    let Order::Craft { recipe, .. } = super::assignment::order(ctx, guild)? else {
         return None;
     };
     let craft = ctx.world.craft(recipe)?;

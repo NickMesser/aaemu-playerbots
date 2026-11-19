@@ -1,11 +1,12 @@
 //! Guild production orders, completed only when the server delivers the item.
 
+pub mod assignment;
 pub mod customer;
 pub(crate) mod treasure;
 
 use aa_proto::cs;
 use aa_world::geom::Vec3;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{FailReason, GoalStatus};
 use crate::bot::combat::CombatStatus;
@@ -19,7 +20,7 @@ const GATHER_SEARCH_M: f32 = 240.0;
 const GATHER_MISSING_M: f32 = 40.0;
 const GATHER_STREAM_WAIT_MS: u64 = 3_000;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Order {
     Craft {
@@ -99,11 +100,10 @@ struct Job {
 }
 
 pub fn selected_order(ctx: &Ctx<'_>) -> Option<(Order, bool)> {
-    ctx.cfg.guild.orders().next()?;
     let (guild, profession, false) = membership(ctx)? else {
         return None;
     };
-    let order = ctx.cfg.guild.production_for(guild, ctx.state.me.char_id)?;
+    let order = assignment::order(ctx, guild)?;
     if !order.allowed_in(profession) {
         return None;
     }

@@ -506,6 +506,8 @@ pub struct GuildCfg {
     pub auction_flips: bool,
     /// Repeatable crafting and gathering orders by guild ID.
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    /// Guildmaster bots can update their members' production orders by whisper.
+    pub dispatch_orders: bool,
     /// Production specialties by guild ID and character ID, overriding the guild-wide order.
     pub member_production_orders: std::collections::BTreeMap<
         String,
@@ -581,6 +583,7 @@ impl Default for GuildCfg {
             farm_leases: Default::default(),
             auction_flips: false,
             production_orders: Default::default(),
+            dispatch_orders: false,
             member_production_orders: Default::default(),
             player_craft_orders: false,
             player_craft_material_max_copper: 0,

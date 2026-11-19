@@ -85,6 +85,9 @@ pub struct Journal {
     pub production_completed: u32,
     /// Number of proficiency-training recipes with a confirmed result.
     pub production_training_completed: u32,
+    /// The current guildmaster's instruction for this member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub production_dispatch: Option<crate::bot::goals::work::assignment::Dispatch>,
     /// A customer's pending craft and the stock reserved for the exchange.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub craft_commission: Option<crate::bot::goals::work::customer::Commission>,

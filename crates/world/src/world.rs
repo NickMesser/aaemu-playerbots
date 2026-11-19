@@ -224,6 +224,17 @@ impl World {
         gather_items: impl IntoIterator<Item = u32>,
         hunt_items: impl IntoIterator<Item = u32>,
     ) -> Result<World> {
+        Self::load_with_work_catalog(paths, gather_items, hunt_items, false, false)
+    }
+
+    /// Index tradeable material sources for professions that can dispatch work at runtime.
+    pub fn load_with_work_catalog(
+        paths: &WorldPaths,
+        gather_items: impl IntoIterator<Item = u32>,
+        hunt_items: impl IntoIterator<Item = u32>,
+        all_gather: bool,
+        all_hunt: bool,
+    ) -> Result<World> {
         let started = Instant::now();
         let conn = open_readonly(&paths.compact)?;
         let texts = Texts::load(&conn).context("read localized_texts")?;
@@ -269,10 +280,22 @@ impl World {
         let start_gates = StartGates::load(&conn).context("load quest start requirements")?;
         let mut gather = quests.gather_items();
         gather.extend(gather_items);
+        let tradeable = || {
+            item_facts
+                .iter()
+                .filter(|(_, facts)| facts.tradable())
+                .map(|(id, _)| id)
+        };
+        if all_gather {
+            gather.extend(tradeable());
+        }
         let gather_doodads = doodads
             .item_sources(&conn, &gather, |d| doodad_spawns.has(d))
             .context("resolve gather item sources")?;
-        let hunt: FxHashSet<_> = hunt_items.into_iter().collect();
+        let mut hunt: FxHashSet<_> = hunt_items.into_iter().collect();
+        if all_hunt {
+            hunt.extend(tradeable());
+        }
         let work_droppers = if hunt.is_empty() {
             FxHashMap::default()
         } else {

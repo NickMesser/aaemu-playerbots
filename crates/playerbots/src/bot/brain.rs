@@ -890,13 +890,26 @@ impl Brain {
                 " Confirmed livestock care and collection actions: {actions}."
             ));
         }
-        if let Some(order) = ctx.cfg.guild.production_for(id, ctx.state.me.char_id) {
+        if let Some(order) = super::goals::work::assignment::order(ctx, id) {
             let (done, training) = ctx.hub.journal.read(ctx.persona.id, |j| {
                 (j.production_completed, j.production_training_completed)
             });
             context.push_str(&format!(
                 " Production order: {order}. Lifetime orders completed: {done}. Training crafts: {training}."
             ));
+        }
+        if master && ctx.cfg.guild.dispatch_orders {
+            let syntax = match role {
+                profession::Profession::Crafter => {
+                    Some("guild work craft <recipe> [training-recipe]")
+                }
+                profession::Profession::Gatherer => Some("guild work gather <doodad> <item>"),
+                profession::Profession::Adventurer => Some("guild work hunt <item> <quantity>"),
+                _ => None,
+            };
+            if let Some(syntax) = syntax {
+                context.push_str(&format!(" To assign production, whisper a guild member bot '{syntax}'. Whisper 'guild work clear' to restore its configured order."));
+            }
         }
         if let Some(order) = super::goals::work::customer::summary(ctx) {
             context.push_str(&order);

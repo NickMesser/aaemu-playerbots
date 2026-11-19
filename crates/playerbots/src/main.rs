@@ -242,6 +242,7 @@ async fn run(
     let orders_cfg = cfg.clone();
     let world = tokio::task::spawn_blocking(move || {
         use playerbots::bot::goals::work::Order;
+        use playerbots::bot::guild::profession::Profession;
 
         let orders = orders_cfg
             .guild
@@ -255,7 +256,22 @@ async fn run(
             Order::Hunt { item, .. } => Some(*item),
             _ => None,
         });
-        World::load_with_work_items(&paths, gather, hunt)
+        let dispatch = |profession| {
+            orders_cfg.guild.enabled
+                && orders_cfg.guild.dispatch_orders
+                && orders_cfg
+                    .guild
+                    .professions
+                    .values()
+                    .any(|&configured| configured == profession)
+        };
+        World::load_with_work_catalog(
+            &paths,
+            gather,
+            hunt,
+            dispatch(Profession::Gatherer),
+            dispatch(Profession::Adventurer),
+        )
     })
     .await
     .context("the world loader panicked")?

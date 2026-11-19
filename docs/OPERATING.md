@@ -358,6 +358,14 @@ to assign a specific recipe to character ID 8 in guild 44. Members without an in
 follow their guild's order. Set `{ "46" = { kind = "hunt", item = 789, count = 4 } }` for an Adventurer
 guild. Members look for nearby hostile monsters that can drop the tradeable material and
 replenish stock until the server confirms the requested quantity in their bags.
+
+With `[guild] dispatch_orders = true`, a guildmaster bot can change a member bot's production
+through a native whisper. An agent controlling the guildmaster can use its `whisper` command
+with `guild work craft <recipe> [training-recipe]`, `guild work gather <doodad> <item>`, or
+`guild work hunt <item> <quantity>`, according to the guild's profession. The member records the
+order in its journal and uses it until the guildmaster replaces it or sends `guild work clear`.
+It checks the server guild roster and rejects incompatible orders. A pending player commission
+holds the current recipe until the commission ends.
 With trade ads enabled, Gatherer and Adventurer orders can also request missing material from
 players and other bots. The order advertises a fixed price of 90 percent of recent confirmed
 sales when their average is at least 25 percent above the usual asking price. The normal trade
