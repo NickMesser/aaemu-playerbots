@@ -51,7 +51,7 @@ const CHESTS: [Chest; 5] = [
 #[derive(Debug)]
 enum Stage {
     Approach { arrived_ms: Option<u64> },
-    Digging { object: u32 },
+    Digging { object: u32, receipts: u64 },
     Taking { object: u32, receipts: u64 },
 }
 
@@ -66,29 +66,36 @@ pub(crate) struct Hunt {
 }
 
 fn matching_maps(ctx: &Ctx<'_>, coordinates: [i64; 2]) -> usize {
+    ctx.state.treasure.as_deref().map_or(0, |maps| {
+        maps.coordinates
+            .values()
+            .filter(|&&pos| pos == coordinates)
+            .count()
+    })
+}
+
+fn loot_receipts(ctx: &Ctx<'_>) -> u64 {
     ctx.state
-        .treasure_maps
-        .values()
-        .filter(|&&pos| pos == coordinates)
-        .count()
+        .treasure
+        .as_deref()
+        .map_or(0, |maps| maps.loot_receipts)
 }
 
 pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
     if ctx.state.me.labor < LABOR || ctx.state.item_count(MAP) == 0 {
         return None;
     }
+    let maps = ctx.state.treasure.as_deref()?;
     let me = ctx.pos();
-    let (coordinates, chest, spot) = ctx
-        .state
-        .treasure_maps
+    let (coordinates, chest, spot) = maps
+        .coordinates
         .values()
         .copied()
         .filter_map(|pos| {
             let [x, y] = pos.map(|n| n as f32 / 4_096.0);
             if (me[0] - x).hypot(me[1] - y) > MAX_DISTANCE
-                || ctx
-                    .state
-                    .treasure_sites_to_retry
+                || maps
+                    .retry_after
                     .get(&pos)
                     .is_some_and(|&until| ctx.now_ms < until)
                 || ctx.world.zone_closed_at(x, y)
@@ -118,19 +125,28 @@ pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
 
 impl Hunt {
     fn retry_later(&self, ctx: &mut Ctx<'_>) {
-        ctx.state
-            .treasure_sites_to_retry
-            .insert(self.coordinates, ctx.now_ms + RETRY_MS);
+        if let Some(maps) = ctx.state.treasure.as_deref_mut() {
+            maps.retry_after
+                .insert(self.coordinates, ctx.now_ms + RETRY_MS);
+        }
     }
 
     pub(super) fn tick(&mut self, ctx: &mut Ctx<'_>, walker: &mut Walker) -> GoalStatus {
-        if let Stage::Taking { object, receipts } = self.stage {
-            let gone = ctx
+        let waiting = match self.stage {
+            Stage::Digging { object, receipts } => Some((object, receipts, self.chest.buried)),
+            Stage::Taking { object, receipts } => Some((object, receipts, self.chest.exposed)),
+            Stage::Approach { .. } => None,
+        };
+        if let Some((object, receipts, previous_phase)) = waiting {
+            let advanced = ctx
                 .state
                 .doodads
                 .get(&object)
-                .is_none_or(|chest| chest.phase != self.chest.exposed);
-            if gone && ctx.state.doodad_loot_receipts > receipts {
+                .is_none_or(|chest| chest.phase != previous_phase);
+            if advanced
+                && loot_receipts(ctx) > receipts
+                && matching_maps(ctx, self.coordinates) < self.maps
+            {
                 ctx.hub.journal.update(ctx.persona.id, |journal| {
                     journal.treasure_chests = journal.treasure_chests.saturating_add(1);
                 });
@@ -184,11 +200,14 @@ impl Hunt {
                 }
                 ctx.motion.stop();
                 self.maps = matching_maps(ctx, self.coordinates);
-                self.stage = Stage::Digging { object };
+                self.stage = Stage::Digging {
+                    object,
+                    receipts: loot_receipts(ctx),
+                };
                 self.deadline = ctx.now_ms + 10_000;
                 ctx.send(cs::start_skill_doodad(DIG, ctx.state.me.obj, object));
             }
-            Stage::Digging { object } => {
+            Stage::Digging { object, receipts } => {
                 if ctx
                     .state
                     .doodads
@@ -199,7 +218,7 @@ impl Hunt {
                     ctx.send(cs::loot_open_bag(*object, true));
                     self.stage = Stage::Taking {
                         object: *object,
-                        receipts: ctx.state.doodad_loot_receipts,
+                        receipts: *receipts,
                     };
                     self.deadline = ctx.now_ms + 8_000;
                 }
@@ -210,7 +229,7 @@ impl Hunt {
     }
 
     pub(super) fn stop(&self, ctx: &Ctx<'_>) {
-        if let Stage::Digging { object } | Stage::Taking { object, .. } = self.stage {
+        if let Stage::Digging { object, .. } | Stage::Taking { object, .. } = self.stage {
             ctx.hub.contest.release(doodad_key(object), ctx.persona.id);
         }
     }

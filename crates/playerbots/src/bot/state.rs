@@ -210,6 +210,16 @@ struct Held {
     grade: u8,
 }
 
+#[derive(Debug, Default)]
+pub struct TreasureMaps {
+    /// Coordinates from the details of treasure maps in the bag, by instance id.
+    pub coordinates: FxHashMap<u64, [i64; 2]>,
+    /// Temporarily inaccessible or missing sites, using the bot clock.
+    pub retry_after: FxHashMap<[i64; 2], u64>,
+    /// Number of item receipts for doodad interactions since the first map arrived.
+    pub loot_receipts: u64,
+}
+
 /// One of the bot's houses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HouseBrief {
@@ -437,12 +447,8 @@ pub struct BotState {
     pub doodads: FxHashMap<u32, Doodad>,
     /// Bag content by slot.
     pub bag: FxHashMap<u16, Item>,
-    /// Coordinates from the details of treasure maps in the bag, indexed by instance id.
-    pub treasure_maps: FxHashMap<u64, [i64; 2]>,
-    /// Temporarily inaccessible or missing treasure map sites, using the bot clock.
-    pub treasure_sites_to_retry: FxHashMap<[i64; 2], u64>,
-    /// Number of item receipts for doodad interactions, used to confirm chest loot.
-    pub doodad_loot_receipts: u64,
+    /// Dig sites, allocated only for a character that has received a coordinate map.
+    pub treasure: Option<Box<TreasureMaps>>,
     /// Equipped items.
     pub equipment: Vec<EquipSlot>,
     /// Quests.
@@ -1047,7 +1053,10 @@ impl BotState {
                             },
                         );
                         if let Some(coordinates) = it.treasure {
-                            self.treasure_maps.insert(it.id, coordinates);
+                            self.treasure
+                                .get_or_insert_with(Box::default)
+                                .coordinates
+                                .insert(it.id, coordinates);
                         }
                     }
                     self.prune_treasure_maps();
@@ -1484,34 +1493,38 @@ impl BotState {
         }
         // DOODAD_INTERACTION (models/item_task.rs). A phase change alone could be another
         // character taking the chest, so only advance this counter for an inventory receipt.
-        if task.reason == 17
-            && task.changes.iter().any(|change| {
-                matches!(
-                    change,
-                    ItemChange::Added {
-                        slot_type: SLOT_BAG,
-                        count: 1..,
-                        ..
-                    } | ItemChange::CountUpdate {
-                        slot_type: SLOT_BAG,
-                        delta: 1..,
-                        ..
-                    }
-                )
-            })
-        {
-            self.doodad_loot_receipts = self.doodad_loot_receipts.saturating_add(1);
+        if let Some(treasure) = self.treasure.as_deref_mut().filter(|_| {
+            task.reason == 17
+                && task.changes.iter().any(|change| {
+                    matches!(
+                        change,
+                        ItemChange::Added {
+                            slot_type: SLOT_BAG,
+                            count: 1..,
+                            ..
+                        } | ItemChange::CountUpdate {
+                            slot_type: SLOT_BAG,
+                            delta: 1..,
+                            ..
+                        }
+                    )
+                })
+        }) {
+            treasure.loot_receipts = treasure.loot_receipts.saturating_add(1);
         }
         self.prune_treasure_maps();
         self.market.on_item_task(task.reason, &touched, &self.bag);
     }
 
     fn prune_treasure_maps(&mut self) {
-        self.treasure_maps
-            .retain(|id, _| self.bag.values().any(|item| item.id == *id));
-        self.treasure_sites_to_retry.retain(|position, until| {
-            *until > self.now_ms && self.treasure_maps.values().any(|other| other == position)
-        });
+        if let Some(treasure) = self.treasure.as_deref_mut() {
+            treasure
+                .coordinates
+                .retain(|id, _| self.bag.values().any(|item| item.id == *id));
+            treasure.retry_after.retain(|position, until| {
+                *until > self.now_ms && treasure.coordinates.values().any(|other| other == position)
+            });
+        }
     }
 
     /// Tells the gear memory about an item change that carries a gear fact (a grade, gems).
@@ -1543,7 +1556,10 @@ impl BotState {
                     // an empty stack is no item: it would hide what the slot held before
                     self.bag_put(u16::from(slot), id, template, count);
                     if let Some(coordinates) = treasure {
-                        self.treasure_maps.insert(id, coordinates);
+                        self.treasure
+                            .get_or_insert_with(Box::default)
+                            .coordinates
+                            .insert(id, coordinates);
                     }
                 }
                 SLOT_EQUIPMENT => {
