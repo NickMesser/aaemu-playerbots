@@ -200,6 +200,7 @@ auction_flips = false
 # An optional weekly_support_copper amount funds rank-based allowances from collected contributions.
 # bounty_reward_copper can be added to pay for a server-confirmed Bounty Hunter patrol kill.
 # siege_zones = { "42" = [33] }  # join announced sieges as the attacking or defending guild
+# siege_declarations = { "42" = [{ zone_group = 33, position = [22000.0, 24800.0] }] }
 # territory_patrols = { "42" = [{ zone_group = 20, position = [15437.0, 11479.0] }] }
 # rift_patrols = { "42" = [3] }  # patrol the active Crimson Rift during an eligible war
 # Bots may found guilds. false = they only join existing ones.

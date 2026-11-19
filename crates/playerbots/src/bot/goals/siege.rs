@@ -1,16 +1,19 @@
-//! Register for the guild's announced siege, fight for the tower, and engrave it when exposed.
+//! Declare war with the guild's camp, register for a siege, and fight for the tower.
 
 use aa_proto::{cs, sc_siege};
 
 use crate::bot::combat::{Combat, CombatStatus};
 use crate::bot::ctx::Ctx;
-use crate::bot::guild::siege::{self, Order, Side};
+use crate::bot::guild::siege::{self, Declaration, Order, Side};
 use crate::bot::motion::Pace;
 use crate::bot::state::{dist2d, UnitKind};
 
 use super::{FailReason, GoalStatus};
 
 const ENGRAVE: u32 = 20_866;
+const DECLARE: u32 = 16_918;
+const DECLARE_WAIT_MS: u64 = 18_000;
+const CAMP_APPROACH_M: f32 = 2.0;
 const JOIN_RETRY_MS: u64 = 10_000;
 const ENGRAVE_RETRY_MS: u64 = 15_000;
 const STAND_M: f32 = 23.0;
@@ -19,6 +22,7 @@ const AREA_M: f32 = 80.0;
 #[derive(Debug, Default)]
 pub struct Goal {
     order: Option<Order>,
+    declaration: Option<Declaration>,
     joined: bool,
     fought: bool,
     attempts: u8,
@@ -34,16 +38,24 @@ pub fn score(ctx: &Ctx<'_>, _base: f32) -> f32 {
     match siege::available(ctx, None) {
         Some(order) if order.period == sc_siege::BATTLE => 4.0,
         Some(order) if order.period == sc_siege::WARMUP => 2.0,
+        _ if siege::declaration(ctx).is_some() => 2.0,
         _ => 0.0,
     }
 }
 
 impl Goal {
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
-        self.order = siege::available(ctx, None);
+        self.order =
+            siege::available(ctx, None).filter(|order| order.period != sc_siege::DECLARATION);
+        if self.order.is_none() {
+            self.declaration = siege::declaration(ctx);
+        }
     }
 
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
+        if let Some(order) = self.declaration {
+            return self.declare(ctx, order);
+        }
         let Some(previous) = self.order else {
             return GoalStatus::Failed(FailReason::NoTarget);
         };
@@ -137,6 +149,57 @@ impl Goal {
         GoalStatus::Running
     }
 
+    fn declare(&mut self, ctx: &mut Ctx<'_>, order: Declaration) -> GoalStatus {
+        if siege::declared_by(ctx, order) {
+            if self.next_try != 0 {
+                ctx.hub.journal.update(ctx.persona.id, |journal| {
+                    journal.sieges_declared = journal.sieges_declared.saturating_add(1);
+                });
+                ctx.log
+                    .say(format!("siege: declared war in territory {}", order.group));
+            }
+            return GoalStatus::Done;
+        }
+        if !siege::declaration_open(ctx, order) {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        }
+        if self.next_try != 0 {
+            return if ctx.now_ms >= self.next_try {
+                GoalStatus::Failed(FailReason::Other("siege camp was not accepted"))
+            } else {
+                GoalStatus::Running
+            };
+        }
+        let Some((_, item)) = ctx.state.find_item(order.camp) else {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        };
+        let [x, y] = order.position;
+        if dist2d(ctx.pos(), [x, y, 0.0]) > CAMP_APPROACH_M {
+            if !ctx.motion.is_moving() {
+                if self.approach_attempts >= 3 {
+                    return GoalStatus::Failed(FailReason::Stuck);
+                }
+                self.approach_attempts += 1;
+                ctx.motion
+                    .go_to(x, y, CAMP_APPROACH_M - 0.5, Pace::Run, ctx.now_ms);
+            }
+            return GoalStatus::Running;
+        }
+        if !ctx
+            .world
+            .zone_info_at(ctx.pos()[0], ctx.pos()[1])
+            .is_some_and(|zone| zone.group == order.group)
+        {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        }
+        let me = ctx.state.me.obj;
+        let cast = cs::start_skill_item(DECLARE, me, item.id, order.camp, me);
+        ctx.motion.stop();
+        ctx.send(cast);
+        self.next_try = ctx.now_ms + DECLARE_WAIT_MS;
+        GoalStatus::Running
+    }
+
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
         ctx.combat.disengage();
         ctx.motion.stop();
@@ -150,6 +213,8 @@ impl Goal {
                 "defending"
             };
             out.push_str(&format!("siege {action} zone group {}", order.group));
+        } else if let Some(order) = self.declaration {
+            out.push_str(&format!("siege declaring war in territory {}", order.group));
         } else {
             out.push_str("siege");
         }

@@ -114,6 +114,7 @@ pub struct Journal {
     pub livestock_actions: u32,
     pub sieges_won: u32,
     pub sieges_held: u32,
+    pub sieges_declared: u32,
     /// Earliest wall-clock time when this character can set out for another rift patrol.
     pub rift_patrol_after_ms: u64,
 }

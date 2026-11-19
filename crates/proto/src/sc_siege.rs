@@ -25,6 +25,9 @@ pub const ENGRAVING_SUCCEEDED: u8 = 6;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Siege {
     pub period: u8,
+    pub radius_declare: i16,
+    pub durations: [i32; 5],
+    pub started: i64,
     pub defenders: Team,
     pub attackers: Team,
 }
@@ -127,10 +130,20 @@ fn team(s: &mut PacketStream) -> Res<Team> {
 }
 
 fn siege(s: &mut PacketStream) -> Res<Siege> {
-    s.skip(18)?; // territory id, building limits and radii
-    s.skip(5 * 4 + 2 * 8 + 4)?; // phase durations, dates and the reinforcement delay
+    s.skip(10)?; // territory ids and building limits
+    let radius_declare = s.read_i16()?;
+    s.skip(6)?; // other territory radii
+    let mut durations = [0; 5];
+    for duration in &mut durations {
+        *duration = s.read_i32()?;
+    }
+    let started = s.read_i64()?;
+    s.skip(8 + 4)?; // fixed date and reinforcement delay
     Ok(Siege {
         period: s.read_u8()?,
+        radius_declare,
+        durations,
+        started,
         defenders: team(s)?,
         attackers: team(s)?,
     })
@@ -177,9 +190,17 @@ mod tests {
     fn battle_preserves_team_order_and_owner_changes_have_a_reign_date() {
         let mut wire = PacketStream::new();
         wire.write_u16(25);
-        for _ in 0..58 {
+        for _ in 0..10 {
             wire.write_u8(0);
         }
+        wire.write_i16(250);
+        for _ in 0..6 {
+            wire.write_u8(0);
+        }
+        for duration in [1_800, 3_600, 1_800, 5_400, 1_800] {
+            wire.write_i32(duration);
+        }
+        wire.write_i64(123_456).write_i64(0).write_i32(0);
         wire.write_u8(BATTLE);
         for (expedition, members) in [(5, &[14, 16][..]), (9, &[20][..])] {
             wire.write_u32(expedition).write_bc(0);
@@ -200,6 +221,9 @@ mod tests {
                 owner: None,
                 siege: Siege {
                     period: BATTLE,
+                    radius_declare: 250,
+                    durations: [1_800, 3_600, 1_800, 5_400, 1_800],
+                    started: 123_456,
                     defenders: Team {
                         expedition: 5,
                         members: [14, 16].into()

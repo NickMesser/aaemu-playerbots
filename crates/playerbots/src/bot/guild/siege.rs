@@ -9,6 +9,7 @@ use crate::bot::{ctx::Ctx, state::dist2d};
 
 const MAX_GROUPS: usize = 24;
 const MAX_WALK_M: f32 = 2_500.0;
+const CAMP_MARGIN_M: f32 = 5.0;
 pub const ENGRAVABLE_BUFF: u32 = 5131;
 pub const ENGRAVING_BUFF: u32 = 5074;
 
@@ -177,6 +178,39 @@ pub struct Order {
     pub enrolled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Declaration {
+    pub group: u16,
+    pub expedition: u32,
+    pub camp: u32,
+    pub position: [f32; 2],
+}
+
+// r208022 compact.sqlite3, siege_zones.declare_item_id keyed by zone_group_id.
+fn declaration_camp(group: u16) -> Option<u32> {
+    Some(match group {
+        33 => 21_134,
+        34 => 21_130,
+        43 => 21_136,
+        44 => 21_135,
+        54 => 27_744,
+        56 => 27_745,
+        _ => return None,
+    })
+}
+
+fn accepts_declaration(site: &Site, expedition: u32, position: [f32; 2]) -> bool {
+    let [x, y, _] = site.position;
+    let distance = (position[0] - x).hypot(position[1] - y);
+    site.tower != 0
+        && site.owner != 0
+        && site.owner != expedition
+        && site.siege.period == sc_siege::DECLARATION
+        && site.siege.attackers.expedition == 0
+        && site.siege.radius_declare > 0
+        && distance >= f32::from(site.siege.radius_declare) + CAMP_MARGIN_M
+}
+
 fn order(group: u16, site: &Site, expedition: u32, character: u32) -> Option<Order> {
     let siege = &site.siege;
     if !matches!(
@@ -207,13 +241,7 @@ fn order(group: u16, site: &Site, expedition: u32, character: u32) -> Option<Ord
 }
 
 pub fn available(ctx: &Ctx<'_>, group: Option<u16>) -> Option<Order> {
-    if !(ctx.cfg.guild.enabled && ctx.cfg.pvp.enabled)
-        || ctx.cfg.guild.siege_zones.is_empty()
-        || ctx.state.place.in_instance()
-        || ctx.state.me.dead
-        || ctx.state.me.level < 35
-        || crate::bot::goals::trade_run::carried_pack_of(ctx).is_some()
-    {
+    if !may_set_out(ctx) {
         return None;
     }
     let guild = ctx.state.guild.get()?;
@@ -231,8 +259,101 @@ pub fn available(ctx: &Ctx<'_>, group: Option<u16>) -> Option<Order> {
             let dist = dist2d(ctx.pos(), order.position);
             (dist <= MAX_WALK_M || ctx.would_teleport(dist)).then_some((order, dist))
         })
+        .min_by(|a, b| {
+            b.0.period
+                .cmp(&a.0.period)
+                .then_with(|| a.1.total_cmp(&b.1))
+        })
+        .map(|(order, _)| order)
+}
+
+fn may_set_out(ctx: &Ctx<'_>) -> bool {
+    ctx.cfg.guild.enabled
+        && ctx.cfg.pvp.enabled
+        && !ctx.cfg.guild.siege_zones.is_empty()
+        && !ctx.state.place.in_instance()
+        && !ctx.state.me.dead
+        && ctx.state.me.level >= 35
+        && crate::bot::goals::trade_run::carried_pack_of(ctx).is_none()
+}
+
+pub fn declaration(ctx: &Ctx<'_>) -> Option<Declaration> {
+    if !may_set_out(ctx) || ctx.cfg.guild.siege_declarations.is_empty() {
+        return None;
+    }
+    let guild = ctx.state.guild.get()?;
+    let expedition = guild.log.id;
+    let character = ctx.state.me.char_id;
+    if expedition == 0 || guild.log.owner != character || !ctx.hub.is_bot_char(character) {
+        return None;
+    }
+    if guild.sieges.sites.values().any(|site| {
+        let siege = &site.siege;
+        (matches!(siege.period, sc_siege::WARMUP | sc_siege::BATTLE)
+            || siege.period == sc_siege::DECLARATION && siege.attackers.expedition != 0)
+            && (siege.attackers.expedition == expedition
+                || siege.defenders.expedition == expedition)
+    }) {
+        return None;
+    }
+    let [x, y, _] = ctx.pos();
+    ctx.cfg
+        .guild
+        .siege_declarations
+        .get(&expedition.to_string())?
+        .iter()
+        .filter_map(|place| {
+            let group = place.zone_group;
+            let camp = declaration_camp(group)?;
+            let site = guild.sieges.sites.get(&group)?;
+            let [cx, cy] = place.position;
+            let distance = (cx - x).hypot(cy - y);
+            if distance > MAX_WALK_M || !accepts_declaration(site, expedition, place.position) {
+                return None;
+            }
+            ctx.state.find_item(camp)?;
+            ctx.world
+                .zone_info_at(cx, cy)
+                .filter(|zone| zone.group == group)?;
+            ctx.world
+                .ground_z(cx, cy)
+                .filter(|&z| z > crate::bot::motion::SEA_LEVEL)?;
+            Some((
+                Declaration {
+                    group,
+                    expedition,
+                    camp,
+                    position: place.position,
+                },
+                distance,
+            ))
+        })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(order, _)| order)
+}
+
+pub fn declared_by(ctx: &Ctx<'_>, order: Declaration) -> bool {
+    ctx.state.guild.get().is_some_and(|guild| {
+        guild.log.id == order.expedition
+            && guild
+                .sieges
+                .sites
+                .get(&order.group)
+                .is_some_and(|site| site.siege.attackers.expedition == order.expedition)
+    })
+}
+
+pub fn declaration_open(ctx: &Ctx<'_>, order: Declaration) -> bool {
+    may_set_out(ctx)
+        && ctx.state.guild.get().is_some_and(|guild| {
+            guild.log.id == order.expedition
+                && guild.log.owner == ctx.state.me.char_id
+                && guild
+                    .sieges
+                    .sites
+                    .get(&order.group)
+                    .is_some_and(|site| accepts_declaration(site, order.expedition, order.position))
+        })
 }
 
 pub fn owner(ctx: &Ctx<'_>, group: u16) -> Option<u32> {
@@ -259,11 +380,16 @@ pub fn context(ctx: &Ctx<'_>) -> Option<String> {
     }
     let guild = ctx.state.guild.log()?;
     ctx.cfg.guild.siege_zones.get(&guild.id.to_string())?;
-    let (won, held) = ctx
-        .hub
-        .journal
-        .read(ctx.persona.id, |j| (j.sieges_won, j.sieges_held));
-    let mut summary = format!("Guild siege history includes {won} captures and {held} defenses.");
+    let (declared, won, held) = ctx.hub.journal.read(ctx.persona.id, |j| {
+        (j.sieges_declared, j.sieges_won, j.sieges_held)
+    });
+    let mut summary = format!("My guild siege history includes {declared} declarations, {won} captures and {held} defenses.");
+    if let Some(order) = declaration(ctx) {
+        summary.push_str(&format!(
+            " I have the camp for the open declaration window in territory {}.",
+            order.group
+        ));
+    }
     if let Some(order) = available(ctx, None) {
         let side = if order.side == Side::Attack {
             "attack"
@@ -343,6 +469,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_camp_can_only_approach_the_matching_open_enemy_territory() {
+        let mut site = Site {
+            owner: 44,
+            tower: 7,
+            position: [2000.0, 3000.0, 100.0],
+            siege: Siege {
+                period: sc_siege::DECLARATION,
+                radius_declare: 250,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(declaration_camp(44), Some(21_135));
+        assert_eq!(declaration_camp(70), None);
+        assert!(accepts_declaration(&site, 43, [2255.0, 3000.0]));
+        assert!(!accepts_declaration(&site, 43, [2254.0, 3000.0]));
+        assert!(!accepts_declaration(&site, 44, [2255.0, 3000.0]));
+        site.siege.attackers.expedition = 45;
+        assert!(!accepts_declaration(&site, 43, [2255.0, 3000.0]));
+        site.siege.attackers.expedition = 0;
+        site.siege.period = sc_siege::WARMUP;
+        assert!(!accepts_declaration(&site, 43, [2255.0, 3000.0]));
+    }
+
+    #[test]
     fn a_castle_roster_is_scoped_to_the_server_assigned_side() {
         let mut book = Book::default();
         let siege = Siege {
@@ -355,6 +506,7 @@ mod tests {
                 expedition: 43,
                 members: Box::default(),
             },
+            ..Default::default()
         };
         book.observe(&Event::Territory {
             group: 33,

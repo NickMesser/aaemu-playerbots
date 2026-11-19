@@ -408,6 +408,13 @@ Defenders can engage enrolled attackers under the existing PvP target settings. 
 server's territory update counts as a capture or successful defense, and the director remembers
 those results. This goal requires a server with an active siege and access to that castle zone.
 
+For declarations, list approved camp placement positions in `[guild] siege_declarations`. Each
+entry gives a configured siege `zone_group` and a world `[x, y]` `position` outside the tower's
+declaration exclusion radius. During the announced declaration period, a bot guildmaster with
+the matching siege camp in its inventory can walk to the position and cast the camp's skill.
+The server confirms the declaration before the bot records it. Set the server's castle zone
+access for ordinary declarers before enabling this goal. Supply the matching camps separately.
+
 Use `[guild] territory_patrols` to designate nearby roads and resource sites for guilds that
 hold a castle. Each guild's entries give a `zone_group` and its world `[x, y]` `position`. With
 warzone play enabled, members prioritize reachable sites in active conflict, patrol their

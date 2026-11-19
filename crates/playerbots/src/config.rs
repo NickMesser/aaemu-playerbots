@@ -506,6 +506,8 @@ pub struct GuildCfg {
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
+    /// Approved camp placement sites for a bot guildmaster with a siege camp.
+    pub siege_declarations: std::collections::BTreeMap<String, Vec<TerritoryPatrol>>,
     /// Optional priority cross-continent pack buyer for a Trader guild.
     pub voyage_buyers: std::collections::BTreeMap<String, u32>,
     /// Resource or route sites a castle-holding guild can patrol in active conflict.
@@ -550,6 +552,7 @@ impl Default for GuildCfg {
             production_orders: Default::default(),
             treasuries: Default::default(),
             siege_zones: Default::default(),
+            siege_declarations: Default::default(),
             voyage_buyers: Default::default(),
             territory_patrols: Default::default(),
             rift_patrols: Default::default(),
@@ -1446,6 +1449,20 @@ impl Config {
                         && zones.iter().all(|&zone| zone > 0)
                 }),
             "guild.siege_zones must name nonzero guild and zone group ids"
+        );
+        ensure!(
+            g.siege_declarations.len() <= 16
+                && g.siege_declarations.iter().all(|(guild, sites)| {
+                    g.siege_zones.get(guild).is_some_and(|groups| {
+                        !sites.is_empty()
+                            && sites.len() <= 6
+                            && sites.iter().all(|site| {
+                                groups.contains(&site.zone_group)
+                                    && site.position.iter().all(|p| p.is_finite())
+                            })
+                    })
+                }),
+            "guild.siege_declarations must give valid sites in the guild's configured siege zones"
         );
         ensure!(
             g.voyage_buyers.len() <= 16
