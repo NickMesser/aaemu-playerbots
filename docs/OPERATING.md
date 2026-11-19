@@ -789,7 +789,8 @@ ship = "cutter"    # rowboat (default) | clipper | cutter | junk | yawl | schoon
 * `rowboat` is the default and behaves as before. A scroll in the bag is used; without one a bot
   needs `bots.gm_bootstrap` (it adds the scroll with `/item add self`).
 * `clipper` (6.5 m/s), `cutter` and `junk` (6.3 m/s), `yawl` (9.8 m/s) and `schooner` (6.5 m/s, the
-  merchant ship) sail with the driver only: no crew, cannons or cargo yet. `auto` uses the
+  merchant ship) sail with one pilot. Thieves can use their ship's cannon with
+  `[sail] naval_raids = true`. `auto` uses the
   family of a scroll the bag holds, else gives each bot a boat of its own (mostly rowboats and
   clippers, some cutters and junks, merchants like the schooner).
 * A big hull needs room. The bot looks for a beach (within 1500 m of where it stands) where the

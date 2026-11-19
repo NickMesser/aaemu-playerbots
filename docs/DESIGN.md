@@ -1329,7 +1329,8 @@ Gear -> Plan -> Shore -> Summon -> Board -> Sail -> Land            Abort (every
   scroll is not consumed by the cast.
 - **Limits**: sea only; the bot that is made to leave the goal at sea (a forced goal, a rest) is left
   swimming where it is; passengers (`take_passenger_seat` on seat 2 of the rowboat) are not done;
-  the bigger hulls sail with their driver only (no crew, no cannons, no cargo yet).
+  the bigger hulls sail with one pilot. For an enabled Thief raid, that pilot temporarily moves
+  from the helm to a cannon, then returns to the helm.
 - **Tests**: the water mask, the planner (detour, no route, discs), the shore and launch finders,
   the heading controller (also with an inverted wheel and other hulls), the route follower, and the
   whole machine against a scripted server (`goals/sail/tests.rs`: a rowboat, a clipper and a
