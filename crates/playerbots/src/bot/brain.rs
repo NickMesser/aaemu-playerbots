@@ -1116,12 +1116,12 @@ impl Brain {
 
     /// The goals the director may offer or apply right now.
     fn eligible(&self, ctx: &Ctx<'_>) -> director::Goals {
-        director::eligible_goals(&self.scores_now(ctx), ctx.gm_allowed())
+        director::eligible_goals(&self.scores_now(ctx))
     }
 
     /// [`Brain::eligible`] with the scores, best first.
     fn eligible_scored(&self, ctx: &Ctx<'_>) -> director::Scored {
-        director::eligible_scored(&self.scores_now(ctx), ctx.gm_allowed())
+        director::eligible_scored(&self.scores_now(ctx))
     }
 
     // ---- the director ------------------------------------------------------------------

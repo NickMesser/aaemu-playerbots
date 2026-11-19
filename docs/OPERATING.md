@@ -1279,9 +1279,9 @@ playerbots run --config playerbots.toml
 * **Director.** With `llm.director = true` each bot asks, about every `director_interval_secs`
   (jittered), what to do next, given a short summary of its level, health, zone, money,
   personality, recent goals, surroundings, how many zones it has seen and its last notes. It is
-  offered at most ten numbered options: the goals it may pick right now (not switched off, not
-  cooling down, no GM-only goal without `gm_bootstrap`), best first, and concrete variants it can do
-  now:
+  offered at most ten numbered options, best first. The bot uses its normal goal eligibility
+  checks, including the required items or an owned house for housing on regular characters. The
+  menu also includes concrete variants it can do now:
 
   | Option | Offered when |
   | --- | --- |
