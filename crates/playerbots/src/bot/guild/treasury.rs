@@ -93,6 +93,7 @@ pub struct Account {
     pub support_supplies_spent: u64,
     pub support_gear_spent: u64,
     pub support_training_spent: u64,
+    pub support_land_spent: u64,
     pub bounty_earned: u32,
     pub bounty_paid: u32,
     #[serde(skip_serializing_if = "loan::Loan::unused")]
@@ -105,6 +106,7 @@ impl Account {
             .saturating_sub(self.support_supplies_spent)
             .saturating_sub(self.support_gear_spent)
             .saturating_sub(self.support_training_spent)
+            .saturating_sub(self.support_land_spent)
     }
 
     fn add_contributions(&mut self, week: u64, copper: u64) {
@@ -706,15 +708,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn training_supplies_and_gear_share_one_rank_allowance() {
+    fn training_land_supplies_and_gear_share_one_rank_allowance() {
         let account = Account {
             support_received: 100,
             support_supplies_spent: 20,
             support_gear_spent: 15,
             support_training_spent: 40,
+            support_land_spent: 5,
             ..Account::default()
         };
-        assert_eq!(account.allowance_balance(), 25);
+        assert_eq!(account.allowance_balance(), 20);
     }
 
     #[test]

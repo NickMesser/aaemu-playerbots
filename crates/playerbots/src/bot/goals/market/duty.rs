@@ -20,7 +20,7 @@ use crate::bot::market::ads::lines::{self, Meet, Words};
 use crate::bot::market::ads::names;
 use crate::bot::market::ads::price::{PriceSource, VendorPrices};
 use crate::bot::market::ads::talk::{Medium, PlaceQ};
-use crate::bot::market::ads::{Env, Need, Rules, Surplus};
+use crate::bot::market::ads::{Env, Funding, Need, Rules, Surplus};
 use crate::bot::market::ledger::{bag_count, Ledger};
 use crate::bot::market::needs::{guild_recipe, QuestNeeds};
 use crate::bot::state::{Item, StateError, UnitKind};
@@ -110,7 +110,7 @@ pub fn wanted_goods(
                 template,
                 qty: NEED_QTY,
                 order_price: None,
-                training_guild: None,
+                funding: None,
             });
         }
     }
@@ -211,6 +211,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
         work::customer::active(ctx).is_some_and(|order| order.awaits_materials());
     let recovery_orders = crate::bot::guild::recovery::shopping(ctx);
     let recovery_stock = crate::bot::guild::recovery::stock(ctx);
+    let land_order = crate::bot::guild::land::shopping(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);
     let st = &mut *ctx.state;
     let inner = st.market.inner_mut();
@@ -244,7 +245,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                             template,
                             qty,
                             order_price: Some(price),
-                            training_guild: Some(allowance.guild),
+                            funding: Some(Funding::Training(allowance.guild)),
                         },
                     );
                 }
@@ -259,7 +260,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                             .quote(template)
                             .filter(|_| craft.is_pack)
                             .map(|q| q.ask),
-                        training_guild: None,
+                        funding: None,
                     },
                 );
             }
@@ -295,6 +296,10 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
             .any(|&(item, _)| item == need.template)
     });
     for order in recovery_orders.into_iter().rev() {
+        needs.insert(0, order);
+    }
+    if let Some(order) = land_order {
+        needs.retain(|need| need.template != order.template);
         needs.insert(0, order);
     }
     let audience = board.audience(name, group, unix) + usize::from(real_near);
@@ -431,7 +436,7 @@ fn material_request(
         template: item,
         qty,
         order_price: Some(price),
-        training_guild: None,
+        funding: None,
     })
 }
 

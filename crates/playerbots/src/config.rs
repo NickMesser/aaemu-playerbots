@@ -529,6 +529,8 @@ pub struct GuildCfg {
     /// Maximum copper per training ingredient, by Crafter guild ID and item template.
     pub training_material_prices:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
+    /// Maximum copper per tax certificate for a Potato guild member's garden placement.
+    pub farm_tax_prices: std::collections::BTreeMap<String, u32>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Approved camp placement sites for a bot guildmaster with a siege camp.
@@ -595,6 +597,7 @@ impl Default for GuildCfg {
             treasuries: Default::default(),
             recovery_supplies: Default::default(),
             training_material_prices: Default::default(),
+            farm_tax_prices: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
             siege_camp_bids: Default::default(),
@@ -1552,6 +1555,14 @@ impl Config {
                     })
             }),
             "guild.training_material_prices must name Crafter guilds with rank allowances and valid item prices"
+        );
+        ensure!(
+            g.farm_tax_prices.iter().all(|(guild, price)| {
+                g.professions.get(guild) == Some(&crate::bot::guild::profession::Profession::Potato)
+                    && g.treasuries.get(guild).is_some_and(|terms| terms.weekly_support_copper > 0)
+                    && (1..=100_000).contains(price)
+            }),
+            "guild.farm_tax_prices must name Potato guilds with rank allowances and valid certificate prices"
         );
         ensure!(
             g.siege_zones.len() <= 16

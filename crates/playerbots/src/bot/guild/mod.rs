@@ -39,6 +39,7 @@ pub mod chat;
 pub mod duty;
 pub mod forming;
 pub mod found;
+pub(crate) mod land;
 pub mod leases;
 pub mod life;
 pub mod log;

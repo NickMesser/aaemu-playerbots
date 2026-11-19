@@ -100,7 +100,7 @@ pub struct Talk {
     pub qty: u32,
     /// Copper per unit on the table.
     pub unit: u32,
-    pub training_guild: Option<u32>,
+    pub funding: Option<super::Funding>,
     /// The lowest price per unit a seller takes, or the highest a buyer pays.
     pub limit: u32,
     /// Units the seller has (the cap of `qty`); 0 = not known (a buyer).
@@ -147,7 +147,7 @@ impl Talk {
             template,
             qty: avail,
             unit: quote.ask,
-            training_guild: None,
+            funding: None,
             limit: quote.floor,
             avail,
             stage: Stage::Opened,
@@ -176,7 +176,7 @@ impl Talk {
             template,
             qty,
             unit: 0,
-            training_guild: None,
+            funding: None,
             limit: ceiling,
             avail: 0,
             stage: Stage::Opened,

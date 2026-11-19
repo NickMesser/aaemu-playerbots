@@ -99,7 +99,7 @@ pub fn shopping(ctx: &Ctx<'_>) -> SmallVec<[Need; 2]> {
                 template: supply.item,
                 qty,
                 order_price: Some(supply.unit_copper),
-                training_guild: None,
+                funding: None,
             });
             balance -= u64::from(qty) * u64::from(supply.unit_copper);
         }

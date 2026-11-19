@@ -213,6 +213,8 @@ treasure_hunts = false
 # Fund a Crafter guild's active proficiency recipe up to these copper prices per ingredient.
 # The guild must pay rank allowances through its treasury.
 # training_material_prices = { "43" = { "8008" = 50 } }
+# Fund missing tax certificates after the server quotes a Potato guild member's garden claim.
+# farm_tax_prices = { "42" = 10000 }
 # An optional weekly_support_copper amount funds rank-based allowances from collected contributions.
 # bounty_reward_copper can be added to pay for a server-confirmed Bounty Hunter patrol kill.
 # siege_zones = { "42" = [33] }  # join announced sieges as the attacking or defending guild

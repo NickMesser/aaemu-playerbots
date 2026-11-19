@@ -15,9 +15,10 @@ use crate::bot::ctx::Ctx;
 use crate::bot::goals::trade::{Deal, Plan, Trade};
 use crate::bot::goals::work::training;
 use crate::bot::goals::{FailReason, GoalStatus};
+use crate::bot::guild::land;
 use crate::bot::market::ads::lines::{Meet, Speech};
 use crate::bot::market::ads::talk::{Closed, Role};
-use crate::bot::market::ads::{AdState, Agreed};
+use crate::bot::market::ads::{AdState, Agreed, Funding};
 use crate::bot::market::needs::QuestNeeds;
 use crate::bot::motion::{MotionStatus, Pace};
 use crate::bot::state::{StateError, UnitKind};
@@ -44,7 +45,7 @@ struct Audit {
     qty: i64,
     total: i64,
     seller: bool,
-    training_guild: Option<u32>,
+    funding: Option<Funding>,
     items_before: i64,
     money_before: i64,
 }
@@ -308,8 +309,15 @@ impl Run {
                 ))
             } else {
                 let can_pay = ctx.state.me.money >= total
-                    && d.training_guild
-                        .is_none_or(|guild| training::can_pay(ctx, guild, template, d.qty, d.unit));
+                    && match d.funding {
+                        Some(Funding::Training(guild)) => {
+                            training::can_pay(ctx, guild, template, d.qty, d.unit)
+                        }
+                        Some(Funding::FarmLand(guild)) => {
+                            land::can_pay(ctx, guild, template, d.qty, d.unit)
+                        }
+                        None => true,
+                    };
                 can_pay.then_some((
                     Plan {
                         slot: 0,
@@ -334,7 +342,7 @@ impl Run {
         } else {
             &[(template, i32::try_from(qty).unwrap_or(i32::MAX))]
         };
-        let deal = if d.training_guild.is_some() {
+        let deal = if d.funding.is_some() {
             Deal::fixed(give, items, ask_money)
         } else {
             Deal::agreed(give, items, ask_money)
@@ -358,7 +366,7 @@ impl Run {
             qty,
             total,
             seller,
-            training_guild: d.training_guild,
+            funding: d.funding,
             items_before: count(ctx, template),
             money_before: ctx.state.me.money,
         });
@@ -596,7 +604,7 @@ impl Run {
             want_money,
             got_money: money,
         };
-        let complete = if a.training_guild.is_some() {
+        let complete = if a.funding.is_some() {
             items == want_items && money == want_money
         } else {
             t.is_complete()
@@ -618,10 +626,18 @@ impl Run {
                         j.market_sales.truncate(24);
                     });
                 }
-            } else if let Some(guild) = a.training_guild {
-                training::note_purchase(ctx, guild, a.template, a.qty, a.total as u64);
             } else {
-                crate::bot::guild::recovery::note_purchase(ctx, a.template, a.qty, a.total);
+                match a.funding {
+                    Some(Funding::Training(guild)) => {
+                        training::note_purchase(ctx, guild, a.template, a.qty, a.total as u64)
+                    }
+                    Some(Funding::FarmLand(guild)) => {
+                        land::note_purchase(ctx, guild, a.qty, a.total as u64)
+                    }
+                    None => {
+                        crate::bot::guild::recovery::note_purchase(ctx, a.template, a.qty, a.total)
+                    }
+                }
             }
             ctx.log.say(format!(
                 "market: the trade checks out ({items:+} items, {money:+} copper)"

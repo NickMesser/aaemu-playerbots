@@ -86,6 +86,13 @@ pub enum Side {
     Buy,
 }
 
+/// The guild allowance approved for a negotiated purchase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Funding {
+    Training(u32),
+    FarmLand(u32),
+}
+
 /// An advertisement of this bot that is standing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Listing {
@@ -97,7 +104,7 @@ pub struct Listing {
     pub qty: u32,
     /// Prices per unit.
     pub quote: Quote,
-    pub training_guild: Option<u32>,
+    pub funding: Option<Funding>,
     /// Bot clock it was posted.
     pub posted_ms: u64,
 }
@@ -115,7 +122,7 @@ pub struct Agreed {
     pub qty: u32,
     /// Copper per unit.
     pub unit: u32,
-    pub training_guild: Option<u32>,
+    pub funding: Option<Funding>,
     /// Where to meet.
     pub meet: Meet,
     /// Bot clock of the agreement.
@@ -172,8 +179,8 @@ pub struct Need {
     pub qty: u32,
     /// Fixed price per unit for a guild order.
     pub order_price: Option<u32>,
-    /// Rank allowance that supports this ingredient, if one was budgeted.
-    pub training_guild: Option<u32>,
+    /// Rank allowance supporting this purchase, if one was budgeted.
+    pub funding: Option<Funding>,
 }
 
 impl Need {
@@ -587,7 +594,7 @@ impl AdState {
                     l.quote.ceiling,
                     env.now_ms,
                 );
-                t.training_guild = l.training_guild;
+                t.funding = l.funding;
                 let reply = t.on_line(&h.line, medium, env.now_ms, &mut *env.place);
                 self.keep(t, reply, medium, env);
             }
@@ -640,11 +647,11 @@ impl AdState {
                 ceiling,
                 env.now_ms,
             );
-            t.training_guild = env
+            t.funding = env
                 .needs
                 .iter()
                 .find(|need| need.template == template)
-                .and_then(|need| need.training_guild);
+                .and_then(|need| need.funding);
             let ask_first = env.rng.u8(..100) < ASK_FIRST_PERCENT;
             let speech = t.open_as_buyer(unit, ask_first);
             if speech.is_some() {
@@ -736,7 +743,7 @@ impl AdState {
             template: t.template,
             qty: t.qty,
             unit: t.unit,
-            training_guild: t.training_guild,
+            funding: t.funding,
             meet,
             at_ms: env.now_ms,
         });
@@ -813,7 +820,7 @@ impl AdState {
             template,
             qty,
             quote,
-            training_guild: need.and_then(|need| need.training_guild),
+            funding: need.and_then(|need| need.funding),
             posted_ms: now,
         };
         let speech = match side {

@@ -213,6 +213,10 @@ pub fn certificates_for(total: i32) -> i64 {
     (i64::from(total.max(0)) + CERTIFICATE_COPPER - 1) / CERTIFICATE_COPPER
 }
 
+pub(crate) fn certificates_held(ctx: &Ctx<'_>) -> i64 {
+    ctx.state.item_count(TAX_CERTIFICATE) + ctx.state.item_count(BOUND_TAX_CERTIFICATE)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Decide between building and going home.
@@ -580,8 +584,7 @@ impl Housing {
         };
         let total = plan.total.unwrap_or(0);
         let need = certificates_for(total);
-        let have =
-            ctx.state.item_count(TAX_CERTIFICATE) + ctx.state.item_count(BOUND_TAX_CERTIFICATE);
+        let have = certificates_held(ctx);
         let have_item = ctx.state.find_item(plan.item).is_some();
         if have >= need && have_item {
             self.phase = Phase::Create;

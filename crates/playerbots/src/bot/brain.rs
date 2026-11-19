@@ -924,6 +924,12 @@ impl Brain {
                 allowance.copper
             ));
         }
+        if let Some(need) = super::guild::land::shopping(ctx) {
+            context.push_str(&format!(
+                " The server quoted a garden claim. Rank allowances can fund {} more tax certificates.",
+                need.qty
+            ));
+        }
         for (item, stock) in super::guild::recovery::stock(ctx) {
             let count = ctx.state.item_count(item);
             let name = ctx.world.item_name(item).unwrap_or("recovery items");
