@@ -250,6 +250,7 @@ fn gate_unit(obj: u32, owner: u32, pos: [f32; 3]) -> UnitInfo {
         owner_name: "Tester".into(),
         owner_id: owner,
         tl_id: 0,
+        slave_parent: 0,
         pos: (pos[0], pos[1], pos[2]),
         level: 1,
         hp: 100,

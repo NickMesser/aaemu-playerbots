@@ -208,6 +208,27 @@ fn start_skill_unit_on_position() {
 }
 
 #[test]
+fn a_cannon_uses_a_mount_caster_and_position_target() {
+    let body = cat(&[
+        &10_473u32.to_le_bytes(),
+        &[3, 0x0C, 0x0B, 0x0A],
+        &16u32.to_le_bytes(),
+        &[1],
+        &X_1,
+        &Y_M2,
+        &F_3_5,
+        &[0; 4],
+        &[0; 6],
+        &[0],
+    ]);
+    game(
+        cs::start_mount_skill_position(10_473, 0x0A0B0C, 16, (1.0, -2.0, 3.5)),
+        op::CSStartSkillPacket,
+        &body,
+    );
+}
+
+#[test]
 fn start_skill_from_an_item() {
     let body = cat(&[
         &[7, 0, 0, 0],

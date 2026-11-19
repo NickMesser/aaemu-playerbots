@@ -21,6 +21,7 @@
 
 pub mod follow;
 pub mod helm;
+pub mod naval;
 #[cfg(test)]
 pub(crate) mod sim;
 
@@ -179,6 +180,7 @@ pub struct Sailor {
     pub last_trip_end_ms: u64,
     /// Trips ended.
     pub trips: u16,
+    pub naval: Option<Box<naval::Sight>>,
 }
 
 impl Sailor {
@@ -216,6 +218,12 @@ impl Sailor {
 }
 
 impl VehicleState {
+    pub fn observe_naval(&mut self, event: &WorldEvent) {
+        if let Some(sight) = self.sailor.as_mut().and_then(|s| s.naval.as_deref_mut()) {
+            sight.observe(event);
+        }
+    }
+
     /// A slave event of the server (see the module docs for which); `my_obj` is the bot's own
     /// object id (0 before it spawned).
     pub fn on_event(&mut self, ev: &WorldEvent, my_obj: u32) {

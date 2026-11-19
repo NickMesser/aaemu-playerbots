@@ -1,5 +1,7 @@
 //! Guild production orders, completed only when the server delivers the item.
 
+mod treasure;
+
 use aa_proto::cs;
 use serde::Deserialize;
 
@@ -198,6 +200,7 @@ pub fn score(ctx: &Ctx<'_>) -> f32 {
     match available_order(ctx) {
         Some((Order::Hunt { item, count }, _)) if Hunt::start(ctx, item, count).is_some() => 1.0,
         Some((order, training)) if plan(ctx, order, training).is_some() => 1.0,
+        _ if treasure::find(ctx).is_some() => 1.0,
         _ => 0.0,
     }
 }
@@ -237,6 +240,7 @@ impl Hunt {
 pub struct Work {
     job: Option<Job>,
     hunt: Option<Box<Hunt>>,
+    treasure: Option<Box<treasure::Hunt>>,
     walker: Walker,
     deadline: u64,
     expected: Option<i64>,
@@ -249,7 +253,7 @@ impl Work {
                 self.hunt = Hunt::start(ctx, item, count).map(Box::new);
             }
             Some((order, training)) => self.job = plan(ctx, order, training),
-            None => {}
+            None => self.treasure = treasure::find(ctx).map(Box::new),
         }
         self.deadline = ctx.now_ms + 90_000;
     }
@@ -259,6 +263,9 @@ impl Work {
     }
 
     pub fn tick(&mut self, ctx: &mut Ctx<'_>, combat: CombatStatus) -> GoalStatus {
+        if let Some(treasure) = &mut self.treasure {
+            return treasure.tick(ctx, &mut self.walker);
+        }
         if let Some(hunt) = &mut self.hunt {
             if ctx.state.item_count(hunt.item) >= i64::from(hunt.count) {
                 note_receipt(ctx, hunt.item, false);
@@ -319,6 +326,10 @@ impl Work {
     }
 
     pub fn describe(&self, out: &mut String) {
+        if self.treasure.is_some() {
+            out.push_str("work: opening a Pirate Treasure Chest");
+            return;
+        }
         if let Some(hunt) = &self.hunt {
             use std::fmt::Write;
             let _ = write!(out, "Hunting for {} of item {}. ", hunt.count, hunt.item);

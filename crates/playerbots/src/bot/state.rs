@@ -768,6 +768,7 @@ impl BotState {
     }
 
     fn apply_world(&mut self, ev: &WorldEvent) {
+        self.vehicle.observe_naval(ev);
         match route(ev) {
             Route::Travel => return self.travel.on_event(ev, self.me.obj, self.now_ms),
             Route::Vehicle => {
@@ -1898,6 +1899,7 @@ mod tests {
             owner_name: "".into(),
             owner_id: 0,
             tl_id: 0,
+            slave_parent: 0,
             pos: (15010.0, 15100.0, 126.0),
             level: 5,
             hp: 300,

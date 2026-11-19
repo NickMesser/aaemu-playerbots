@@ -730,6 +730,23 @@ fn position_target(pos: (f32, f32, f32), rotation: f32) -> impl FnOnce(&mut Pack
     }
 }
 
+/// A mounted weapon skill aimed at a world position.
+pub fn start_mount_skill_position(
+    skill_id: u32,
+    mount: u32,
+    mount_skills: u32,
+    pos: (f32, f32, f32),
+) -> Out {
+    start_skill(
+        skill_id,
+        |s| {
+            s.write_u8(3).write_bc(mount).write_u32(mount_skills);
+        },
+        position_target(pos, 0.0),
+        &SkillObject::None,
+    )
+}
+
 /// Cast an inventory item's skill at a world position, such as applying chum to a fish school.
 pub fn start_skill_item_at(
     skill_id: u32,

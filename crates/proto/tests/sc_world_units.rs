@@ -373,6 +373,7 @@ fn slave_unit_state() {
     let info = unit_info(&s);
     assert_eq!(info.unit_type, unit_type::SLAVE);
     assert_eq!((info.id, info.tl_id, info.owner_id), (3_000, 321, 1001));
+    assert_eq!(info.slave_parent, 0x0201);
     assert_eq!(&*info.owner_name, "Captain");
     assert_eq!(info.level, 12);
     assert_eq!(info.hp, 3_000);
@@ -394,6 +395,7 @@ fn slave_unit_state() {
     let info = unit_info(&s);
     assert!(info.complete);
     assert_eq!(info.faction_id, 115);
+    assert_eq!(info.slave_parent, 0);
 }
 
 #[test]

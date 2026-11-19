@@ -375,6 +375,8 @@ pub struct SailCfg {
     pub ship: ShipChoice,
     /// Allow Trader guild members to sail their own boats with packs to other continents.
     pub trade_passages: bool,
+    /// Allow Thief guild members with armed ships and ammo to fire on hostile ships at war.
+    pub naval_raids: bool,
 }
 
 /// `[mounts]`: the owned mount and glider a bot uses on long trips (switched on and off by
@@ -506,6 +508,8 @@ pub struct GuildCfg {
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
     /// Pack recipes Trader guild members provision and run.
     pub trade_pack_orders: std::collections::BTreeMap<String, u32>,
+    /// Let Thieves and Bounty Hunters open Pirate Treasure Chests with their own keys.
+    pub treasure_hunts: bool,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
@@ -566,6 +570,7 @@ impl Default for GuildCfg {
             auction_flips: false,
             production_orders: Default::default(),
             trade_pack_orders: Default::default(),
+            treasure_hunts: false,
             treasuries: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),

@@ -347,6 +347,10 @@ fn issue(
 }
 
 impl Machine {
+    pub(super) fn underway(&self) -> bool {
+        self.phase == Phase::Sail
+    }
+
     /// A trip starting at bot clock `now_ms` from `pos`.
     pub fn new(now_ms: u64, pos: [f32; 3]) -> Machine {
         Machine {

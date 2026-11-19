@@ -25,6 +25,7 @@
 //! rounded corners, slow down for the corners and for the berth, and berth out at sea.
 
 mod machine;
+mod piracy;
 pub mod trip;
 
 #[cfg(test)]
@@ -62,13 +63,20 @@ const COAST_PROBES_M: [f32; 3] = [100.0, 250.0, 450.0];
 pub struct Sail {
     trip: Option<Box<Machine>>,
     trade_destination: Option<(f32, f32)>,
+    patrol: Option<Box<piracy::Patrol>>,
 }
 
 impl Sail {
     /// Called once when the brain picks the goal.
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
         self.trade_destination = None;
-        ctx.state.vehicle.sailor_mut().active = true;
+        let armed = naval_ready(ctx);
+        let sailor = ctx.state.vehicle.sailor_mut();
+        sailor.active = true;
+        if armed {
+            sailor.naval = Some(Box::default());
+            self.patrol = Some(Box::default());
+        }
         self.trip = Some(Box::new(Machine::new(ctx.now_ms, ctx.state.me.pos)));
     }
 
@@ -84,6 +92,9 @@ impl Sail {
         };
         if !ctx.cfg.behavior.sailing {
             return GoalStatus::Failed(FailReason::Other("sailing is switched off"));
+        }
+        if machine.underway() && self.patrol.as_mut().is_some_and(|patrol| patrol.tick(ctx)) {
+            return GoalStatus::Running;
         }
         let world = ctx.world;
         let Some(pick) = pick_for(ctx) else {
@@ -119,6 +130,10 @@ impl Sail {
 
     /// Called when the goal ends, fails or is interrupted: leaves the seat and despawns the boat.
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
+        if let Some(mut patrol) = self.patrol.take() {
+            patrol.stop(ctx);
+            ctx.state.vehicle.sailor_mut().naval = None;
+        }
         if let Some(mut machine) = self.trip.take() {
             let world = ctx.world;
             if let Some((pick, map, shore_map)) = pick_for(ctx)
@@ -257,6 +272,20 @@ pub(super) fn owned_trade_ship(ctx: &Ctx<'_>) -> Option<ShipClass> {
     }
     let pick = pick_for(ctx)?;
     (ctx.state.item_count(pick.item) > 0).then_some(pick.class)
+}
+
+pub fn naval_ready(ctx: &Ctx<'_>) -> bool {
+    ctx.cfg.behavior.sailing
+        && piracy::enabled(ctx)
+        && pick_for(ctx).is_some_and(|pick| {
+            ctx.state.item_count(pick.item) > 0
+                && ctx
+                    .world
+                    .travel()
+                    .boats
+                    .slave_template(pick.class.slave)
+                    .is_some_and(|hull| hull.cannon_points().next().is_some())
+        })
 }
 
 pub(super) fn plan_trade_passage(

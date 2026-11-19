@@ -131,6 +131,8 @@ relax_after_secs = 120
 ship = "rowboat"
 # Trader guild members can sail an owned boat to a trade buyer on another continent.
 trade_passages = false
+# Thief guild members with an armed hull and Steel Ammo may fire on hostile ships during war.
+naval_raids = false
 
 [mounts]
 # Mounts and gliders: a bot summons the rideable mate of a summon item it owns for a long
@@ -197,6 +199,7 @@ work_percent = 60
 # farm_choices = { "42" = [12345, 12346] }  # seed templates compared using recent sales
 # farm_leases = { "42" = [{ house = 123, rent_copper = 20 }] }  # guild-shared garden by native house ID
 auction_flips = false
+treasure_hunts = false
 # trade_pack_orders = { "43" = 6223 }  # a Trader guild's assigned pack recipe and ingredient order
 # treasuries = { "42" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }
 # An optional weekly_support_copper amount funds rank-based allowances from collected contributions.

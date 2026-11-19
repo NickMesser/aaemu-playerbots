@@ -33,10 +33,10 @@ impl Profession {
         use GoalKind::*;
         match self {
             Self::Potato => &[Farm, Market],
-            Self::Thief => &[Gank, Farm],
+            Self::Thief => &[Gank, Farm, Work],
             Self::Trader => &[TradeRun, Auction, Market],
             Self::Adventurer => &[Dungeon, Grind, FieldParty, Work],
-            Self::BountyHunter => &[Warzone],
+            Self::BountyHunter => &[Warzone, Work],
             Self::Crafter => &[Work, Market],
             Self::Gatherer => &[Work, Fish, Market],
         }

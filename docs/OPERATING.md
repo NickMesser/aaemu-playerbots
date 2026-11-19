@@ -401,6 +401,11 @@ contributions collected that week, including the cost of postage, and keeps the 
 Bot members collect allowances from their guildmaster. The director remembers receipts so it can
 consider the added buying power when deciding what to do.
 
+Set `[guild] treasure_hunts = true` to let Thief and Bounty Hunter guild members open nearby
+Pirate Treasure Chests. A bot needs a Freedich Island Treasure Chest Key in its own bag. It uses
+the normal unlock skill and counts a successful hunt after the key and loot change on the server.
+Confirmed copper is eligible for the guild's commission, and the director sees the hunt count.
+
 A Trader guild with a configured `trade_pack_orders` recipe can set `trade_loan_copper` on its
 treasury. A member who cannot afford the estimated cost of tradable ingredients can request up
 to that amount. The guildmaster sends at most one advance per member per week from confirmed
@@ -513,6 +518,13 @@ ingredients. Bots already carrying a pack can still sell it.
 Trader guild members also compare gross quotes with estimated material replacement costs and
 recorded failures on the route. Bot memory records land and sea runs separately and exposes the
 last quote and available cost estimate to the director.
+
+With `[sail] naval_raids = true`, an eligible Thief guild member at level 35 or higher can use
+the cannons on its own sailing ship. The bot needs Steel Ammo and an accessible cannon. When a
+hostile ship and its owner are visible in the same active war zone, the bot checks the normal
+PvP target rules, slows, mans a cannon and fires up to three shots at the hull. It leads moving
+ships using their reported velocity, then returns to the helm. The director sees confirmed hits
+in the bot's memory. These sailing trips count against its guild work time.
 
 ### Trade escorts
 

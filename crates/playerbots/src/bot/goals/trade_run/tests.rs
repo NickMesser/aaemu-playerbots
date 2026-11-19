@@ -315,6 +315,7 @@ fn npc(obj: u32, template: u32, x: f32, y: f32) -> UnitInfo {
         owner_name: "".into(),
         owner_id: 0,
         tl_id: 0,
+        slave_parent: 0,
         pos: (x, y, 100.0),
         level: 10,
         hp: 100,

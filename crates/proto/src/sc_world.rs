@@ -210,6 +210,8 @@ pub struct UnitInfo {
     pub owner_id: u32,
     /// Transport-layer id of slaves, houses, transfers and mates; 0 otherwise.
     pub tl_id: u16,
+    /// Parent object of an attached slave. Its position is relative to this object.
+    pub slave_parent: u32,
     /// Position.
     pub pos: Pos,
     /// Level.
@@ -1739,6 +1741,7 @@ fn read_unit_state(s: &mut PacketStream) -> Res<Option<WorldEvent>> {
         owner_name,
         owner_id,
         tl_id,
+        slave_parent: 0,
         pos,
         level,
         hp,
@@ -1771,7 +1774,7 @@ fn read_unit_tail(s: &mut PacketStream, unit: &mut UnitInfo) -> Res<()> {
     match ty {
         unit_type::SLAVE => {
             if s.read_i8()? > -1 {
-                skip(s, 3)?; // owner object
+                unit.slave_parent = s.read_bc()?;
             }
         }
         unit_type::TRANSFER => {

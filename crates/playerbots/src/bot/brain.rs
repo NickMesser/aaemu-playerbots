@@ -607,7 +607,8 @@ impl Brain {
         let work_available = self.guild_service_available(ctx.now_ms);
         let territory_work =
             kind == GoalKind::Warzone && super::goals::warzone::territory_patrol_ready(ctx);
-        if (forage_leader || territory_work) && !work_available {
+        let naval_work = kind == GoalKind::Sail && super::goals::sail::naval_ready(ctx);
+        if (forage_leader || territory_work || naval_work) && !work_available {
             return;
         }
         let why = args.as_ref().and_then(|a| a.why.clone());
@@ -625,7 +626,8 @@ impl Brain {
                 && (profession.goals().contains(&kind)
                     || kind == GoalKind::Delivery && super::goals::delivery::scouting(ctx))
         });
-        if professional || forage_leader || territory_work || kind == GoalKind::Siege {
+        if professional || forage_leader || territory_work || naval_work || kind == GoalKind::Siege
+        {
             let interval = ctx.cfg.llm.director_interval_secs;
             self.chat(ctx.rng, interval).guild_service.start(ctx.now_ms);
         }
@@ -741,6 +743,9 @@ impl Brain {
             if super::goals::warzone::territory_patrol_ready(ctx) {
                 blocked |= 1 << GoalKind::Warzone.index();
             }
+            if super::goals::sail::naval_ready(ctx) {
+                blocked |= 1 << GoalKind::Sail.index();
+            }
         }
         for g in GoalKind::ALL {
             if self.cooldown_until.active(g, ctx.now_ms) {
@@ -812,6 +817,9 @@ impl Brain {
             return self.guild_service_available(ctx.now_ms);
         }
         if kind == GoalKind::Siege {
+            return self.guild_service_available(ctx.now_ms);
+        }
+        if kind == GoalKind::Sail && super::goals::sail::naval_ready(ctx) {
             return self.guild_service_available(ctx.now_ms);
         }
         if kind == GoalKind::Warzone && super::goals::warzone::territory_patrol_ready(ctx) {
@@ -962,8 +970,23 @@ impl Brain {
                 }
             });
         }
+        if ctx.cfg.guild.treasure_hunts
+            && matches!(
+                role,
+                profession::Profession::Thief | profession::Profession::BountyHunter
+            )
+        {
+            let chests = ctx.hub.journal.read(ctx.persona.id, |j| j.treasure_chests);
+            context.push_str(&format!(" Pirate treasure chests looted: {chests}."));
+        }
         if role == profession::Profession::Thief {
             ctx.hub.journal.read(ctx.persona.id, |j| {
+                if ctx.cfg.sail.naval_raids {
+                    context.push_str(&format!(
+                        " Confirmed cannon hits on enemy ships: {}.",
+                        j.naval_hits
+                    ));
+                }
                 for raid in j.raid_sites.iter().take(3) {
                     let [x, y] = raid.position;
                     context.push_str(&format!(
@@ -972,6 +995,9 @@ impl Brain {
                     ));
                 }
             });
+            if super::goals::sail::naval_ready(ctx) {
+                context.push_str(" I have an armed ship and Steel Ammo for a naval raid.");
+            }
         }
         Some(context)
     }

@@ -108,6 +108,10 @@ pub struct Journal {
     pub auction_resale_profit: i64,
     /// Places where this bot recovered a pack after a guild ambush.
     pub raid_sites: Vec<RaidSite>,
+    /// Naval volleys that the server credited with a hit on the selected ship.
+    pub naval_hits: u32,
+    /// Pirate Treasure Chests whose loot was confirmed.
+    pub treasure_chests: u32,
     /// Server-confirmed kills of characters reported for attacking trade runners.
     pub bounties_completed: u32,
     /// Confirmed feed, treatment and collection actions on guild livestock.
