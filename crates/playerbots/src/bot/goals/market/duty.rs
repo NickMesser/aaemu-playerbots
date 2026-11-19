@@ -110,6 +110,7 @@ pub fn wanted_goods(
                 template,
                 qty: NEED_QTY,
                 order_price: None,
+                training_guild: None,
             });
         }
     }
@@ -204,6 +205,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     // what the bot has and wants
     crate::bot::guild::treasury::note_pack_budget(ctx);
     let work_order = work::selected_order(ctx);
+    let training = work::training::Allowance::for_order(ctx, work_order);
     let guild_recipe = guild_recipe(ctx);
     let customer_provides_inputs =
         work::customer::active(ctx).is_some_and(|order| order.awaits_materials());
@@ -225,27 +227,41 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                     .any(|&(item, _)| item == need.template)
             });
         }
-    } else if money >= SHOP_MONEY {
-        if let Some(craft) = guild_recipe.filter(|c| st.me.level >= c.req_level) {
-            for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t))
+    } else if let Some(craft) = guild_recipe.filter(|c| st.me.level >= c.req_level) {
+        for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t)) {
+            let count = bag_count(&st.bag, template);
+            let missing = u32::try_from(i64::from(quantity) - count).unwrap_or(0);
+            if let Some((allowance, price)) = training
+                .as_ref()
+                .and_then(|allowance| allowance.price(template).map(|price| (allowance, price)))
             {
-                let count = bag_count(&st.bag, template);
-                if let Ok(qty) = u32::try_from(i64::from(quantity) - count) {
-                    if qty > 0 {
-                        needs.retain(|n| n.template != template);
-                        needs.insert(
-                            0,
-                            Need {
-                                template,
-                                qty,
-                                order_price: prices
-                                    .quote(template)
-                                    .filter(|_| craft.is_pack)
-                                    .map(|q| q.ask),
-                            },
-                        );
-                    }
+                needs.retain(|need| need.template != template);
+                let qty = u64::from(missing).min(allowance.copper / u64::from(price)) as u32;
+                if qty != 0 {
+                    needs.insert(
+                        0,
+                        Need {
+                            template,
+                            qty,
+                            order_price: Some(price),
+                            training_guild: Some(allowance.guild),
+                        },
+                    );
                 }
+            } else if money >= SHOP_MONEY && missing != 0 {
+                needs.retain(|need| need.template != template);
+                needs.insert(
+                    0,
+                    Need {
+                        template,
+                        qty: missing,
+                        order_price: prices
+                            .quote(template)
+                            .filter(|_| craft.is_pack)
+                            .map(|q| q.ask),
+                        training_guild: None,
+                    },
+                );
             }
         }
     }
@@ -415,6 +431,7 @@ fn material_request(
         template: item,
         qty,
         order_price: Some(price),
+        training_guild: None,
     })
 }
 

@@ -13,6 +13,7 @@ use super::report::{self, Transfer};
 use crate::bot::cmd::{PairKind, PairOrder, PairRole};
 use crate::bot::ctx::Ctx;
 use crate::bot::goals::trade::{Deal, Plan, Trade};
+use crate::bot::goals::work::training;
 use crate::bot::goals::{FailReason, GoalStatus};
 use crate::bot::market::ads::lines::{Meet, Speech};
 use crate::bot::market::ads::talk::{Closed, Role};
@@ -43,6 +44,7 @@ struct Audit {
     qty: i64,
     total: i64,
     seller: bool,
+    training_guild: Option<u32>,
     items_before: i64,
     money_before: i64,
 }
@@ -305,7 +307,10 @@ impl Run {
                     money,
                 ))
             } else {
-                (ctx.state.me.money >= total).then_some((
+                let can_pay = ctx.state.me.money >= total
+                    && d.training_guild
+                        .is_none_or(|guild| training::can_pay(ctx, guild, template, d.qty, d.unit));
+                can_pay.then_some((
                     Plan {
                         slot: 0,
                         template: 0,
@@ -329,7 +334,11 @@ impl Run {
         } else {
             &[(template, i32::try_from(qty).unwrap_or(i32::MAX))]
         };
-        let deal = Deal::agreed(give, items, ask_money);
+        let deal = if d.training_guild.is_some() {
+            Deal::fixed(give, items, ask_money)
+        } else {
+            Deal::agreed(give, items, ask_money)
+        };
         let order = PairOrder {
             kind: PairKind::Trade,
             role: if seller {
@@ -349,6 +358,7 @@ impl Run {
             qty,
             total,
             seller,
+            training_guild: d.training_guild,
             items_before: count(ctx, template),
             money_before: ctx.state.me.money,
         });
@@ -586,7 +596,12 @@ impl Run {
             want_money,
             got_money: money,
         };
-        if t.is_complete() {
+        let complete = if a.training_guild.is_some() {
+            items == want_items && money == want_money
+        } else {
+            t.is_complete()
+        };
+        if complete {
             if a.seller {
                 use crate::bot::{cmd::GoalKind, guild::treasury};
                 treasury::note_receipt(ctx, GoalKind::Market, a.total.max(0) as u64);
@@ -603,6 +618,8 @@ impl Run {
                         j.market_sales.truncate(24);
                     });
                 }
+            } else if let Some(guild) = a.training_guild {
+                training::note_purchase(ctx, guild, a.template, a.qty, a.total as u64);
             } else {
                 crate::bot::guild::recovery::note_purchase(ctx, a.template, a.qty, a.total);
             }

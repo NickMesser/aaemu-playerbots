@@ -526,6 +526,9 @@ pub struct GuildCfg {
     /// Approved recovery items bought from rank allowances, by guild ID.
     pub recovery_supplies:
         std::collections::BTreeMap<String, Vec<crate::bot::guild::recovery::Supply>>,
+    /// Maximum copper per training ingredient, by Crafter guild ID and item template.
+    pub training_material_prices:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Approved camp placement sites for a bot guildmaster with a siege camp.
@@ -591,6 +594,7 @@ impl Default for GuildCfg {
             treasure_hunts: false,
             treasuries: Default::default(),
             recovery_supplies: Default::default(),
+            training_material_prices: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
             siege_camp_bids: Default::default(),
@@ -1536,6 +1540,18 @@ impl Config {
                     && supplies.iter().all(|supply| supply.valid())
             }),
             "guild.recovery_supplies must name guilds with rank allowances and one to eight valid supplies"
+        );
+        ensure!(
+            g.training_material_prices.iter().all(|(guild, prices)| {
+                g.professions.get(guild) == Some(&crate::bot::guild::profession::Profession::Crafter)
+                    && g.treasuries.get(guild).is_some_and(|terms| terms.weekly_support_copper > 0)
+                    && (1..=16).contains(&prices.len())
+                    && prices.iter().all(|(item, price)| {
+                        item.parse::<u32>().is_ok_and(|id| id > 0 && id.to_string() == *item)
+                            && (1..=100_000).contains(price)
+                    })
+            }),
+            "guild.training_material_prices must name Crafter guilds with rank allowances and valid item prices"
         );
         ensure!(
             g.siege_zones.len() <= 16

@@ -2,6 +2,7 @@
 
 pub mod assignment;
 pub mod customer;
+pub(crate) mod training;
 pub(crate) mod treasure;
 
 use aa_proto::cs;

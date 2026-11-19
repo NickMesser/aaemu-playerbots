@@ -97,6 +97,7 @@ pub struct Listing {
     pub qty: u32,
     /// Prices per unit.
     pub quote: Quote,
+    pub training_guild: Option<u32>,
     /// Bot clock it was posted.
     pub posted_ms: u64,
 }
@@ -114,6 +115,7 @@ pub struct Agreed {
     pub qty: u32,
     /// Copper per unit.
     pub unit: u32,
+    pub training_guild: Option<u32>,
     /// Where to meet.
     pub meet: Meet,
     /// Bot clock of the agreement.
@@ -170,6 +172,8 @@ pub struct Need {
     pub qty: u32,
     /// Fixed price per unit for a guild order.
     pub order_price: Option<u32>,
+    /// Rank allowance that supports this ingredient, if one was budgeted.
+    pub training_guild: Option<u32>,
 }
 
 impl Need {
@@ -583,6 +587,7 @@ impl AdState {
                     l.quote.ceiling,
                     env.now_ms,
                 );
+                t.training_guild = l.training_guild;
                 let reply = t.on_line(&h.line, medium, env.now_ms, &mut *env.place);
                 self.keep(t, reply, medium, env);
             }
@@ -635,6 +640,11 @@ impl AdState {
                 ceiling,
                 env.now_ms,
             );
+            t.training_guild = env
+                .needs
+                .iter()
+                .find(|need| need.template == template)
+                .and_then(|need| need.training_guild);
             let ask_first = env.rng.u8(..100) < ASK_FIRST_PERCENT;
             let speech = t.open_as_buyer(unit, ask_first);
             if speech.is_some() {
@@ -726,6 +736,7 @@ impl AdState {
             template: t.template,
             qty: t.qty,
             unit: t.unit,
+            training_guild: t.training_guild,
             meet,
             at_ms: env.now_ms,
         });
@@ -774,11 +785,10 @@ impl AdState {
             self.next_ad_ms = now + env.rules.ad_interval_ms.max(60_000) / 4;
             return;
         }
-        let fixed_price = side == Side::Buy
-            && env
-                .needs
-                .iter()
-                .any(|need| need.template == template && need.order_price.is_some());
+        let need = (side == Side::Buy)
+            .then(|| env.needs.iter().find(|need| need.template == template))
+            .flatten();
+        let fixed_price = need.is_some_and(|need| need.order_price.is_some());
         let spread = if fixed_price {
             0
         } else {
@@ -803,6 +813,7 @@ impl AdState {
             template,
             qty,
             quote,
+            training_guild: need.and_then(|need| need.training_guild),
             posted_ms: now,
         };
         let speech = match side {

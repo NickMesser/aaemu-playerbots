@@ -915,6 +915,15 @@ impl Brain {
         if let Some(order) = super::goals::work::customer::summary(ctx) {
             context.push_str(&order);
         }
+        if let Some(allowance) = super::goals::work::training::Allowance::for_order(
+            ctx,
+            super::goals::work::selected_order(ctx),
+        ) {
+            context.push_str(&format!(
+                " Rank allowance for approved training materials: {} copper available.",
+                allowance.copper
+            ));
+        }
         for (item, stock) in super::guild::recovery::stock(ctx) {
             let count = ctx.state.item_count(item);
             let name = ctx.world.item_name(item).unwrap_or("recovery items");

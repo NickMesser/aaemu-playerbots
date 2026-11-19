@@ -134,11 +134,13 @@ fn an_unaffordable_order_does_not_block_other_ingredient_ads() {
             template: HAY,
             qty: 6,
             order_price: Some(500),
+            training_guild: None,
         },
         Need {
             template: ORE,
             qty: 12,
             order_price: Some(20),
+            training_guild: None,
         },
     ];
     let mut ads = AdState::default();
@@ -257,6 +259,7 @@ fn a_bot_that_needs_goods_posts_a_wanted_ad_it_can_pay() {
         template: HAY,
         qty: 10,
         order_price: None,
+        training_guild: None,
     }];
     let mut a = AdState::default();
     r.step(&mut a, 10_000);
@@ -276,6 +279,7 @@ fn a_bot_that_needs_goods_posts_a_wanted_ad_it_can_pay() {
         template: HAY,
         qty: 10,
         order_price: None,
+        training_guild: None,
     }];
     r2.money = 100;
     let mut a = AdState::default();
@@ -291,12 +295,14 @@ fn a_guild_order_posts_the_agreed_price_without_a_random_spread() {
         template: HAY,
         qty: 3,
         order_price: Some(90),
+        training_guild: Some(42),
     }];
     let mut a = AdState::default();
     r.step(&mut a, 10_000);
     let listing = a.listing().expect("posted");
     assert_eq!(listing.quote.ask, 90);
     assert_eq!(listing.quote.ceiling, 90);
+    assert_eq!(listing.training_guild, Some(42));
     let speech = said(&mut a, 10_000);
     assert!(matches!(
         speech[0].speech,
@@ -306,6 +312,17 @@ fn a_guild_order_posts_the_agreed_price_without_a_random_spread() {
             ..
         }
     ));
+    a.on_chat(-3, "Bob", "I have 3 Hay Bale, 90c each", 20_000);
+    r.step(&mut a, 20_100);
+    r.needs.clear();
+    a.on_chat(
+        -3,
+        "Bob",
+        "deal! 3 Hay Bale for 270c total. meet me on Mirage Isle by the mailbox",
+        30_000,
+    );
+    r.step(&mut a, 30_100);
+    assert_eq!(a.deal().and_then(|deal| deal.training_guild), Some(42));
 }
 
 fn post(r: &mut Rig, a: &mut AdState) {
@@ -584,6 +601,7 @@ fn a_bot_with_its_own_advertisement_still_answers_the_ad_that_matches() {
                 ceiling: 40,
             },
             posted_ms: 1_000,
+            training_guild: None,
         });
         b.on_chat(
             2,
@@ -617,6 +635,7 @@ fn of_two_sellers_that_want_each_others_goods_only_one_answers() {
             ceiling: 40,
         },
         posted_ms: 1_000,
+        training_guild: None,
     };
     let answered = |me: &'static str, other: &'static str| {
         let mut n = 0;

@@ -92,6 +92,7 @@ pub struct Account {
     pub support_received: u64,
     pub support_supplies_spent: u64,
     pub support_gear_spent: u64,
+    pub support_training_spent: u64,
     pub bounty_earned: u32,
     pub bounty_paid: u32,
     #[serde(skip_serializing_if = "loan::Loan::unused")]
@@ -103,6 +104,7 @@ impl Account {
         self.support_received
             .saturating_sub(self.support_supplies_spent)
             .saturating_sub(self.support_gear_spent)
+            .saturating_sub(self.support_training_spent)
     }
 
     fn add_contributions(&mut self, week: u64, copper: u64) {
@@ -702,6 +704,18 @@ fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn training_supplies_and_gear_share_one_rank_allowance() {
+        let account = Account {
+            support_received: 100,
+            support_supplies_spent: 20,
+            support_gear_spent: 15,
+            support_training_spent: 40,
+            ..Account::default()
+        };
+        assert_eq!(account.allowance_balance(), 25);
+    }
 
     #[test]
     fn sent_contributions_are_recognized_on_a_new_connection() {
