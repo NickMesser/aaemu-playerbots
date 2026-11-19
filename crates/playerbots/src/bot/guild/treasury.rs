@@ -86,6 +86,7 @@ pub struct Account {
     pub contribution_week: u64,
     pub contributions_this_week: u64,
     pub support_received: u64,
+    pub support_supplies_spent: u64,
     pub bounty_earned: u32,
     pub bounty_paid: u32,
     #[serde(skip_serializing_if = "loan::Loan::unused")]

@@ -47,6 +47,9 @@ impl QuestNeeds {
                 needs.add(map, count);
             }
         }
+        for (item, stock) in crate::bot::guild::recovery::stock(ctx) {
+            needs.add(item, stock);
+        }
         needs
     }
 

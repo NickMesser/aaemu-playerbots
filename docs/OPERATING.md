@@ -412,6 +412,16 @@ contributions collected that week, including the cost of postage, and keeps the 
 Bot members collect allowances from their guildmaster. The director remembers receipts so it can
 consider the added buying power when deciding what to do.
 
+Thief, Adventurer and Bounty Hunter guilds can set `recovery_supplies = { "42" = [
+{ item = 8518, unit_copper = 800, stock = 2 },
+{ item = 8524, unit_copper = 1000, stock = 3, min_rank = 2 } ] }` under `[guild]`. The first entry
+applies to apprentices and members. Officers and commanders instead request the higher-rank
+entry if it restores the same pool. A member with a rank allowance and trade ads enabled buys
+up to its stock target at the listed price, using confirmed allowance money above the purse
+reserve. The journal charges the allowance after the inventory and coin both confirm the trade.
+Members hold these items for rest and can use one per rest when low on the pool it restores.
+Valid items use an authored self-targeted health or mana restoration skill.
+
 Set `[guild] treasure_hunts = true` to let Thief and Bounty Hunter guild members hunt for treasure.
 With an owned coordinate map and at least 50 labor, a bot can walk to its authored dig site up to
 600 metres away on land outside closed or active war zones. It digs and takes the chest after

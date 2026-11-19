@@ -46,6 +46,7 @@ pub mod names;
 pub mod plan;
 pub mod prices;
 pub mod profession;
+pub mod recovery;
 pub mod report;
 pub mod siege;
 pub mod treasury;

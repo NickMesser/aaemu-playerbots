@@ -519,6 +519,9 @@ pub struct GuildCfg {
     pub treasure_hunts: bool,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
+    /// Approved recovery items bought from rank allowances, by guild ID.
+    pub recovery_supplies:
+        std::collections::BTreeMap<String, Vec<crate::bot::guild::recovery::Supply>>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Approved camp placement sites for a bot guildmaster with a siege camp.
@@ -581,6 +584,7 @@ impl Default for GuildCfg {
             trade_pack_orders: Default::default(),
             treasure_hunts: false,
             treasuries: Default::default(),
+            recovery_supplies: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
             siege_camp_bids: Default::default(),
@@ -1516,6 +1520,16 @@ impl Config {
                             && (terms.trade_loan_copper == 0 || g.trade_pack_orders.contains_key(id))
                     }),
             "guild.treasuries must name up to 16 configured guilds with valid contributions and assigned recipes for trade loans"
+        );
+        ensure!(
+            g.recovery_supplies.iter().all(|(guild, supplies)| {
+                g.professions.get(guild).copied().is_some_and(crate::bot::guild::recovery::supports)
+                    && g.treasuries.get(guild).is_some_and(|terms| terms.weekly_support_copper > 0)
+                    && !supplies.is_empty()
+                    && supplies.len() <= 8
+                    && supplies.iter().all(|supply| supply.valid())
+            }),
+            "guild.recovery_supplies must name guilds with rank allowances and one to eight valid supplies"
         );
         ensure!(
             g.siege_zones.len() <= 16

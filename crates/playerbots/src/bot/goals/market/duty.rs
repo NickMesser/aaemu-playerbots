@@ -205,6 +205,8 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     crate::bot::guild::treasury::note_pack_budget(ctx);
     let work_order = work::selected_order(ctx);
     let guild_recipe = guild_recipe(ctx);
+    let recovery_orders = crate::bot::guild::recovery::shopping(ctx);
+    let recovery_stock = crate::bot::guild::recovery::stock(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);
     let st = &mut *ctx.state;
     let inner = st.market.inner_mut();
@@ -259,6 +261,14 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
             needs.retain(|n| n.template != item);
             needs.insert(0, need);
         }
+    }
+    needs.retain(|need| {
+        !recovery_stock
+            .iter()
+            .any(|&(item, _)| item == need.template)
+    });
+    for order in recovery_orders.into_iter().rev() {
+        needs.insert(0, order);
     }
     let audience = board.audience(name, group, unix) + usize::from(real_near);
     let index = names::global(world);

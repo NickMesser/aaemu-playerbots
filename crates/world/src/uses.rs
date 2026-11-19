@@ -38,6 +38,13 @@ pub enum SkillNeed {
     NpcGroup(u32, bool),
 }
 
+/// Direct restoration from an item skill that targets the user.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ItemRecovery {
+    pub health: bool,
+    pub mana: bool,
+}
+
 /// The use skills of items and the placement rules of those skills.
 #[derive(Debug, Default)]
 pub struct ItemUses {
@@ -48,6 +55,7 @@ pub struct ItemUses {
     /// `quest_monster_group_id -> NPC templates` (`quest_monster_npcs`), the groups a
     /// [`SkillNeed::NpcGroup`] names.
     groups: FxHashMap<u32, Box<[u32]>>,
+    recovery: FxHashMap<u32, ItemRecovery>,
 }
 
 impl ItemUses {
@@ -112,6 +120,26 @@ impl ItemUses {
             v.sort_unstable();
             v.dedup();
         }
+        let mut recovery = FxHashMap::<u32, ItemRecovery>::default();
+        let _ = each_row(
+            conn,
+            "SELECT DISTINCT s.id, e.actual_type FROM skills s
+             JOIN skill_effects se ON se.skill_id = s.id
+             JOIN effects e ON e.id = se.effect_id
+             WHERE s.target_type_id = 0 AND s.target_selection_id = 1
+             AND e.actual_type IN ('HealEffect', 'RestoreManaEffect')",
+            |r| {
+                let skill = r.u32(0);
+                if item_skills.contains(&skill) {
+                    let item = recovery.entry(skill).or_default();
+                    match r.text(1) {
+                        "HealEffect" => item.health = true,
+                        "RestoreManaEffect" => item.mana = true,
+                        _ => {}
+                    }
+                }
+            },
+        );
         Ok(ItemUses {
             skill: IdMap::build(rows),
             needs: needs
@@ -122,12 +150,20 @@ impl ItemUses {
                 .into_iter()
                 .map(|(g, v)| (g, v.into_boxed_slice()))
                 .collect(),
+            recovery,
         })
     }
 
     /// The skill using item `item` casts, 0 when it has none.
     pub fn skill(&self, item: u32) -> u32 {
         self.skill.get(item).copied().unwrap_or(0)
+    }
+
+    pub fn recovery(&self, item: u32) -> ItemRecovery {
+        self.recovery
+            .get(&self.skill(item))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Where the item use skill `skill` must be cast; empty when it can be cast anywhere.
@@ -153,6 +189,7 @@ impl ItemUses {
     /// Heap bytes held.
     pub fn bytes(&self) -> usize {
         self.skill.shallow_bytes()
+            + self.recovery.capacity() * (std::mem::size_of::<(u32, ItemRecovery)>() + 1)
             + self
                 .needs
                 .values()

@@ -901,6 +901,11 @@ impl Brain {
         if let Some(order) = super::goals::work::customer::summary(ctx) {
             context.push_str(&order);
         }
+        for (item, stock) in super::guild::recovery::stock(ctx) {
+            let count = ctx.state.item_count(item);
+            let name = ctx.world.item_name(item).unwrap_or("recovery items");
+            context.push_str(&format!(" Recovery supplies: {count} of {stock} {name}."));
+        }
         if let Some(recipe) = profession::trade_pack_order(ctx).and_then(|id| ctx.world.craft(id)) {
             let pack = ctx
                 .world
@@ -930,6 +935,9 @@ impl Brain {
                         " Unpaid guild commission and rent total {} copper. Guild rank allowances received: {} copper.",
                         a.unpaid_commission, a.support_received
                     ));
+                    if a.support_supplies_spent > 0 {
+                        context.push_str(&format!(" I spent {} of my rank allowance on recovery supplies.", a.support_supplies_spent));
+                    }
                     let pending = a.bounty_earned.saturating_sub(a.bounty_paid);
                     if pending > 0 {
                         context.push_str(&format!(" I earned {pending} copper in bounty rewards awaiting collection."));

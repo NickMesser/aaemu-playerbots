@@ -603,6 +603,8 @@ impl Run {
                         j.market_sales.truncate(24);
                     });
                 }
+            } else {
+                crate::bot::guild::recovery::note_purchase(ctx, a.template, a.qty, a.total);
             }
             ctx.log.say(format!(
                 "market: the trade checks out ({items:+} items, {money:+} copper)"

@@ -778,6 +778,11 @@ impl World {
         self.item_uses.skill(item)
     }
 
+    /// The pools restored by the item's self-targeted use skill.
+    pub fn item_recovery(&self, item: u32) -> crate::uses::ItemRecovery {
+        self.item_uses.recovery(item)
+    }
+
     /// Where the item use skill `skill` must be cast (an NPC, a doodad within a range, a quest
     /// sphere); empty when it works anywhere.
     pub fn skill_needs(&self, skill: u32) -> &[SkillNeed] {

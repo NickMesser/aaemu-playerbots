@@ -27,6 +27,7 @@ pub struct Rest {
     end_ms: u64,
     /// The rest replaced a trade run that carried a pack.
     after_run: bool,
+    tried_supply: bool,
 }
 
 impl Rest {
@@ -37,6 +38,7 @@ impl Rest {
         self.min_end_ms = ctx.now_ms + MIN_MS;
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, MAX_MS.0, MAX_MS.1);
         self.after_run = ctx.state.econ.take_interrupted_run(ctx.now_ms);
+        self.tried_supply = false;
     }
 
     /// Whether the finished rest goes back to the trade run it interrupted: the bot still
@@ -53,6 +55,10 @@ impl Rest {
         if now >= self.end_ms || (now >= self.min_end_ms && recovered) {
             GoalStatus::Done
         } else {
+            if !self.tried_supply && crate::bot::guild::recovery::use_during_rest(ctx) {
+                self.tried_supply = true;
+                return GoalStatus::Running;
+            }
             // (a bot that rests in front of a player looks around and sits down)
             manner::rest_tick(ctx);
             GoalStatus::Running
