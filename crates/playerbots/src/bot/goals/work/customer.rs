@@ -2,6 +2,7 @@
 
 use aa_proto::cs::chat_type;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use super::super::delivery::{nearby_requester, tell};
 use super::super::trade::{Deal, Plan, Trade, INVITE_TTL_MS};
@@ -14,6 +15,8 @@ use crate::hub::unix_ms;
 
 const COMMISSION_MS: u64 = 60 * 60_000;
 const PICKUP_MS: u64 = 30_000;
+const TRADE_ITEM_SLOTS: usize = 10;
+type Ingredients = SmallVec<[(u32, i32); 4]>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commission {
@@ -27,6 +30,8 @@ pub struct Commission {
     expires_ms: u64,
     ready: Option<Stock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    materials: Option<Materials>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pickup_until_ms: Option<u64>,
 }
 
@@ -36,9 +41,23 @@ struct Stock {
     count: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Materials {
+    copper: i32,
+    purchased: bool,
+}
+
 impl Commission {
     pub fn ready(&self) -> bool {
         self.ready.is_some()
+    }
+
+    pub fn awaits_materials(&self) -> bool {
+        self.materials.is_some_and(|terms| !terms.purchased)
+    }
+
+    pub fn needs_trade(&self) -> bool {
+        self.ready() || self.awaits_materials()
     }
 }
 
@@ -93,7 +112,9 @@ pub fn gear_reservation(ctx: &Ctx<'_>) -> Option<(u32, Option<u64>)> {
 pub fn summary(ctx: &Ctx<'_>) -> Option<String> {
     let c = active(ctx)?;
     let item = ctx.world.item_name(c.item).unwrap_or("guild craft");
-    let phase = if c.ready() {
+    let phase = if c.awaits_materials() {
+        "waiting for customer materials"
+    } else if c.ready() {
         "ready for collection"
     } else {
         "in production"
@@ -108,6 +129,37 @@ fn offer(text: &str) -> Option<(&str, i32)> {
     let (item, copper) = text.rsplit_once(" for ")?;
     let price = copper.trim().strip_suffix('c')?.parse().ok()?;
     (!item.trim().is_empty() && price > 0).then_some((item.trim(), price))
+}
+
+fn quoted_order(text: &str) -> Option<(&str, i32, Option<i32>)> {
+    let Some((order, copper)) = text.rsplit_once(" with materials for ") else {
+        let (item, price) = offer(text)?;
+        return Some((item, price, None));
+    };
+    let (item, price) = offer(order)?;
+    let credit = copper.trim().strip_suffix('c')?.parse().ok()?;
+    (credit > 0 && credit < price).then_some((item, price, Some(credit)))
+}
+
+fn ingredients(ctx: &Ctx<'_>, craft: &aa_world::Craft) -> Option<Ingredients> {
+    let mut items = Ingredients::new();
+    for &(template, quantity) in craft.materials.iter() {
+        if template == craft.product.0
+            || !ctx
+                .world
+                .item_facts(template)
+                .is_some_and(|facts| facts.tradable())
+        {
+            return None;
+        }
+        let quantity = i32::try_from(quantity).ok().filter(|&count| count > 0)?;
+        if let Some((_, count)) = items.iter_mut().find(|(item, _)| *item == template) {
+            *count = count.checked_add(quantity)?;
+        } else {
+            items.push((template, quantity));
+        }
+    }
+    (!items.is_empty() && items.len() <= TRADE_ITEM_SLOTS).then_some(items)
 }
 
 fn stock_slot(ctx: &Ctx<'_>, c: &Commission) -> Option<u8> {
@@ -148,12 +200,20 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
         }
         return cancelled;
     }
-    if text.trim().eq_ignore_ascii_case("collect") {
+    let pickup = text.trim().eq_ignore_ascii_case("collect");
+    if pickup || text.trim().eq_ignore_ascii_case("materials") {
         let Some(mut commission) = active(ctx).filter(|c| c.customer == customer) else {
             return false;
         };
-        if stock_slot(ctx, &commission).is_none() {
-            tell(ctx, who, "I'm still working on your craft order.");
+        if pickup && stock_slot(ctx, &commission).is_none() {
+            let response = if commission.awaits_materials() {
+                "I need the ingredients first. Whisper 'craft materials' when you're here."
+            } else {
+                "I'm still working on your craft order."
+            };
+            tell(ctx, who, response);
+        } else if !pickup && !commission.awaits_materials() {
+            tell(ctx, who, "I have what I need to make your order.");
         } else if nearby_buyer(ctx, line.sender_obj, &commission).is_none() {
             tell(ctx, who, "Come a little closer for the trade.");
         } else {
@@ -169,7 +229,7 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
     };
     let (item, quantity) = craft.product;
     let name = ctx.world.item_name(item).unwrap_or("this item");
-    let Some((wanted, price)) = offer(text) else {
+    let Some((wanted, price, credit)) = quoted_order(text) else {
         tell(
             ctx,
             who,
@@ -186,12 +246,52 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
             "I'm working on another customer's order."
         } else if existing.ready() {
             "Your order is ready. Whisper 'craft collect' when you're here."
+        } else if existing.awaits_materials() {
+            "I have your order. Whisper 'craft materials' when you're here."
         } else {
             "I still have your order and will tell you when it's ready."
         };
         tell(ctx, who, response);
         return true;
     }
+    let materials = if let Some(copper) = credit {
+        let max = i64::from(ctx.cfg.guild.player_craft_material_max_copper);
+        let Some(items) = ingredients(ctx, craft).filter(|_| max >= i64::from(copper)) else {
+            tell(ctx, who, "I can't buy the ingredients on those terms.");
+            return true;
+        };
+        if ctx.state.me.money < i64::from(copper)
+            || ctx.state.me.level < craft.req_level
+            || ctx
+                .state
+                .econ
+                .proficiency(u32::from(craft.actability_group))
+                < craft.actability_limit
+        {
+            tell(ctx, who, "I can't take that materials order right now.");
+            return true;
+        }
+        let list = items
+            .iter()
+            .map(|&(item, count)| {
+                let name = ctx.world.item_name(item).unwrap_or("ingredient");
+                format!("{count} {name}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        tell(ctx, who, &format!("I'll buy {list} for {copper}c and sell the finished {name} for {price}c. Whisper 'craft materials' to trade the ingredients."));
+        Some(Materials {
+            copper,
+            purchased: false,
+        })
+    } else {
+        tell(
+            ctx,
+            who,
+            &format!("I'll make {quantity} {name} for {price}c. Pay me when it's ready."),
+        );
+        None
+    };
     let commission = Commission {
         guild,
         recipe: craft.id,
@@ -202,21 +302,18 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
         name: who.into(),
         expires_ms: unix_ms() + COMMISSION_MS,
         ready: None,
+        materials,
         pickup_until_ms: None,
     };
     ctx.hub
         .journal
         .update(ctx.persona.id, |j| j.craft_commission = Some(commission));
-    tell(
-        ctx,
-        who,
-        &format!("I'll make {quantity} {name} for {price}c. Pay me when it's ready."),
-    );
     true
 }
 
 pub(super) fn crafted(ctx: &mut Ctx<'_>, recipe: u32) {
-    let Some(mut commission) = active(ctx).filter(|c| c.recipe == recipe && !c.ready()) else {
+    let Some(mut commission) = active(ctx).filter(|c| c.recipe == recipe && !c.needs_trade())
+    else {
         return;
     };
     let Some((_, item)) = ctx.state.find_item_where(commission.item, |item| {
@@ -266,27 +363,75 @@ fn customer(ctx: &Ctx<'_>, c: &Commission) -> Option<([f32; 3], PairRole)> {
         .find_map(|&object| nearby_buyer(ctx, object, c).map(|pos| (pos, PairRole::Initiator)))
 }
 
-pub(super) fn can_trade(ctx: &Ctx<'_>, c: &Commission) -> bool {
-    customer(ctx, c).is_some() && stock_slot(ctx, c).is_some()
+fn purchase(ctx: &Ctx<'_>, c: &Commission) -> Option<(Plan, Ingredients)> {
+    let terms = c.materials.filter(|terms| !terms.purchased)?;
+    if i64::from(terms.copper) > ctx.state.me.money
+        || u32::try_from(terms.copper).ok()? > ctx.cfg.guild.player_craft_material_max_copper
+    {
+        return None;
+    }
+    let (_, craft) = recipe(ctx)?;
+    let give = Plan {
+        money: terms.copper,
+        ..Plan::default()
+    };
+    Some((give, ingredients(ctx, craft)?))
 }
 
-pub fn requested_sale(ctx: &Ctx<'_>) -> bool {
+pub(super) fn can_trade(ctx: &Ctx<'_>, c: &Commission) -> bool {
+    customer(ctx, c).is_some() && (stock_slot(ctx, c).is_some() || purchase(ctx, c).is_some())
+}
+
+pub fn requested_trade(ctx: &Ctx<'_>) -> bool {
     active(ctx).is_some_and(|c| can_trade(ctx, &c))
 }
 
 #[derive(Debug)]
-pub(super) struct Sale {
+pub(super) struct Exchange {
     commission: Commission,
     trade: Trade,
-    items_before: i64,
+    change: InventoryChange,
+    money_change: i64,
     money_before: i64,
     confirm_until: Option<u64>,
 }
 
-impl Sale {
+#[derive(Debug)]
+enum InventoryChange {
+    Purchase(SmallVec<[(u32, i64); 4]>),
+    Delivery(i64),
+}
+
+impl Exchange {
     pub(super) fn start(ctx: &mut Ctx<'_>, mut commission: Commission) -> Option<Self> {
         let ([x, y, _], role) = customer(ctx, &commission)?;
-        let slot = stock_slot(ctx, &commission)?;
+        let (deal, change, money_change) = if commission.awaits_materials() {
+            let (give, want) = purchase(ctx, &commission)?;
+            let after = want
+                .iter()
+                .map(|&(item, count)| (item, ctx.state.item_count(item) + i64::from(count)))
+                .collect();
+            (
+                Deal::fixed(give, &want, 0),
+                InventoryChange::Purchase(after),
+                -i64::from(give.money),
+            )
+        } else {
+            let quantity = i32::try_from(commission.quantity).ok()?;
+            let give = Plan {
+                slot: stock_slot(ctx, &commission)?,
+                template: commission.item,
+                amount: quantity,
+                money: 0,
+            };
+            (
+                Deal::fixed(give, &[], commission.price),
+                InventoryChange::Delivery(
+                    ctx.state.item_count(commission.item) - i64::from(quantity),
+                ),
+                i64::from(commission.price),
+            )
+        };
         let order = PairOrder {
             kind: PairKind::Trade,
             role,
@@ -295,13 +440,7 @@ impl Sale {
             partner_name: commission.name.clone(),
             meet_at: (x, y),
         };
-        let give = Plan {
-            slot,
-            template: commission.item,
-            amount: i32::try_from(commission.quantity).ok()?,
-            money: 0,
-        };
-        let mut trade = Trade::for_deal(order, Deal::agreed(give, &[], commission.price));
+        let mut trade = Trade::for_deal(order, deal);
         trade.start(ctx);
         if commission.pickup_until_ms.take().is_some() {
             ctx.hub.journal.update(ctx.persona.id, |j| {
@@ -309,7 +448,8 @@ impl Sale {
             });
         }
         Some(Self {
-            items_before: ctx.state.item_count(commission.item),
+            change,
+            money_change,
             money_before: ctx.state.me.money,
             commission,
             trade,
@@ -330,24 +470,59 @@ impl Sale {
                 status => return status,
             }
         }
-        let c = &self.commission;
-        if self.items_before - ctx.state.item_count(c.item) == i64::from(c.quantity)
-            && ctx.state.me.money - self.money_before == i64::from(c.price)
-        {
-            ctx.hub
-                .journal
-                .update(ctx.persona.id, |j| j.craft_commission = None);
-            treasury::note_receipt(ctx, GoalKind::Market, c.price as u64);
-            ctx.log.say(format!(
-                "guild craft: delivered item {} to {} for {} copper",
-                c.item, c.name, c.price
-            ));
+        if ctx.state.me.money - self.money_before == self.money_change && self.received(ctx) {
+            self.record_receipt(ctx);
             return GoalStatus::Done;
         }
         if self.confirm_until.is_some_and(|until| ctx.now_ms >= until) {
             return GoalStatus::Failed(FailReason::Timeout);
         }
         GoalStatus::Running
+    }
+
+    fn received(&self, ctx: &Ctx<'_>) -> bool {
+        match &self.change {
+            InventoryChange::Purchase(items) => items
+                .iter()
+                .all(|&(item, expected)| ctx.state.item_count(item) == expected),
+            InventoryChange::Delivery(expected) => {
+                ctx.state.item_count(self.commission.item) == *expected
+            }
+        }
+    }
+
+    fn record_receipt(&mut self, ctx: &mut Ctx<'_>) {
+        let c = &mut self.commission;
+        if let Some(terms) = c.materials.as_mut().filter(|terms| !terms.purchased) {
+            terms.purchased = true;
+            ctx.log.say(format!(
+                "guild craft: paid {} copper to {} for recipe inputs",
+                terms.copper, c.name
+            ));
+            ctx.hub.journal.update(ctx.persona.id, |j| {
+                j.craft_commission = Some(c.clone());
+            });
+            tell(
+                ctx,
+                &c.name,
+                "I bought the ingredients. I'll let you know when the order is ready.",
+            );
+        } else {
+            ctx.hub
+                .journal
+                .update(ctx.persona.id, |j| j.craft_commission = None);
+            let cost = c.materials.map_or(0, |terms| terms.copper);
+            let proceeds = u64::try_from(c.price.saturating_sub(cost)).unwrap_or_default();
+            treasury::note_receipt(ctx, GoalKind::Market, proceeds);
+            ctx.log.say(format!(
+                "guild craft: delivered item {} to {} for {} copper",
+                c.item, c.name, c.price
+            ));
+        }
+    }
+
+    pub(super) fn purchasing(&self) -> bool {
+        matches!(self.change, InventoryChange::Purchase(_))
     }
 
     pub(super) fn stop(&mut self, ctx: &mut Ctx<'_>) {
@@ -357,7 +532,7 @@ impl Sale {
 
 #[cfg(test)]
 mod tests {
-    use super::offer;
+    use super::{offer, quoted_order};
 
     #[test]
     fn craft_order_requires_a_named_item_and_positive_copper_price() {
@@ -374,6 +549,24 @@ mod tests {
             " for 100c",
         ] {
             assert!(offer(invalid).is_none(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn customer_material_credit_is_positive_and_below_the_delivery_price() {
+        assert_eq!(
+            quoted_order("Stone Brick for 100c with materials for 40c"),
+            Some(("Stone Brick", 100, Some(40)))
+        );
+        assert_eq!(
+            quoted_order("Stone Brick for 100c"),
+            Some(("Stone Brick", 100, None))
+        );
+        for amount in ["0c", "100c", "101c", "-1c", "40"] {
+            assert!(
+                quoted_order(&format!("Stone Brick for 100c with materials for {amount}"))
+                    .is_none()
+            );
         }
     }
 }

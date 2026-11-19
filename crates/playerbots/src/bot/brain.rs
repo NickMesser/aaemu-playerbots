@@ -465,8 +465,8 @@ impl Brain {
         // Trade requests no goal asked for are answered here; the house marker follows `houses`.
         // (a pack carrier declines: the run is not interrupted for a trade)
         let running = self.goal.as_ref().map(Goal::kind);
-        let craft_sale = super::goals::work::customer::requested_sale(ctx);
-        if craft_sale
+        let craft_trade = super::goals::work::customer::requested_trade(ctx);
+        if craft_trade
             && !pack_busy
             && !ctx.combat.busy()
             && self.choice == GoalChoice::Auto
@@ -481,7 +481,7 @@ impl Brain {
                 ctx,
                 running,
                 self.base[GoalKind::Trade.index()],
-                self.is_disabled(GoalKind::Trade) || pack_busy || craft_sale,
+                self.is_disabled(GoalKind::Trade) || pack_busy || craft_trade,
             )
         {
             self.start_goal(ctx, GoalKind::Trade, None);

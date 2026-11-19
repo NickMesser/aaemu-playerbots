@@ -223,7 +223,7 @@ fn plan(ctx: &Ctx<'_>, order: Order, training: bool) -> Option<Job> {
 }
 
 pub fn score(ctx: &Ctx<'_>) -> f32 {
-    if let Some(commission) = customer::active(ctx).filter(|c| c.ready()) {
+    if let Some(commission) = customer::active(ctx).filter(customer::Commission::needs_trade) {
         return if customer::can_trade(ctx, &commission) {
             1.0
         } else {
@@ -274,7 +274,7 @@ pub struct Work {
     job: Option<Job>,
     hunt: Option<Box<Hunt>>,
     treasure: Option<Box<treasure::Hunt>>,
-    sale: Option<Box<customer::Sale>>,
+    exchange: Option<Box<customer::Exchange>>,
     walker: Walker,
     deadline: u64,
     expected: Option<i64>,
@@ -283,8 +283,8 @@ pub struct Work {
 
 impl Work {
     pub fn start(&mut self, ctx: &mut Ctx<'_>) {
-        if let Some(commission) = customer::active(ctx).filter(|c| c.ready()) {
-            self.sale = customer::Sale::start(ctx, commission).map(Box::new);
+        if let Some(commission) = customer::active(ctx).filter(customer::Commission::needs_trade) {
+            self.exchange = customer::Exchange::start(ctx, commission).map(Box::new);
             return;
         }
         match available_order(ctx) {
@@ -309,12 +309,12 @@ impl Work {
     }
 
     pub fn handles_trade(&self) -> bool {
-        self.sale.is_some()
+        self.exchange.is_some()
     }
 
     pub fn tick(&mut self, ctx: &mut Ctx<'_>, combat: CombatStatus) -> GoalStatus {
-        if let Some(sale) = &mut self.sale {
-            return sale.tick(ctx);
+        if let Some(exchange) = &mut self.exchange {
+            return exchange.tick(ctx);
         }
         if let Some(treasure) = &mut self.treasure {
             return treasure.tick(ctx, &mut self.walker);
@@ -398,8 +398,8 @@ impl Work {
     }
 
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
-        if let Some(sale) = &mut self.sale {
-            sale.stop(ctx);
+        if let Some(exchange) = &mut self.exchange {
+            exchange.stop(ctx);
         }
         if let Some(hunt) = &mut self.hunt {
             hunt.grind.stop(ctx);
@@ -411,8 +411,12 @@ impl Work {
     }
 
     pub fn describe(&self, out: &mut String) {
-        if self.sale.is_some() {
-            out.push_str("work: delivering a customer's craft order");
+        if let Some(exchange) = &self.exchange {
+            out.push_str(if exchange.purchasing() {
+                "work: buying ingredients from the customer"
+            } else {
+                "work: delivering a customer's craft order"
+            });
             return;
         }
         if let Some(hunt) = &self.treasure {

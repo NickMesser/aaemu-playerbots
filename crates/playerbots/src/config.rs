@@ -513,6 +513,8 @@ pub struct GuildCfg {
     >,
     /// Accept player commissions for a Crafter's configured recipe.
     pub player_craft_orders: bool,
+    /// Maximum copper a member may pay for one customer's recipe inputs. Zero disables purchases.
+    pub player_craft_material_max_copper: u32,
     /// Pack recipes Trader guild members provision and run.
     pub trade_pack_orders: std::collections::BTreeMap<String, u32>,
     /// Let Thieves and Bounty Hunters hunt treasure with owned maps and keys.
@@ -581,6 +583,7 @@ impl Default for GuildCfg {
             production_orders: Default::default(),
             member_production_orders: Default::default(),
             player_craft_orders: false,
+            player_craft_material_max_copper: 0,
             trade_pack_orders: Default::default(),
             treasure_hunts: false,
             treasuries: Default::default(),

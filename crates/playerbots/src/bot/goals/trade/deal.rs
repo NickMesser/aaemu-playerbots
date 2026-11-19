@@ -43,6 +43,8 @@ pub enum Terms {
         items: SmallVec<[(u32, i32); 2]>,
         /// The copper the other side puts up, at least.
         money: i32,
+        /// Whether the trade must reject a higher payment too.
+        fixed_payment: bool,
     },
 }
 
@@ -75,6 +77,20 @@ impl Deal {
             terms: Terms::Exact {
                 items: items.iter().copied().collect(),
                 money,
+                fixed_payment: false,
+            },
+            strict: true,
+        }
+    }
+
+    /// An agreed deal whose payment must match exactly.
+    pub fn fixed(give: Plan, items: &[(u32, i32)], money: i32) -> Deal {
+        Deal {
+            give,
+            terms: Terms::Exact {
+                items: items.iter().copied().collect(),
+                money,
+                fixed_payment: true,
             },
             strict: true,
         }
@@ -105,6 +121,8 @@ pub enum Refusal {
     ExtraItem,
     /// The other side offers more units of an item than the deal names.
     TooMany,
+    /// A fixed-payment deal does not accept extra copper.
+    ExtraMoney,
     /// The other side's offer is worth less than the bot asks.
     TooLittle,
 }
@@ -117,6 +135,7 @@ impl Refusal {
             Refusal::MineChanged => "my own offer is not what we agreed",
             Refusal::ExtraItem => "the partner offers an item that was not agreed",
             Refusal::TooMany => "the partner offers more of an item than agreed",
+            Refusal::ExtraMoney => "the partner offers more copper than agreed",
             Refusal::TooLittle => "the partner's offer is worth too little",
         }
     }
@@ -168,7 +187,16 @@ pub fn verify(deal: &Deal, w: &Window, who: Identity, worth: &dyn Fn(u32) -> i64
                 Verdict::Refuse(Refusal::TooLittle)
             }
         }
-        Terms::Exact { items, money } => exact(items, *money, w),
+        Terms::Exact {
+            items,
+            money,
+            fixed_payment,
+        } => {
+            if *fixed_payment && other.money > *money {
+                return Verdict::Refuse(Refusal::ExtraMoney);
+            }
+            exact(items, *money, w)
+        }
     }
 }
 
@@ -308,6 +336,29 @@ mod tests {
         assert_eq!(v(theirs(&[], 0)), Verdict::Wait);
         assert_eq!(v(theirs(&[], 1)), Verdict::Wait, "one copper is no payment");
         assert_eq!(v(theirs(&[], 2999)), Verdict::Wait);
+    }
+
+    #[test]
+    fn a_fixed_trade_refuses_extra_money() {
+        let d = Deal::fixed(
+            Plan {
+                money: 40,
+                ..Plan::default()
+            },
+            &[(8008, 3)],
+            0,
+        );
+        let mine = Offer {
+            money: 40,
+            ..Offer::default()
+        };
+        let check = |items: &[(u32, i32)], money| {
+            let w = window(mine.clone(), theirs(items, money));
+            verify(&d, &w, Identity::Match, &no_worth)
+        };
+        assert_eq!(check(&[(8008, 2)], 0), Verdict::Wait);
+        assert_eq!(check(&[(8008, 3)], 1), Verdict::Refuse(Refusal::ExtraMoney));
+        assert_eq!(check(&[(8008, 3)], 0), Verdict::Ok);
     }
 
     #[test]

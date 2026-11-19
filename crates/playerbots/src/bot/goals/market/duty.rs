@@ -205,6 +205,8 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     crate::bot::guild::treasury::note_pack_budget(ctx);
     let work_order = work::selected_order(ctx);
     let guild_recipe = guild_recipe(ctx);
+    let customer_provides_inputs =
+        work::customer::active(ctx).is_some_and(|order| order.awaits_materials());
     let recovery_orders = crate::bot::guild::recovery::shopping(ctx);
     let recovery_stock = crate::bot::guild::recovery::stock(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);
@@ -214,7 +216,16 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let tradable = |t| world.item_facts(t).is_some_and(ItemFacts::tradable);
     let prices = VendorPrices(world);
     let mut needs = wanted_goods(&st.bag, money, bot_id, unix, tradable);
-    if money >= SHOP_MONEY {
+    if customer_provides_inputs {
+        if let Some(craft) = guild_recipe {
+            needs.retain(|need| {
+                !craft
+                    .materials
+                    .iter()
+                    .any(|&(item, _)| item == need.template)
+            });
+        }
+    } else if money >= SHOP_MONEY {
         if let Some(craft) = guild_recipe.filter(|c| st.me.level >= c.req_level) {
             for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t))
             {

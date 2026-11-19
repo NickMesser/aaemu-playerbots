@@ -371,9 +371,15 @@ With `[guild] player_craft_orders = true` and `[market] enabled = true`, a nearb
 whisper a Crafter member `craft Stone Brick for 100c`. The item must be the tradeable output of
 the member's assigned recipe. The Crafter makes one batch using its own supplies and holds it
 for the buyer for up to one hour. The player whispers `craft collect` when nearby or sends a trade
-request, then pays the agreed amount in the trade window. They can withdraw the order with `craft cancel`. Each member
-handles one order at a time and saves it across restarts. Confirmed payments count toward the
-guild's market commission.
+request, then pays the agreed amount in the trade window. They can withdraw the order with
+`craft cancel`. Each member handles one order at a time and saves it across restarts.
+
+Set `[guild] player_craft_material_max_copper` above zero to let members buy recipe inputs from
+the customer. For example, whisper `craft Stone Brick for 100c with materials for 40c`. The
+Crafter lists the exact ingredients. With `craft materials`, the customer trades those ingredients
+for 40 copper, then pays 100 copper when collecting the finished batch. The 40 copper purchase is
+final when the materials trade completes. The guild's market commission uses the confirmed sale
+less the ingredient payment.
 
 The guildmaster skips the profession's autonomous goals and continues to manage recruitment and
 membership. Members recover personal time after each professional goal based on its actual elapsed
