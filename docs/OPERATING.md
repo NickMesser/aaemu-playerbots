@@ -497,6 +497,11 @@ keeps its pack equipped while sailing to the buyer, then uses the ordinary sale 
 The planner considers the ship's speed when comparing the route with a land run. Set `[sail]
 ship = "auto"` if the bots own different boats. An optional `[guild] voyage_buyers` entry
 prioritizes a buyer NPC template for that guild when a viable passage is available.
+Set `[guild] trade_pack_orders = { "43" = 6223 }` to assign a particular pack recipe to a
+Trader guild. Members at the required level advertise for missing tradable ingredients when
+trade chat is enabled. The recipe's quantities stay in the bag during ordinary sales, and new
+trade runs use the assigned recipe. The director sees the recipe and the number of missing
+ingredients. Bots already carrying a pack can still sell it.
 Trader guild members also compare gross quotes with estimated material replacement costs and
 recorded failures on the route. Bot memory records land and sea runs separately and exposes the
 last quote and available cost estimate to the director.

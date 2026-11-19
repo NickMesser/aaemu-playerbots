@@ -22,7 +22,7 @@ use crate::bot::market::ads::price::{PriceSource, VendorPrices};
 use crate::bot::market::ads::talk::{Medium, PlaceQ};
 use crate::bot::market::ads::{Env, Need, Rules, Surplus};
 use crate::bot::market::ledger::{bag_count, Ledger};
-use crate::bot::market::needs::QuestNeeds;
+use crate::bot::market::needs::{guild_recipe, QuestNeeds};
 use crate::bot::state::{Item, StateError, UnitKind};
 use crate::hub::unix_ms;
 
@@ -174,12 +174,6 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let board = board::global();
     let real_near = ctx.real_player_near;
     let bot_id = persona.id;
-    let work_order = work::selected_order(ctx);
-    let guild_recipe = match work_order {
-        Some((work::Order::Craft { recipe, .. }, _)) => world.craft(recipe),
-        _ => None,
-    };
-
     let st = &mut *ctx.state;
     let pos = st.me.pos;
     let group = if st.place.in_instance() {
@@ -208,20 +202,19 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     }
 
     // what the bot has and wants
-    let quest_needs = QuestNeeds::of(world, &st.quests);
-    let surplus = surplus_of(&inner.ledger, world, &st.bag, &quest_needs);
+    let work_order = work::selected_order(ctx);
+    let guild_recipe = guild_recipe(ctx);
+    let item_needs = QuestNeeds::for_bot(ctx);
+    let st = &mut *ctx.state;
+    let inner = st.market.inner_mut();
+    let surplus = surplus_of(&inner.ledger, world, &st.bag, &item_needs);
     let tradable = |t| world.item_facts(t).is_some_and(ItemFacts::tradable);
     let mut needs = wanted_goods(&st.bag, money, bot_id, unix, tradable);
     if money >= SHOP_MONEY {
-        if let Some(craft) = guild_recipe.filter(|c| !c.is_pack && st.me.level >= c.req_level) {
+        if let Some(craft) = guild_recipe.filter(|c| st.me.level >= c.req_level) {
             for &(template, quantity) in craft.materials.iter().rev().filter(|&&(t, _)| tradable(t))
             {
-                let count = st
-                    .bag
-                    .values()
-                    .filter(|i| i.template == template)
-                    .map(|i| i64::from(i.count))
-                    .sum::<i64>();
+                let count = bag_count(&st.bag, template);
                 if let Ok(qty) = u32::try_from(i64::from(quantity) - count) {
                     if qty > 0 {
                         needs.retain(|n| n.template != template);

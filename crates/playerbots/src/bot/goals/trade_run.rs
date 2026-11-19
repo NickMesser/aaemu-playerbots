@@ -291,8 +291,10 @@ impl Env for Live<'_, '_> {
         let st = &*ctx.state;
         let (level, faction) = (st.me.level, st.me.faction);
         let world = ctx.world;
+        let assigned = crate::bot::guild::profession::trade_pack_order(ctx);
         let craft_ok = |c: &Craft| {
-            if st.econ.skipped(SkipKind::Craft, c.id, now) {
+            if assigned.is_some_and(|id| c.id != id) || st.econ.skipped(SkipKind::Craft, c.id, now)
+            {
                 return false;
             }
             if level < c.req_level && !gm {
@@ -643,8 +645,10 @@ pub fn unavailable(ctx: &Ctx<'_>) -> Option<&'static str> {
         return Some(LEVEL_TOO_LOW);
     }
     let st = &*ctx.state;
+    let assigned = crate::bot::guild::profession::trade_pack_order(ctx);
     let possible = ctx.world.pack_crafts().any(|c| {
-        level >= c.req_level
+        assigned.is_none_or(|id| c.id == id)
+            && level >= c.req_level
             && labor >= i32::from(c.labor) + SELL_LABOR
             && c.materials
                 .iter()

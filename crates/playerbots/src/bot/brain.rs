@@ -876,6 +876,21 @@ impl Brain {
                 " Production order: {order}. Lifetime orders completed: {done}. Training crafts: {training}."
             ));
         }
+        if let Some(recipe) = profession::trade_pack_order(ctx).and_then(|id| ctx.world.craft(id)) {
+            let pack = ctx
+                .world
+                .item_name(recipe.product.0)
+                .unwrap_or("trade pack");
+            let missing = recipe
+                .materials
+                .iter()
+                .filter(|&&(item, count)| ctx.state.item_count(item) < i64::from(count))
+                .count();
+            context.push_str(&format!(
+                " The guild assigned recipe {} ({pack}). Missing ingredients: {missing} kinds.",
+                recipe.id
+            ));
+        }
         if ctx.cfg.guild.treasuries.contains_key(&id.to_string()) {
             ctx.hub.journal.read(ctx.persona.id, |j| {
                 if master {

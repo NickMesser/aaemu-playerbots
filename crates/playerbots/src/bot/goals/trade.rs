@@ -587,7 +587,7 @@ impl Trade {
 
     fn prepare(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
         let now = ctx.now_ms;
-        let needs = QuestNeeds::of(ctx.world, &ctx.state.quests);
+        let needs = QuestNeeds::for_bot(ctx);
         let world = ctx.world;
         match choose_offer(
             &ctx.state.bag,
@@ -745,7 +745,7 @@ impl Trade {
         let allow_other = !ctx.gm_allowed();
         let (identity, partner_is_bot) = self.who_is_in_the_window(ctx);
         let world = ctx.world;
-        let needs = QuestNeeds::of(world, &ctx.state.quests);
+        let needs = QuestNeeds::for_bot(ctx);
         let keep = |template: u32| keep_of(world, &needs, template);
         let worth = |template: u32| {
             world

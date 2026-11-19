@@ -278,8 +278,7 @@ impl Run {
         let unit = unit_named(ctx, &d.peer);
         let money = i32::try_from(total).ok();
         // (a quest taken since the deal may need the goods: those are not for sale any more)
-        let free = count(ctx, template)
-            - i64::from(QuestNeeds::of(ctx.world, &ctx.state.quests).count(template));
+        let free = count(ctx, template) - i64::from(QuestNeeds::for_bot(ctx).count(template));
         let plan = money.and_then(|money| {
             if seller {
                 if free < qty {

@@ -1,21 +1,46 @@
-//! What the bot's active quests still need of items: the part of the bag the market leaves alone.
+//! Items reserved for active quests and guild recipes.
 //!
 //! A quest objective that asks the bot to hold (`Gather`) or use (`UseItem`) a number of an item
 //! is a claim on that item. Selling it to a player, listing it at the auction house or handing it
 //! over in a trade would only send the bot out to get it again, so the sale paths keep that many
-//! units back ([`QuestNeeds::count`]) on top of the small reserve of consumables (see
-//! [`super::ledger::reserve`]).
+//! units back ([`QuestNeeds::count`]). Assigned recipes reserve their ingredients the same way.
+//! These limits are in addition to the consumable reserve ([`super::ledger::reserve`]).
 
-use aa_world::{ObjKind, World};
+use aa_world::{Craft, ObjKind, World};
 use smallvec::SmallVec;
 
+use crate::bot::ctx::Ctx;
+use crate::bot::goals::work;
+use crate::bot::guild::profession;
 use crate::bot::state::QuestLog;
 
-/// The item counts the active quests ask for, summed per template.
+pub fn guild_recipe<'a>(ctx: &Ctx<'a>) -> Option<&'a Craft> {
+    if let Some(id) = profession::trade_pack_order(ctx) {
+        return ctx.world.craft(id).filter(|craft| craft.is_pack);
+    }
+    let (work::Order::Craft { recipe, .. }, _) = work::selected_order(ctx)? else {
+        return None;
+    };
+    ctx.world.craft(recipe).filter(|craft| !craft.is_pack)
+}
+
+/// Item counts reserved for quests and the bot's current guild recipe.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QuestNeeds(SmallVec<[(u32, u32); 8]>);
 
 impl QuestNeeds {
+    pub fn for_bot(ctx: &Ctx<'_>) -> Self {
+        let mut needs = Self::of(ctx.world, &ctx.state.quests);
+        if let Some(recipe) =
+            guild_recipe(ctx).filter(|craft| ctx.state.me.level >= craft.req_level)
+        {
+            for &(item, count) in recipe.materials.iter() {
+                needs.add(item, count);
+            }
+        }
+        needs
+    }
+
     /// What the quests of `quests.active` need: the `Gather` and `UseItem` counts of all their
     /// progress objectives (`world` knows the quests), summed per template. A quest the world
     /// does not know needs nothing.
@@ -53,7 +78,7 @@ impl QuestNeeds {
         }
     }
 
-    /// How many of item `template` the active quests need (0 when none does).
+    /// How many units of `template` to keep in the bag.
     pub fn count(&self, template: u32) -> u32 {
         self.0.iter().find(|e| e.0 == template).map_or(0, |e| e.1)
     }

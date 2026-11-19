@@ -322,7 +322,7 @@ fn buy_budget_of(ctx: &Ctx<'_>) -> Option<i64> {
 /// The stacks of the bag worth listing for `ctx`'s bot, see [`pick_stacks`].
 fn sell_stacks_of(ctx: &Ctx<'_>, max: usize) -> SmallVec<[Stack; MAX_LISTINGS]> {
     let (now, mem) = (ctx.now_ms, ctx.state.market.get());
-    let needs = QuestNeeds::of(ctx.world, &ctx.state.quests);
+    let needs = QuestNeeds::for_bot(ctx);
     let mut picked = pick_stacks(
         ctx.state
             .market

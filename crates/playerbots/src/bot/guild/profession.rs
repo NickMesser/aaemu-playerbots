@@ -99,6 +99,20 @@ pub fn farm_order(ctx: &Ctx<'_>) -> Option<u32> {
     market_order.or_else(|| ctx.cfg.guild.farm_orders.get(&key).copied())
 }
 
+pub fn trade_pack_order(ctx: &Ctx<'_>) -> Option<u32> {
+    if ctx.cfg.guild.trade_pack_orders.is_empty() {
+        return None;
+    }
+    let (guild, Profession::Trader, false) = membership(ctx)? else {
+        return None;
+    };
+    ctx.cfg
+        .guild
+        .trade_pack_orders
+        .get(&guild.to_string())
+        .copied()
+}
+
 /// Time spent in professional goals must be paid back with personal play. Carrying debt forward
 /// lets a run finish without cutting it off during a trade or a dungeon.
 #[derive(Debug, Default)]
@@ -151,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn crop_orders_are_only_for_configured_potato_guilds() {
+    fn crop_and_trade_pack_orders_require_the_matching_guild() {
         let cfg = crate::config::Config::parse(
             r#"
 [guild]
@@ -159,15 +173,18 @@ enabled = true
 work_percent = 75
 professions = { "42" = "potato", "43" = "trader" }
 farm_orders = { "42" = 12345 }
+trade_pack_orders = { "43" = 6223 }
 "#,
         )
         .unwrap();
         assert_eq!(cfg.guild.professions["42"], Profession::Potato);
         assert_eq!(cfg.guild.farm_orders["42"], 12345);
+        assert_eq!(cfg.guild.trade_pack_orders["43"], 6223);
         for invalid in [
             "[guild]\nprofessions = { '0' = 'potato' }",
             "[guild]\nwork_percent = 76",
             "[guild]\nprofessions = { '43' = 'trader' }\nfarm_orders = { '43' = 1 }",
+            "[guild]\nprofessions = { '42' = 'potato' }\ntrade_pack_orders = { '42' = 6223 }",
         ] {
             assert!(crate::config::Config::parse(invalid).is_err());
         }

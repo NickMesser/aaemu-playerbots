@@ -504,6 +504,8 @@ pub struct GuildCfg {
     pub auction_flips: bool,
     /// Repeatable crafting and gathering orders by guild ID.
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    /// Pack recipes Trader guild members provision and run.
+    pub trade_pack_orders: std::collections::BTreeMap<String, u32>,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
@@ -563,6 +565,7 @@ impl Default for GuildCfg {
             farm_leases: Default::default(),
             auction_flips: false,
             production_orders: Default::default(),
+            trade_pack_orders: Default::default(),
             treasuries: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
@@ -1446,6 +1449,14 @@ impl Config {
                     .is_some_and(|profession| order.allowed_in(*profession))
             }),
             "guild.production_orders must name a guild with the corresponding profession"
+        );
+        ensure!(
+            g.trade_pack_orders.iter().all(|(guild, &recipe)| {
+                recipe != 0
+                    && g.professions.get(guild)
+                        == Some(&crate::bot::guild::profession::Profession::Trader)
+            }),
+            "guild.trade_pack_orders must name Trader guilds and nonzero recipes"
         );
         ensure!(
             g.treasuries.len() <= 16

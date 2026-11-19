@@ -266,6 +266,14 @@ async fn run(
             cfg.data.compact.display()
         )
     })?;
+    if cfg.guild.enabled {
+        for (guild, &recipe) in &cfg.guild.trade_pack_orders {
+            anyhow::ensure!(
+                world.craft(recipe).is_some_and(|craft| craft.is_pack),
+                "Trader guild {guild} has an unknown trade pack recipe {recipe}"
+            );
+        }
+    }
     let world = Arc::new(world);
 
     let roster_path = cfg.bots.roster.clone();
