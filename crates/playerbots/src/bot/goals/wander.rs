@@ -33,6 +33,8 @@ const WALK_CHANCE: f32 = 0.3;
 const MAX_FAILS: u8 = 3;
 /// The bot counts as there within this many metres of the place it was sent to.
 const ARRIVE_M: f32 = 8.0;
+/// A rounded agent destination can still identify an authored resting place.
+const HANGOUT_MATCH_M: f32 = 2.0;
 /// The longest trip to the place it was sent to, in milliseconds.
 pub const TRAVEL_MAX_MS: u64 = 20 * 60_000;
 
@@ -96,25 +98,55 @@ pub fn settlement_hangout(ctx: &Ctx<'_>) -> Option<[f32; 2]> {
     // Look for actual innkeepers and quiet furnishings in the authored district.
     let here = aa_world::Vec3::new(x, y, z);
     ctx.world.npc_spawns_within(here, 425.0, |template, pos| {
-        if ctx.world.npc(template).is_some_and(|npc| {
-            npc.name.contains("Innkeeper")
-                && ctx.world.relation(faction, npc.faction_id) != aa_world::Relation::Hostile
-        }) {
+        if is_friendly_innkeeper(ctx.world, faction, template) {
             consider([pos.x, pos.y]);
         }
     });
     ctx.world
         .doodad_spawns_within(here, 225.0, |template, pos| {
-            if ctx.world.doodad(template).is_some_and(|doodad| {
-                matches!(
-                    doodad.name.as_ref(),
-                    "Campfire" | "Small Campfire" | "Long Wood Bench" | "Wooden Bench"
-                )
-            }) {
+            if is_settlement_furnishing(ctx.world, template) {
                 consider([pos.x, pos.y]);
             }
         });
     best.map(|(_, at)| at)
+}
+
+fn is_friendly_innkeeper(world: &aa_world::World, faction: u32, template: u32) -> bool {
+    world.npc(template).is_some_and(|npc| {
+        npc.name.contains("Innkeeper")
+            && world.relation(faction, npc.faction_id) != aa_world::Relation::Hostile
+    })
+}
+
+fn is_settlement_furnishing(world: &aa_world::World, template: u32) -> bool {
+    world.doodad(template).is_some_and(|doodad| {
+        matches!(
+            doodad.name.as_ref(),
+            "Campfire" | "Small Campfire" | "Long Wood Bench" | "Wooden Bench"
+        )
+    })
+}
+
+fn is_settlement_hangout(ctx: &Ctx<'_>, target: [f32; 2]) -> bool {
+    if ctx.state.place.in_instance() {
+        return false;
+    }
+    if ctx.cfg.behavior.settlement_hangouts.contains(&target) {
+        return true;
+    }
+    let at = aa_world::Vec3::new(target[0], target[1], 0.0);
+    let mut found = false;
+    ctx.world
+        .npc_spawns_within(at, HANGOUT_MATCH_M, |template, _| {
+            found |= is_friendly_innkeeper(ctx.world, ctx.state.me.faction, template);
+        });
+    if !found {
+        ctx.world
+            .doodad_spawns_within(at, HANGOUT_MATCH_M, |template, _| {
+                found |= is_settlement_furnishing(ctx.world, template);
+            });
+    }
+    found
 }
 
 /// Strolling around. See the module docs.
@@ -161,8 +193,7 @@ impl Wander {
             self.rest_at_target = hangout.is_some();
             self.target = hangout.or_else(|| settlement_market(ctx));
         } else if let Some(target) = self.target.filter(|_| ctx.cfg.behavior.settlement_visits) {
-            self.rest_at_target = ctx.cfg.behavior.settlement_hangouts.contains(&target)
-                || settlement_hangout(ctx) == Some(target);
+            self.rest_at_target = is_settlement_hangout(ctx, target);
         }
         self.home = ctx.pos();
         self.end_ms = ctx.now_ms + jitter_ms(ctx.rng, TOTAL_MS.0, TOTAL_MS.1);
@@ -282,6 +313,8 @@ impl Wander {
             let _ = write!(out, "heading for {:.0}, {:.0}", t[0], t[1]);
         } else if self.walking {
             let _ = write!(out, "strolling to {:.0}, {:.0}", self.dest.0, self.dest.1);
+        } else if self.lingering {
+            out.push_str("resting at a settlement stop");
         } else {
             out.push_str("looking around");
         }
