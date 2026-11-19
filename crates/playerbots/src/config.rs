@@ -498,6 +498,8 @@ pub struct GuildCfg {
     pub farm_orders: std::collections::BTreeMap<String, u32>,
     /// Seed items a Potato guild compares using confirmed market prices.
     pub farm_choices: std::collections::BTreeMap<String, Vec<u32>>,
+    /// Native guild-shared properties whose owner leases planting space to members.
+    pub farm_leases: std::collections::BTreeMap<String, Vec<FarmLease>>,
     /// Trader guild members may buy one lot for resale against confirmed market prices.
     pub auction_flips: bool,
     /// Repeatable crafting and gathering orders by guild ID.
@@ -544,12 +546,21 @@ pub struct TerritoryPatrol {
     pub position: [f32; 2],
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FarmLease {
+    pub house: u32,
+    #[serde(default)]
+    pub rent_copper: u32,
+}
+
 impl Default for GuildCfg {
     fn default() -> Self {
         Self {
             professions: Default::default(),
             farm_orders: Default::default(),
             farm_choices: Default::default(),
+            farm_leases: Default::default(),
             auction_flips: false,
             production_orders: Default::default(),
             treasuries: Default::default(),
@@ -1530,6 +1541,19 @@ impl Config {
                     && !seeds.contains(&0)
             }),
             "guild.farm_choices must name a Potato guild and list 1 to 12 nonzero seed IDs"
+        );
+        ensure!(
+            g.farm_leases.len() <= 16
+                && g.farm_leases.iter().all(|(guild, leases)| {
+                    g.professions.get(guild)
+                        == Some(&crate::bot::guild::profession::Profession::Potato)
+                        && (1..=8).contains(&leases.len())
+                        && leases.iter().all(|lease| {
+                            lease.house != 0
+                                && (lease.rent_copper == 0 || g.treasuries.contains_key(guild))
+                        })
+                }),
+            "guild.farm_leases must name Potato guilds, valid houses and a treasury for paid rents"
         );
         ensure!(
             (1..=50).contains(&g.party_size),

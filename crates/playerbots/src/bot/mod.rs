@@ -770,6 +770,15 @@ impl Bot {
         self.record_companion_bloodlust(&ev);
         self.state.apply(&ev);
         if let ServerEvent::Activity(activity) = &ev {
+            if matches!(
+                activity,
+                aa_proto::sc_activity::ActivityEvent::NearbyHouse(_)
+                    | aa_proto::sc_activity::ActivityEvent::HousePermission { .. }
+                    | aa_proto::sc_activity::ActivityEvent::HouseSold { .. }
+                    | aa_proto::sc_activity::ActivityEvent::HouseDemolished { .. }
+            ) {
+                guild::leases::observe(&mut self.state, &self.shared.cfg.guild, activity);
+            }
             if self.shared.cfg.guild.enabled
                 && !self.shared.cfg.guild.treasuries.is_empty()
                 && guild::treasury::is_mail(activity)

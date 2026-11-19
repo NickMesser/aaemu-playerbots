@@ -195,6 +195,7 @@ work_percent = 60
 # professions = { "42" = "potato", "43" = "trader" }
 # farm_orders = { "42" = 12345 }  # seed or produce item template
 # farm_choices = { "42" = [12345, 12346] }  # seed templates compared using recent sales
+# farm_leases = { "42" = [{ house = 123, rent_copper = 20 }] }  # guild-shared garden by native house ID
 auction_flips = false
 # treasuries = { "42" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }
 # An optional weekly_support_copper amount funds rank-based allowances from collected contributions.

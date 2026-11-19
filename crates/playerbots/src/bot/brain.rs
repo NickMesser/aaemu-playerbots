@@ -851,6 +851,14 @@ impl Brain {
                 " The farm goal tends ripe crops and plants item {item}."
             ));
         }
+        if role == profession::Profession::Potato && !master {
+            let gardens = super::guild::leases::available(ctx.state, &ctx.cfg.guild).count();
+            if gardens != 0 {
+                context.push_str(&format!(
+                    " The guild has {gardens} leased gardens available nearby."
+                ));
+            }
+        }
         if role == profession::Profession::Potato && !master && ctx.cfg.farm.husbandry {
             let actions = ctx
                 .hub
@@ -879,7 +887,7 @@ impl Brain {
                     ));
                 } else if let Some(a) = j.guild_treasury.get(&id) {
                     context.push_str(&format!(
-                        " Unpaid guild commission is {} copper. Guild rank allowances received: {} copper.",
+                        " Unpaid guild commission and rent total {} copper. Guild rank allowances received: {} copper.",
                         a.unpaid_commission, a.support_received
                     ));
                     let pending = a.bounty_earned.saturating_sub(a.bounty_paid);

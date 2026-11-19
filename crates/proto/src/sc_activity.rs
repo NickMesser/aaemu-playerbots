@@ -646,6 +646,17 @@ pub enum ActivityEvent {
     /// `SCMyHouse`: a house of ours (sent at login and after building or buying one): the
     /// `House.Write` body. G/systems/housing/packets.rs:177-178, G/models/house.rs:95-131.
     MyHouse(Box<HouseInfo>),
+    /// `SCHouseState`: a nearby house and its current owner and permission.
+    NearbyHouse(Box<HouseInfo>),
+    /// The current permission of a house in view.
+    HousePermission {
+        tl: u16,
+        permission: u8,
+    },
+    /// A house changed owners. Wait for a fresh house state before using it again.
+    HouseSold {
+        tl: u16,
+    },
     /// `SCLoginCharInfoHouse`: `u32 owner character`, then the `House.Write` body (character
     /// list). G/systems/housing/packets.rs:179-180, G/systems/housing/ops.rs:55-64.
     LoginCharInfoHouse {
@@ -1130,6 +1141,14 @@ pub fn parse(level: u8, opcode: u16, body: &[u8]) -> Result<Option<ActivityEvent
         },
         // housing
         sc::SCMyHousePacket => |s| Ok(E::MyHouse(Box::new(HouseInfo::read(s)?))),
+        sc::SCHouseStatePacket => |s| Ok(E::NearbyHouse(Box::new(HouseInfo::read(s)?))),
+        sc::SCHousePermissionChangedPacket => |s| {
+            Ok(E::HousePermission {
+                tl: s.read_u16()?,
+                permission: s.read_u8()?,
+            })
+        },
+        sc::SCHouseSoldPacket => |s| Ok(E::HouseSold { tl: s.read_u16()? }),
         sc::SCLoginCharInfoHousePacket => |s| {
             Ok(E::LoginCharInfoHouse {
                 owner_id: s.read_u32()?,

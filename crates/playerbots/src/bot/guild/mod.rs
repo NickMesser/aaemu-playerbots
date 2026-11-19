@@ -39,6 +39,7 @@ pub mod chat;
 pub mod duty;
 pub mod forming;
 pub mod found;
+pub mod leases;
 pub mod life;
 pub mod log;
 pub mod names;
@@ -64,6 +65,7 @@ pub struct Mem {
     /// The duty's clocks and plans.
     pub t: Timers,
     pub treasury: treasury::Treasury,
+    pub leases: leases::Book,
     pub sieges: siege::Book,
 }
 

@@ -14,7 +14,7 @@ use crate::bot::{cmd::GoalKind, ctx::Ctx, state::dist3d};
 use crate::hub::unix_ms;
 
 pub(crate) const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
-const EXPRESS_FEE: i64 = 100;
+pub(crate) const EXPRESS_FEE: i64 = 100;
 const MIN_SEND_LEVEL: u8 = 10;
 const RETRY_MS: u64 = 60_000;
 const LIST_EVERY_MS: u64 = 300_000;

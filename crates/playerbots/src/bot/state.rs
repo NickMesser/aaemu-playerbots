@@ -808,6 +808,9 @@ impl BotState {
             }
             WorldEvent::UnitState(info) => self.apply_unit_state(info),
             WorldEvent::UnitsRemoved { objs } => {
+                if let Some(guild) = self.guild.get_mut() {
+                    guild.leases.forget(objs);
+                }
                 if let Some(pending) = self.pending_siege_houses() {
                     pending.retain(|house| !objs.contains(&house.obj));
                 }
@@ -1172,6 +1175,9 @@ impl BotState {
     /// ([`Reactions::world_changed`]).
     fn clear_view(&mut self) {
         self.units = FxHashMap::default();
+        if let Some(guild) = self.guild.get_mut() {
+            guild.leases.clear();
+        }
         if let Some(pending) = self.pending_siege_houses() {
             pending.clear();
         }

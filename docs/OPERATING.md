@@ -339,6 +339,13 @@ confirmed market sales to estimate profit per growing hour and fall back to `far
 there is too little price evidence. Guild planting uses up to half the configured plot count per
 site, rounded up. Thief members look for ripe crops on wild plots when alone and
 `[farm] steal` is enabled. The director also sees recent average prices for a Trader's sales.
+
+Potato guilds can use nearby member-owned gardens configured under `[guild] farm_leases` when
+the owner shares the property with the guild in game. Use the server's house ID. Set `rent_copper`
+to charge for each confirmed planting on a new leased plot. Rent joins the next express-mail
+contribution and requires a configured treasury. It defaults to zero. Enable `farm.own_land`
+along with farming so bots consider gardens.
+
 With ambushes enabled, Thief members avoid auctioneer districts and favor parts of trade routes
 where they previously recovered packs.
 Crafter, Gatherer and Adventurer members can run `work` for a configured production order. Use
