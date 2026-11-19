@@ -98,13 +98,11 @@ struct Job {
 }
 
 pub fn selected_order(ctx: &Ctx<'_>) -> Option<(Order, bool)> {
-    if ctx.cfg.guild.production_orders.is_empty() {
-        return None;
-    }
+    ctx.cfg.guild.orders().next()?;
     let (guild, profession, false) = membership(ctx)? else {
         return None;
     };
-    let order = *ctx.cfg.guild.production_orders.get(&guild.to_string())?;
+    let order = ctx.cfg.guild.production_for(guild, ctx.state.me.char_id)?;
     if !order.allowed_in(profession) {
         return None;
     }
@@ -438,5 +436,34 @@ production_orders = { "44" = { kind = "craft", recipe = 123 }, "45" = { kind = "
         assert!(Config::parse(&config.replace("crafter", "trader")).is_err());
         assert!(Config::parse(&config.replace("item = 789", "item = 0")).is_err());
         assert!(Config::parse(&config.replace("count = 3", "count = 0")).is_err());
+    }
+
+    #[test]
+    fn a_member_specializes_without_changing_the_guild_default() {
+        let config = r#"
+[guild]
+enabled = true
+professions = { "44" = "crafter" }
+production_orders = { "44" = { kind = "craft", recipe = 123 } }
+member_production_orders = { "44" = { "12" = { kind = "craft", recipe = 456, training_recipe = 789 } } }
+"#;
+        let guild = Config::parse(config).unwrap().guild;
+        assert!(matches!(
+            guild.production_for(44, 12),
+            Some(super::Order::Craft {
+                recipe: 456,
+                training_recipe: Some(789)
+            })
+        ));
+        assert!(matches!(
+            guild.production_for(44, 13),
+            Some(super::Order::Craft {
+                recipe: 123,
+                training_recipe: None
+            })
+        ));
+        assert_eq!(guild.orders().count(), 2);
+        assert!(guild.production_for(45, 12).is_none());
+        assert!(Config::parse(&config.replace("\"12\"", "\"0\"")).is_err());
     }
 }

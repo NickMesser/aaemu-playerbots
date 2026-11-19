@@ -506,6 +506,11 @@ pub struct GuildCfg {
     pub auction_flips: bool,
     /// Repeatable crafting and gathering orders by guild ID.
     pub production_orders: std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    /// Production specialties by guild ID and character ID, overriding the guild-wide order.
+    pub member_production_orders: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, crate::bot::goals::work::Order>,
+    >,
     /// Pack recipes Trader guild members provision and run.
     pub trade_pack_orders: std::collections::BTreeMap<String, u32>,
     /// Let Thieves and Bounty Hunters open Pirate Treasure Chests with their own keys.
@@ -569,6 +574,7 @@ impl Default for GuildCfg {
             farm_leases: Default::default(),
             auction_flips: false,
             production_orders: Default::default(),
+            member_production_orders: Default::default(),
             trade_pack_orders: Default::default(),
             treasure_hunts: false,
             treasuries: Default::default(),
@@ -587,6 +593,29 @@ impl Default for GuildCfg {
             accept_player_invites: false,
             churn_per_hour: 0.2,
         }
+    }
+}
+
+impl GuildCfg {
+    pub fn production_for(
+        &self,
+        guild: u32,
+        character: u32,
+    ) -> Option<crate::bot::goals::work::Order> {
+        let guild = guild.to_string();
+        self.member_production_orders
+            .get(&guild)
+            .and_then(|members| members.get(&character.to_string()))
+            .or_else(|| self.production_orders.get(&guild))
+            .copied()
+    }
+
+    pub fn orders(&self) -> impl Iterator<Item = &crate::bot::goals::work::Order> + Clone {
+        self.production_orders.values().chain(
+            self.member_production_orders
+                .values()
+                .flat_map(|members| members.values()),
+        )
     }
 }
 
@@ -1454,6 +1483,17 @@ impl Config {
                     .is_some_and(|profession| order.allowed_in(*profession))
             }),
             "guild.production_orders must name a guild with the corresponding profession"
+        );
+        ensure!(
+            g.member_production_orders.iter().all(|(guild, members)| {
+                g.professions.get(guild).is_some_and(|profession| {
+                    members.iter().all(|(character, order)| {
+                        character.parse::<u32>().is_ok_and(|id| id > 0 && id.to_string() == *character)
+                            && order.allowed_in(*profession)
+                    })
+                })
+            }),
+            "guild.member_production_orders must name positive character IDs and matching guild professions"
         );
         ensure!(
             g.trade_pack_orders.iter().all(|(guild, &recipe)| {

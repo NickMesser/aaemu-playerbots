@@ -742,7 +742,7 @@ impl Bot {
         };
         if matches!(ev, ServerEvent::World(WorldEvent::Actabilities(_)))
             && !self.shared.cfg.behavior.sport_fishing
-            && self.shared.cfg.guild.production_orders.is_empty()
+            && self.shared.cfg.guild.orders().next().is_none()
         {
             return;
         }

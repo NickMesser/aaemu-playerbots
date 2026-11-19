@@ -245,8 +245,7 @@ async fn run(
 
         let orders = orders_cfg
             .guild
-            .production_orders
-            .values()
+            .orders()
             .filter(|_| orders_cfg.guild.enabled);
         let gather = orders.clone().filter_map(|order| match order {
             Order::Gather { item, .. } => Some(*item),
