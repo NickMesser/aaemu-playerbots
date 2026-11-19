@@ -88,6 +88,8 @@ const GONE_IGNORE_MS: u64 = FIGHT_TIMEOUT_MS + 30_000;
 const OBSTACLE_GIVE_UP: u8 = 4;
 /// After a blocked cast the bot casts nothing for this long while it takes another position.
 const OBSTACLE_HOLD_MS: u64 = 1_500;
+/// The rift's Overpowering Aura allows only skill 24082, which the combat rotation never uses.
+const OVERPOWERING_AURA: u32 = 2104;
 /// Angle (degrees around the target) of the first position tried after a blocked cast, and what
 /// each further blocked cast adds.
 const SIDESTEP_DEG: (f32, f32) = (50.0, 25.0);
@@ -1101,7 +1103,15 @@ impl Combat {
         if std::mem::take(&mut ctx.combat.watch.sidestep) {
             Self::sidestep(ctx, upos, dist);
         }
-        if now < ctx.combat.watch.hold_until_ms {
+        // The aura is refreshed while its source affects us. Resume when the server removes it
+        // instead of cycling through the rotation and basic attack while they are blocked.
+        if now < ctx.combat.watch.hold_until_ms
+            || ctx
+                .state
+                .buffs
+                .iter()
+                .any(|&(_, id)| id == OVERPOWERING_AURA)
+        {
             if ctx.motion.is_moving() {
                 ctx.motion.face(upos[0], upos[1]);
             }
