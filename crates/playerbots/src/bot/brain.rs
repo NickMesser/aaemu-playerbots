@@ -909,6 +909,12 @@ impl Brain {
                     if pending > 0 {
                         context.push_str(&format!(" I earned {pending} copper in bounty rewards awaiting collection."));
                     }
+                    if a.loan.principal > 0 {
+                        context.push_str(&format!(
+                            " I owe {} copper on my trade pack advance, including {} reserved for repayment.",
+                            a.loan.principal, a.loan.repayment
+                        ));
+                    }
                 }
             });
         }

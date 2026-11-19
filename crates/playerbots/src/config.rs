@@ -1462,8 +1462,12 @@ impl Config {
             g.treasuries.len() <= 16
                 && g.treasuries
                     .iter()
-                    .all(|(id, terms)| { g.professions.contains_key(id) && terms.valid() }),
-            "guild.treasuries must name up to 16 configured guilds with valid contributions"
+                    .all(|(id, terms)| {
+                        g.professions.contains_key(id)
+                            && terms.valid()
+                            && (terms.trade_loan_copper == 0 || g.trade_pack_orders.contains_key(id))
+                    }),
+            "guild.treasuries must name up to 16 configured guilds with valid contributions and assigned recipes for trade loans"
         );
         ensure!(
             g.siege_zones.len() <= 16

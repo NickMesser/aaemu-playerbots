@@ -202,6 +202,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     }
 
     // what the bot has and wants
+    crate::bot::guild::treasury::note_pack_budget(ctx);
     let work_order = work::selected_order(ctx);
     let guild_recipe = guild_recipe(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);

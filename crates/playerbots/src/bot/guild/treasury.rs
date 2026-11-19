@@ -1,5 +1,6 @@
 //! Real guild contributions travel through the game's express mail system.
 
+mod loan;
 mod support;
 
 use std::collections::VecDeque;
@@ -43,6 +44,8 @@ pub struct Terms {
     pub weekly_support_copper: u32,
     /// Reward at the time the server confirms a guild bounty kill.
     pub bounty_reward_copper: u32,
+    /// Maximum principal for a Trader member short of buying money for an assigned pack.
+    pub trade_loan_copper: u32,
 }
 
 impl Default for Terms {
@@ -53,6 +56,7 @@ impl Default for Terms {
             reserve_copper: 10_000,
             weekly_support_copper: 0,
             bounty_reward_copper: 0,
+            trade_loan_copper: 0,
         }
     }
 }
@@ -63,10 +67,13 @@ impl Terms {
             && self.commission_percent <= 25
             && self.weekly_support_copper <= 100_000
             && self.bounty_reward_copper <= 100_000
+            && self.trade_loan_copper <= 100_000
     }
 
     pub fn support_enabled(self) -> bool {
-        self.weekly_support_copper != 0 || self.bounty_reward_copper != 0
+        self.weekly_support_copper != 0
+            || self.bounty_reward_copper != 0
+            || self.trade_loan_copper != 0
     }
 }
 
@@ -80,6 +87,8 @@ pub struct Account {
     pub support_received: u64,
     pub bounty_earned: u32,
     pub bounty_paid: u32,
+    #[serde(skip_serializing_if = "loan::Loan::unused")]
+    pub loan: loan::Loan,
 }
 
 impl Account {
@@ -108,11 +117,33 @@ pub fn note_receipt(ctx: &Ctx<'_>, work: GoalKind, copper: u64) {
     let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()) else {
         return;
     };
+    if !role.goals().contains(&work) || copper == 0 {
+        return;
+    }
     let commission = copper.saturating_mul(u64::from(terms.commission_percent)) / 100;
-    if role.goals().contains(&work) && commission > 0 {
-        ctx.hub
-            .journal
-            .update(ctx.persona.id, |j| queue_copper(j, guild, commission));
+    let repay = terms.trade_loan_copper > 0 && work == GoalKind::TradeRun;
+    if commission > 0 || repay {
+        ctx.hub.journal.update(ctx.persona.id, |j| {
+            if let Some(account) = account_mut(j, guild) {
+                account.unpaid_commission = account.unpaid_commission.saturating_add(commission);
+                if repay {
+                    account
+                        .loan
+                        .reserve_from_receipt(copper.saturating_sub(commission));
+                }
+            }
+        });
+    }
+}
+
+pub fn note_pack_budget(ctx: &Ctx<'_>) {
+    if ctx.cfg.guild.trade_pack_orders.is_empty() || ctx.cfg.guild.treasuries.is_empty() {
+        return;
+    }
+    if let Some((guild, role, false)) = profession::membership(ctx) {
+        if let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()).copied() {
+            loan::request(ctx, guild, role, terms);
+        }
     }
 }
 
@@ -165,16 +196,24 @@ pub struct Treasury {
     /// Lists sent mail before sending, so reconnecting after an unacknowledged payment is safe.
     checking: Option<(u64, u64)>,
     list_ended: bool,
-    sent: Option<(u64, u64)>,
+    sent: Option<Contribution>,
     incoming: VecDeque<Incoming>,
     done: VecDeque<i64>,
     claim: Option<Claim>,
     received: u64,
     bounty_received_through: u32,
+    received_loan: Option<support::Payment>,
     support: support::Support,
 }
 
-fn contribution(mail: &MailHeader, guild: u32) -> Option<(u64, u64)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Contribution {
+    week: u64,
+    commission: u64,
+    loan_repayment: u32,
+}
+
+fn contribution(mail: &MailHeader, guild: u32) -> Option<Contribution> {
     // A pending contribution has one currency attachment. It has none once collected.
     if mail.mail_type != mail_type::EXPRESS || mail.attachments > 1 || mail.returned {
         return None;
@@ -183,7 +222,13 @@ fn contribution(mail: &MailHeader, guild: u32) -> Option<(u64, u64)> {
     if group.parse::<u32>().ok()? != guild {
         return None;
     }
-    Some((week.parse().ok()?, u64::try_from(mail.extra).ok()?))
+    let extra = u64::try_from(mail.extra).ok()?;
+    // Old contribution headers used only the low 32 bits for commission.
+    Some(Contribution {
+        week: week.parse().ok()?,
+        commission: extra & u64::from(u32::MAX),
+        loan_repayment: (extra >> 32) as u32,
+    })
 }
 
 impl Treasury {
@@ -197,10 +242,22 @@ impl Treasury {
     }
 
     fn note_sent(&mut self, mail: &MailHeader, guild: u32) {
-        if let Some((week, commission)) = contribution(mail, guild) {
-            if week <= unix_ms() / WEEK_MS && self.sent.is_none_or(|(last, _)| week > last) {
-                self.sent = Some((week, commission));
+        if let Some(payment) = contribution(mail, guild) {
+            if payment.week <= unix_ms() / WEEK_MS
+                && self.sent.is_none_or(|last| payment.week > last.week)
+            {
+                self.sent = Some(payment);
             }
+        }
+    }
+
+    fn note_loan(&mut self, payment: support::Payment) {
+        if payment.week <= unix_ms() / WEEK_MS
+            && self
+                .received_loan
+                .is_none_or(|last| payment.week > last.week)
+        {
+            self.received_loan = Some(payment);
         }
     }
 
@@ -227,8 +284,15 @@ impl Treasury {
                 .member(guild.owner)
                 .is_some_and(|m| is_bot(m.char_id) && m.name.eq_ignore_ascii_case(&mail.sender))
         };
+        if !guild_mail {
+            return;
+        }
+        if mail.attachments == 0 {
+            if let Some(payment) = payment.filter(|p| p.loan) {
+                self.note_loan(payment);
+            }
+        }
         if mail.attachments == 1
-            && guild_mail
             && !self.done.contains(&mail.mail_id)
             && !self.incoming.iter().any(|m| m.id == mail.mail_id)
             && self.incoming.len() < 32
@@ -310,7 +374,11 @@ impl Treasury {
             } => {
                 if let Some(Claim::Taking { mail, copper, .. }) = self.claim {
                     if mail.id == *mail_id {
-                        if let Some(through) = mail.payment.and_then(|payment| payment.through) {
+                        if let Some(payment) = mail.payment.filter(|p| p.loan) {
+                            self.note_loan(payment);
+                        } else if let Some(through) =
+                            mail.payment.and_then(|payment| payment.through)
+                        {
                             self.bounty_received_through =
                                 self.bounty_received_through.max(through);
                         } else {
@@ -367,6 +435,7 @@ fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) ->
     let now = ctx.now_ms;
     let received = std::mem::take(&mut treasury.received);
     let bounty_through = std::mem::take(&mut treasury.bounty_received_through);
+    let loan = treasury.received_loan.take();
     let mut listing = false;
     if let Some(Claim::Ready { mail, copper }) = treasury.claim {
         ctx.out.push(cs::take_attachment_sequentially(mail.id));
@@ -434,36 +503,51 @@ fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) ->
                 .say(format!("guild: received {paid} copper in bounty rewards"));
         }
     }
+    if let Some(payment) = loan {
+        let credited = ctx.hub.journal.update(ctx.persona.id, |j| {
+            account_mut(j, guild)
+                .is_some_and(|a| a.loan.credit(payment.week, payment.copper as u32))
+        });
+        if credited {
+            ctx.log.say(format!(
+                "guild: received {} copper for trade pack materials",
+                payment.copper
+            ));
+        }
+    }
     collecting || listing
 }
 
 fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
     let week = unix_ms() / WEEK_MS;
     let now = ctx.now_ms;
-    if let Some((paid, commission)) = ctx.state.guild.mem().treasury.sent.take() {
+    if let Some(payment) = ctx.state.guild.mem().treasury.sent.take() {
         ctx.hub.journal.update(ctx.persona.id, |j| {
             if j.guild_treasury.len() < 16 || j.guild_treasury.contains_key(&guild) {
                 let account = j.guild_treasury.entry(guild).or_default();
-                if paid > account.paid_week {
-                    account.paid_week = paid;
+                if payment.week > account.paid_week {
+                    account.paid_week = payment.week;
                     account.unpaid_commission =
-                        account.unpaid_commission.saturating_sub(commission);
+                        account.unpaid_commission.saturating_sub(payment.commission);
+                    account.loan.paid(payment.loan_repayment);
                 }
             }
         });
     }
-    let (paid, commission) = ctx.hub.journal.read(ctx.persona.id, |j| {
-        j.guild_treasury
-            .get(&guild)
-            .map_or((0, 0), |a| (a.paid_week, a.unpaid_commission))
+    let (paid, commission, loan) = ctx.hub.journal.read(ctx.persona.id, |j| {
+        j.guild_treasury.get(&guild).map_or((0, 0, 0), |a| {
+            (a.paid_week, a.unpaid_commission, a.loan.repayment)
+        })
     });
     let dues = u64::from(terms.weekly_dues_copper);
     let spendable = ctx.state.me.money - i64::from(terms.reserve_copper) - EXPRESS_FEE;
     if paid >= week || ctx.state.me.level < MIN_SEND_LEVEL || spendable <= 0 {
         return;
     }
-    let commission = commission.min((spendable as u64).saturating_sub(dues));
-    let amount = dues.saturating_add(commission);
+    let limit = (spendable as u64).saturating_sub(dues);
+    let repayment = u64::from(loan).min(limit);
+    let commission = commission.min(limit - repayment);
+    let amount = dues + commission + repayment;
     if amount == 0 || amount > spendable as u64 || amount > (i32::MAX - 100) as u64 {
         return;
     }
@@ -494,7 +578,7 @@ fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
                 &owner,
                 &format!("{PREFIX}{guild}/{week}"),
                 amount as i32,
-                commission as i64,
+                (commission | (repayment << 32)) as i64,
                 mailbox,
             ));
         } else if now >= deadline {
@@ -542,7 +626,14 @@ mod tests {
             2000,
             |_| true,
         );
-        assert_eq!(treasury.sent, Some((week, 98)));
+        assert_eq!(
+            treasury.sent,
+            Some(Contribution {
+                week,
+                commission: 98,
+                loan_repayment: 0
+            })
+        );
         assert_eq!(contribution(&mail, 43), None);
         mail.returned = true;
         assert_eq!(contribution(&mail, 42), None);

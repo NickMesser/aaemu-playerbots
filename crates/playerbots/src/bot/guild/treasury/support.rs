@@ -12,6 +12,7 @@ use crate::hub::unix_ms;
 
 const PREFIX: &str = "Guild allowance ";
 const BOUNTY_PREFIX: &str = "Guild bounty ";
+const LOAN_PREFIX: &str = "Guild loan ";
 const COPPER_BITS: u32 = 19;
 const COPPER_MASK: u64 = (1 << COPPER_BITS) - 1;
 const MAX_BOUNTY_PAYMENT: u64 = 100_000;
@@ -21,6 +22,7 @@ const MAX_SENT: usize = 512;
 pub(super) struct Support {
     week: u64,
     rank_sent: BTreeSet<u32>,
+    loan_sent: BTreeSet<u32>,
     spent: BTreeMap<i64, u64>,
     bounty_through: BTreeMap<u32, u32>,
     checked: bool,
@@ -30,21 +32,24 @@ pub(super) struct Support {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Payment {
-    week: u64,
+    pub(super) week: u64,
     pub(super) recipient: u32,
     pub(super) copper: u64,
     /// Cumulative rewarded copper for the guild, present only in bounty mail.
     pub(super) through: Option<u32>,
+    pub(super) loan: bool,
 }
 
 pub(super) fn payment(mail: &MailHeader, guild: u32) -> Option<Payment> {
     if mail.mail_type != mail_type::EXPRESS || mail.returned || mail.attachments > 1 {
         return None;
     }
-    let (title, bounty) = if let Some(title) = mail.title.strip_prefix(BOUNTY_PREFIX) {
-        (title, true)
+    let (title, bounty, loan) = if let Some(title) = mail.title.strip_prefix(BOUNTY_PREFIX) {
+        (title, true, false)
+    } else if let Some(title) = mail.title.strip_prefix(LOAN_PREFIX) {
+        (title, false, true)
     } else {
-        (mail.title.strip_prefix(PREFIX)?, false)
+        (mail.title.strip_prefix(PREFIX)?, false, false)
     };
     let (group, rest) = title.split_once('/')?;
     let (week, recipient) = rest.split_once('/')?;
@@ -61,13 +66,14 @@ pub(super) fn payment(mail: &MailHeader, guild: u32) -> Option<Payment> {
         }
         (copper, Some(through), MAX_BOUNTY_PAYMENT)
     } else {
-        (extra, None, 400_000)
+        (extra, None, if loan { 100_000 } else { 400_000 })
     };
     (recipient != 0 && copper > 0 && copper <= max).then_some(Payment {
         week: week.parse().ok()?,
         recipient,
         copper,
         through,
+        loan,
     })
 }
 
@@ -110,9 +116,15 @@ impl Support {
         if let Some(p) = payment(mail, guild).filter(|p| p.week <= self.week) {
             if p.week == self.week && self.spent.len() < MAX_SENT {
                 self.spent.entry(mail.mail_id).or_insert(p.copper);
-                if p.through.is_none() {
+                if p.through.is_none() && !p.loan {
                     self.rank_sent.insert(p.recipient);
                 }
+            }
+            if p.loan
+                && self.loan_sent.len() < MAX_SENT
+                && (p.week == self.week || mail.attachments > 0)
+            {
+                self.loan_sent.insert(p.recipient);
             }
             if let Some(through) = p.through {
                 if self.bounty_through.len() < MAX_SENT {
@@ -143,8 +155,16 @@ fn rank_weight(rank: u8) -> Option<u64> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Grant {
+    Rank,
+    Loan,
+    Bounty(u32),
+}
+
 pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
-    let week = unix_ms() / WEEK_MS;
+    let unix = unix_ms();
+    let week = unix / WEEK_MS;
     let now = ctx.now_ms;
     let money = ctx.state.me.money - i64::from(terms.reserve_copper);
     if ctx.state.me.level < MIN_SEND_LEVEL || money <= EXPRESS_FEE {
@@ -177,6 +197,7 @@ pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
         || support.listing()
         || support.spent.len() >= MAX_SENT
         || support.bounty_through.len() >= MAX_SENT
+        || support.loan_sent.len() >= MAX_SENT
     {
         return;
     }
@@ -213,25 +234,44 @@ pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
                     .min(budget)
                     .min(MAX_BOUNTY_PAYMENT);
                 if copper > 0 {
-                    return Some((m, copper, Some(settled + copper as u32)));
+                    return Some((m, copper, Grant::Bounty(settled + copper as u32)));
+                }
+            }
+            if terms.trade_loan_copper > 0 && !support.loan_sent.contains(&m.char_id) {
+                let requested = ctx.hub.bot_id_of(m.char_id).map_or(0, |bot| {
+                    ctx.hub.journal.read(bot, |j| {
+                        j.guild_treasury
+                            .get(&guild)
+                            .map_or(0, |a| a.loan.requested(unix))
+                    })
+                });
+                if requested > 0
+                    && requested <= terms.trade_loan_copper
+                    && u64::from(requested) <= budget
+                {
+                    return Some((m, u64::from(requested), Grant::Loan));
                 }
             }
             if support.rank_sent.contains(&m.char_id) {
                 return None;
             }
             let copper = u64::from(terms.weekly_support_copper) * rank_weight(m.role)?;
-            (copper > 0 && copper <= budget).then_some((m, copper, None))
+            (copper > 0 && copper <= budget).then_some((m, copper, Grant::Rank))
         })
-        .max_by_key(|(m, copper, through)| {
-            (through.is_some(), *copper, std::cmp::Reverse(m.char_id))
+        .max_by_key(|(m, copper, grant)| {
+            let priority = match grant {
+                Grant::Rank => 0,
+                Grant::Loan => 1,
+                Grant::Bounty(_) => 2,
+            };
+            (priority, *copper, std::cmp::Reverse(m.char_id))
         });
-    if let Some((member, copper, through)) = candidate {
-        let prefix = if through.is_some() {
-            BOUNTY_PREFIX
-        } else {
-            PREFIX
+    if let Some((member, copper, grant)) = candidate {
+        let (prefix, extra) = match grant {
+            Grant::Rank => (PREFIX, copper),
+            Grant::Loan => (LOAN_PREFIX, copper),
+            Grant::Bounty(through) => (BOUNTY_PREFIX, copper | (u64::from(through) << COPPER_BITS)),
         };
-        let extra = copper | through.map_or(0, |value| u64::from(value) << COPPER_BITS);
         ctx.out.push(cs::send_money_mail(
             &member.name,
             &format!("{prefix}{guild}/{week}/{}", member.char_id),
@@ -247,6 +287,35 @@ pub(super) fn pay(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_advance_counts_against_funds_and_keeps_its_own_slot() {
+        let mut support = Support {
+            week: 10,
+            ..Default::default()
+        };
+        let mail = MailHeader {
+            mail_id: 41,
+            mail_type: mail_type::EXPRESS,
+            status: 1,
+            title: "Guild loan 42/10/7".into(),
+            sender: "Master".into(),
+            attachments: 1,
+            receiver: "Trader".into(),
+            open_date: 0,
+            returned: false,
+            extra: 2_000,
+        };
+        support.note_sent(&mail, 42);
+        support.note_sent(&mail, 42);
+        assert_eq!(support.remaining(5_000), 2_900);
+        assert!(support.loan_sent.contains(&7));
+        assert!(!support.rank_sent.contains(&7));
+        support.for_week(11);
+        support.note_sent(&mail, 42);
+        assert_eq!(support.remaining(5_000), 5_000);
+        assert!(support.loan_sent.contains(&7));
+    }
 
     #[test]
     fn reconnect_counts_a_confirmed_payment_and_its_postage_once() {
