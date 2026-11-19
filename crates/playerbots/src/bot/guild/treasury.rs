@@ -20,6 +20,7 @@ const MIN_SEND_LEVEL: u8 = 10;
 const RETRY_MS: u64 = 60_000;
 const LIST_EVERY_MS: u64 = 300_000;
 const PREFIX: &str = "Guild contribution ";
+const REPAYMENT_PREFIX: &str = "Guild repayment ";
 
 pub fn is_mail(event: &ActivityEvent) -> bool {
     matches!(
@@ -197,6 +198,7 @@ pub struct Treasury {
     checking: Option<(u64, u64)>,
     list_ended: bool,
     sent: Option<Contribution>,
+    sent_repayment: Option<Contribution>,
     incoming: VecDeque<Incoming>,
     done: VecDeque<i64>,
     claim: Option<Claim>,
@@ -211,6 +213,7 @@ struct Contribution {
     week: u64,
     commission: u64,
     loan_repayment: u32,
+    repayment_only: bool,
 }
 
 fn contribution(mail: &MailHeader, guild: u32) -> Option<Contribution> {
@@ -218,7 +221,12 @@ fn contribution(mail: &MailHeader, guild: u32) -> Option<Contribution> {
     if mail.mail_type != mail_type::EXPRESS || mail.attachments > 1 || mail.returned {
         return None;
     }
-    let (group, week) = mail.title.strip_prefix(PREFIX)?.split_once('/')?;
+    let (title, repayment_only) = if let Some(title) = mail.title.strip_prefix(REPAYMENT_PREFIX) {
+        (title, true)
+    } else {
+        (mail.title.strip_prefix(PREFIX)?, false)
+    };
+    let (group, week) = title.split_once('/')?;
     if group.parse::<u32>().ok()? != guild {
         return None;
     }
@@ -228,6 +236,7 @@ fn contribution(mail: &MailHeader, guild: u32) -> Option<Contribution> {
         week: week.parse().ok()?,
         commission: extra & u64::from(u32::MAX),
         loan_repayment: (extra >> 32) as u32,
+        repayment_only,
     })
 }
 
@@ -243,10 +252,15 @@ impl Treasury {
 
     fn note_sent(&mut self, mail: &MailHeader, guild: u32) {
         if let Some(payment) = contribution(mail, guild) {
+            let sent = if payment.repayment_only {
+                &mut self.sent_repayment
+            } else {
+                &mut self.sent
+            };
             if payment.week <= unix_ms() / WEEK_MS
-                && self.sent.is_none_or(|last| payment.week > last.week)
+                && sent.is_none_or(|last| payment.week > last.week)
             {
-                self.sent = Some(payment);
+                *sent = Some(payment);
             }
         }
     }
@@ -521,31 +535,50 @@ fn collect(ctx: &mut Ctx<'_>, guild: u32, owner: bool, support_enabled: bool) ->
 fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
     let week = unix_ms() / WEEK_MS;
     let now = ctx.now_ms;
-    if let Some(payment) = ctx.state.guild.mem().treasury.sent.take() {
+    let treasury = &mut ctx.state.guild.mem().treasury;
+    let sent = treasury.sent.take();
+    let sent_repayment = treasury.sent_repayment.take();
+    if sent.is_some() || sent_repayment.is_some() {
         ctx.hub.journal.update(ctx.persona.id, |j| {
-            if j.guild_treasury.len() < 16 || j.guild_treasury.contains_key(&guild) {
-                let account = j.guild_treasury.entry(guild).or_default();
-                if payment.week > account.paid_week {
+            if let Some(account) = account_mut(j, guild) {
+                if let Some(payment) = sent.filter(|p| p.week > account.paid_week) {
                     account.paid_week = payment.week;
                     account.unpaid_commission =
                         account.unpaid_commission.saturating_sub(payment.commission);
-                    account.loan.paid(payment.loan_repayment);
+                    account.loan.paid(payment.week, payment.loan_repayment);
+                }
+                if let Some(payment) = sent_repayment {
+                    account.loan.paid(payment.week, payment.loan_repayment);
                 }
             }
         });
     }
-    let (paid, commission, loan) = ctx.hub.journal.read(ctx.persona.id, |j| {
-        j.guild_treasury.get(&guild).map_or((0, 0, 0), |a| {
-            (a.paid_week, a.unpaid_commission, a.loan.repayment)
+    let (paid, commission, loan, loan_week) = ctx.hub.journal.read(ctx.persona.id, |j| {
+        j.guild_treasury.get(&guild).map_or((0, 0, 0, 0), |a| {
+            (
+                a.paid_week,
+                a.unpaid_commission,
+                a.loan.repayment,
+                a.loan.paid_week,
+            )
         })
     });
-    let dues = u64::from(terms.weekly_dues_copper);
+    let repayment_only = paid >= week;
+    let (dues, commission) = if repayment_only {
+        (0, 0)
+    } else {
+        (u64::from(terms.weekly_dues_copper), commission)
+    };
     let spendable = ctx.state.me.money - i64::from(terms.reserve_copper) - EXPRESS_FEE;
-    if paid >= week || ctx.state.me.level < MIN_SEND_LEVEL || spendable <= 0 {
+    if ctx.state.me.level < MIN_SEND_LEVEL || spendable <= 0 {
         return;
     }
     let limit = (spendable as u64).saturating_sub(dues);
-    let repayment = u64::from(loan).min(limit);
+    let repayment = if loan_week < week {
+        u64::from(loan).min(limit)
+    } else {
+        0
+    };
     let commission = commission.min(limit - repayment);
     let amount = dues + commission + repayment;
     if amount == 0 || amount > spendable as u64 || amount > (i32::MAX - 100) as u64 {
@@ -574,9 +607,14 @@ fn contribute(ctx: &mut Ctx<'_>, guild: u32, terms: Terms) {
         if treasury.list_ended && expected_week == week {
             treasury.checking = None;
             treasury.next_check = now + RETRY_MS;
+            let prefix = if repayment_only {
+                REPAYMENT_PREFIX
+            } else {
+                PREFIX
+            };
             ctx.out.push(cs::send_money_mail(
                 &owner,
-                &format!("{PREFIX}{guild}/{week}"),
+                &format!("{prefix}{guild}/{week}"),
                 amount as i32,
                 (commission | (repayment << 32)) as i64,
                 mailbox,
@@ -631,11 +669,25 @@ mod tests {
             Some(Contribution {
                 week,
                 commission: 98,
-                loan_repayment: 0
+                loan_repayment: 0,
+                repayment_only: false,
             })
         );
         assert_eq!(contribution(&mail, 43), None);
         mail.returned = true;
         assert_eq!(contribution(&mail, 42), None);
+        mail.returned = false;
+        mail.title = format!("{REPAYMENT_PREFIX}42/{week}").into();
+        mail.extra = 70i64 << 32;
+        treasury.note_sent(&mail, 42);
+        assert_eq!(
+            treasury.sent_repayment,
+            Some(Contribution {
+                week,
+                commission: 0,
+                loan_repayment: 70,
+                repayment_only: true,
+            })
+        );
     }
 }

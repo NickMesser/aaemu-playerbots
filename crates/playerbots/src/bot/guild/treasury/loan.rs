@@ -15,6 +15,7 @@ const REQUEST_MS: u64 = 10 * 60_000;
 pub struct Loan {
     pub principal: u32,
     pub repayment: u32,
+    pub(super) paid_week: u64,
     received_week: u64,
     request_copper: u32,
     request_until: u64,
@@ -49,7 +50,11 @@ impl Loan {
         self.repayment += copper.min(u64::from(balance)) as u32;
     }
 
-    pub(super) fn paid(&mut self, copper: u32) {
+    pub(super) fn paid(&mut self, week: u64, copper: u32) {
+        if copper == 0 || week <= self.paid_week {
+            return;
+        }
+        self.paid_week = week;
         let paid = self.repayment.min(copper);
         self.repayment -= paid;
         self.principal = self.principal.saturating_sub(paid);
@@ -138,10 +143,12 @@ mod tests {
         assert!(!loan.credit(12, 4_000));
         loan.reserve_from_receipt(1_200);
         assert_eq!((loan.principal, loan.repayment), (4_000, 1_200));
-        loan.paid(1_200);
+        loan.paid(12, 1_200);
         loan.reserve_from_receipt(9_000);
         assert_eq!((loan.principal, loan.repayment), (2_800, 2_800));
-        loan.paid(2_800);
+        loan.paid(12, 1_200);
+        assert_eq!((loan.principal, loan.repayment), (2_800, 2_800));
+        loan.paid(13, 2_800);
         assert!(!loan.credit(12, 4_000));
         assert_eq!((loan.principal, loan.repayment), (0, 0));
     }

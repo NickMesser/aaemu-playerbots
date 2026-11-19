@@ -405,8 +405,9 @@ A Trader guild with a configured `trade_pack_orders` recipe can set `trade_loan_
 treasury. A member who cannot afford the estimated cost of tradable ingredients can request up
 to that amount. The guildmaster sends at most one advance per member per week from confirmed
 contributions. New advances wait while the member owes principal. Confirmed trade-pack payments
-in copper reserve an amount for repayment after commission, and the next contribution sends it
-to the guildmaster. Both the advance and repayment use express mail.
+in copper reserve an amount for repayment after commission. Members include it in their next
+weekly contribution, or send a separate repayment that week if they already contributed. Both
+the advance and repayment use express mail.
 
 Set `[guild] auction_flips = true` to let Trader members buy and relist one auction lot at a time.
 The bot uses recent confirmed market sales, keeps its configured copper reserve, and requires
