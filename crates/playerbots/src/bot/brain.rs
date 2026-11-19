@@ -987,14 +987,12 @@ impl Brain {
                 }
             });
         }
-        if ctx.cfg.guild.treasure_hunts
-            && matches!(
-                role,
-                profession::Profession::Thief | profession::Profession::BountyHunter
-            )
-        {
+        if super::goals::work::treasure::allowed(ctx) {
             let chests = ctx.hub.journal.read(ctx.persona.id, |j| j.treasure_chests);
-            context.push_str(&format!(" Pirate treasure chests looted: {chests}."));
+            let maps = ctx.state.treasure_maps.len();
+            context.push_str(&format!(
+                " Treasure chests looted: {chests}. Coordinate maps in my bag: {maps}."
+            ));
         }
         if role == profession::Profession::Thief {
             ctx.hub.journal.read(ctx.persona.id, |j| {

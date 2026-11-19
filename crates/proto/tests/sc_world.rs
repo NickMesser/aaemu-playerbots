@@ -386,21 +386,24 @@ fn inventory_contents_keep_slot_positions() {
                 id: 0xA0,
                 template: 1_000,
                 grade: 0,
-                count: 5
+                count: 5,
+                treasure: None,
             },
             InvItem {
                 slot: 23,
                 id: 0xA1,
                 template: 2_000,
                 grade: 2,
-                count: 1
+                count: 1,
+                treasure: None,
             },
             InvItem {
                 slot: 29,
                 id: 0xA2,
                 template: 3_000,
                 grade: 0,
-                count: 20
+                count: 20,
+                treasure: None,
             },
         ]
     );
@@ -413,6 +416,52 @@ fn inventory_contents_keep_slot_positions() {
         panic!("not an inventory packet");
     };
     assert!(items.is_empty());
+}
+
+#[test]
+fn treasure_coordinates_are_kept_in_bag_contents_and_item_tasks() {
+    let coordinates = [14_000 * 4_096 + 12, 13_000 * 4_096 + 34];
+    let write_map = |s: &mut PacketStream, task: bool| {
+        s.write_u32(24_581)
+            .write_u64(42)
+            .write_u8(2)
+            .write_u8(0)
+            .write_i32(1);
+        if task {
+            s.write_i16(128);
+        }
+        s.write_u8(5)
+            .write_i64(0)
+            .write_i64(coordinates[0])
+            .write_i64(coordinates[1]);
+        if task {
+            s.write_raw(&[0; 103]);
+        }
+        s.write_raw(&[0; 33]);
+    };
+    let mut bag = PacketStream::new();
+    bag.write_u8(2).write_u8(1).write_u8(0);
+    write_map(&mut bag, false);
+    let WorldEvent::Inventory { items, .. } = game(sc::SCCharacterInvenContentsPacket, &bag) else {
+        panic!("not an inventory packet");
+    };
+    assert_eq!(items[0].treasure, Some(coordinates));
+
+    let mut gained = PacketStream::new();
+    gained
+        .write_u8(17)
+        .write_u8(1)
+        .write_u8(5)
+        .write_u8(2)
+        .write_u8(0);
+    write_map(&mut gained, true);
+    gained.write_u8(0).write_u32(0);
+    let WorldEvent::ItemTask(task) = game(sc::SCItemTaskSuccessPacket, &gained) else {
+        panic!("not an item task");
+    };
+    assert!(
+        matches!(task.changes[0], ItemChange::Added { id: 42, treasure: Some(pos), .. } if pos == coordinates)
+    );
 }
 
 /// `write_padded_details` (models/item_task.rs:342): `(short)128`, then 128 bytes.
@@ -534,7 +583,8 @@ fn item_task_covers_every_action() {
                 template: 7_777,
                 id: 0xCAFE,
                 grade: 2,
-                count: 3
+                count: 3,
+                treasure: None,
             },
             ItemChange::CountUpdate {
                 slot_type: 2,
@@ -594,7 +644,8 @@ fn item_task_covers_every_action() {
                 template: 9_001,
                 id: 0x99,
                 grade: 0,
-                count: 1
+                count: 1,
+                treasure: None,
             },
         ]
         .as_slice()

@@ -1,7 +1,7 @@
 //! Guild production orders, completed only when the server delivers the item.
 
 pub mod customer;
-mod treasure;
+pub(crate) mod treasure;
 
 use aa_proto::cs;
 use aa_world::geom::Vec3;
@@ -404,6 +404,9 @@ impl Work {
         if let Some(hunt) = &mut self.hunt {
             hunt.grind.stop(ctx);
         }
+        if let Some(treasure) = &self.treasure {
+            treasure.stop(ctx);
+        }
         ctx.motion.stop();
     }
 
@@ -412,8 +415,9 @@ impl Work {
             out.push_str("work: delivering a customer's craft order");
             return;
         }
-        if self.treasure.is_some() {
-            out.push_str("work: opening a Pirate Treasure Chest");
+        if let Some(hunt) = &self.treasure {
+            out.push_str("work: ");
+            out.push_str(hunt.name());
             return;
         }
         if let Some(hunt) = &self.hunt {

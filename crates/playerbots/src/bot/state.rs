@@ -437,6 +437,10 @@ pub struct BotState {
     pub doodads: FxHashMap<u32, Doodad>,
     /// Bag content by slot.
     pub bag: FxHashMap<u16, Item>,
+    /// Coordinates from the details of treasure maps in the bag, indexed by instance id.
+    pub treasure_maps: FxHashMap<u64, [i64; 2]>,
+    /// Number of item receipts for doodad interactions, used to confirm chest loot.
+    pub doodad_loot_receipts: u64,
     /// Equipped items.
     pub equipment: Vec<EquipSlot>,
     /// Quests.
@@ -1040,7 +1044,11 @@ impl BotState {
                                 count: it.count,
                             },
                         );
+                        if let Some(coordinates) = it.treasure {
+                            self.treasure_maps.insert(it.id, coordinates);
+                        }
                     }
+                    self.prune_treasure_maps();
                     self.market.on_bag_reloaded(&self.bag);
                     if self.gear.is_some() || items.iter().any(|it| it.grade != 0) {
                         self.gear_mut().on_bag(items);
@@ -1472,7 +1480,33 @@ impl BotState {
             self.bag
                 .retain(|_, item| !task.force_removed.contains(&item.id));
         }
+        // DOODAD_INTERACTION (models/item_task.rs). A phase change alone could be another
+        // character taking the chest, so only advance this counter for an inventory receipt.
+        if task.reason == 17
+            && task.changes.iter().any(|change| {
+                matches!(
+                    change,
+                    ItemChange::Added {
+                        slot_type: SLOT_BAG,
+                        count: 1..,
+                        ..
+                    } | ItemChange::CountUpdate {
+                        slot_type: SLOT_BAG,
+                        delta: 1..,
+                        ..
+                    }
+                )
+            })
+        {
+            self.doodad_loot_receipts = self.doodad_loot_receipts.saturating_add(1);
+        }
+        self.prune_treasure_maps();
         self.market.on_item_task(task.reason, &touched, &self.bag);
+    }
+
+    fn prune_treasure_maps(&mut self) {
+        self.treasure_maps
+            .retain(|id, _| self.bag.values().any(|item| item.id == *id));
     }
 
     /// Tells the gear memory about an item change that carries a gear fact (a grade, gems).
@@ -1497,11 +1531,15 @@ impl BotState {
                 id,
                 grade,
                 count,
+                treasure,
                 ..
             } => match slot_type {
                 SLOT_BAG => {
                     // an empty stack is no item: it would hide what the slot held before
                     self.bag_put(u16::from(slot), id, template, count);
+                    if let Some(coordinates) = treasure {
+                        self.treasure_maps.insert(id, coordinates);
+                    }
                 }
                 SLOT_EQUIPMENT => {
                     self.equipment.retain(|e| e.slot != slot);
@@ -2666,6 +2704,7 @@ mod tests {
                     template: 4045,
                     grade: 0,
                     count: 3,
+                    treasure: None,
                 },
                 InvItem {
                     slot: 7,
@@ -2673,6 +2712,7 @@ mod tests {
                     template: 417,
                     grade: 0,
                     count: 1,
+                    treasure: None,
                 },
             ]),
         }));
@@ -2685,6 +2725,7 @@ mod tests {
                 template: 4045,
                 grade: 0,
                 count: 2,
+                treasure: None,
             }]),
         }));
         // a bank chunk is not the bag
@@ -2697,6 +2738,7 @@ mod tests {
                 template: 1,
                 grade: 0,
                 count: 1,
+                treasure: None,
             }]),
         }));
         assert_eq!(s.bag.len(), 3);
@@ -2727,6 +2769,7 @@ mod tests {
                 id: 99,
                 grade: 0,
                 count: 4,
+                treasure: None,
             },
             ItemChange::Removed {
                 slot_type: SLOT_BAG,
@@ -2960,6 +3003,7 @@ mod tests {
                     template: 16401,
                     grade: 0,
                     count: 0,
+                    treasure: None,
                 },
                 InvItem {
                     slot: 3,
@@ -2967,6 +3011,7 @@ mod tests {
                     template: 16401,
                     grade: 0,
                     count: 2,
+                    treasure: None,
                 },
             ]),
         }));
@@ -2995,6 +3040,7 @@ mod tests {
                 id: 14,
                 grade: 0,
                 count: 0,
+                treasure: None,
             }]
             .into_iter()
             .collect(),
@@ -3274,6 +3320,7 @@ mod tests {
                 id: 90,
                 grade: 0,
                 count: 3,
+                treasure: None,
             },
         ];
         let mut s = in_world();
@@ -3340,6 +3387,7 @@ mod tests {
             id,
             grade: 0,
             count,
+            treasure: None,
         };
         let mut s = in_world();
         assert!(s.market.get().is_none(), "no memory before a gain");
@@ -3398,6 +3446,7 @@ mod tests {
                 template: 3411,
                 grade: 0,
                 count: 2,
+                treasure: None,
             }]),
         }));
         assert_eq!(s.market.clean_count(3411), 2);

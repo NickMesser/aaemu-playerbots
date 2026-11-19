@@ -1,4 +1,8 @@
-//! Unlock a visible Pirate Treasure Chest and take the loot with an owned Freedich key.
+//! Native treasure hunts using owned coordinate maps or Freedich keys.
+
+mod map;
+
+pub(crate) use map::MAP as TREASURE_MAP;
 
 use aa_proto::cs;
 
@@ -25,7 +29,13 @@ enum Stage {
 }
 
 #[derive(Debug)]
-pub(super) struct Hunt {
+pub(super) enum Hunt {
+    Map(map::Hunt),
+    Pirate(Pirate),
+}
+
+#[derive(Debug)]
+pub(super) struct Pirate {
     chest: u32,
     pos: [f32; 3],
     stage: Stage,
@@ -33,16 +43,28 @@ pub(super) struct Hunt {
 }
 
 pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
-    if !ctx.cfg.guild.treasure_hunts
+    if !allowed(ctx)
         || ctx.state.place.in_instance()
         || ctx.state.place.loading()
         || ctx.state.me.hp_pct() < 65
-        || !matches!(
+    {
+        return None;
+    }
+    map::find(ctx)
+        .map(Hunt::Map)
+        .or_else(|| pirate(ctx).map(Hunt::Pirate))
+}
+
+pub(crate) fn allowed(ctx: &Ctx<'_>) -> bool {
+    ctx.cfg.guild.treasure_hunts
+        && matches!(
             profession::membership(ctx),
             Some((_, Profession::Thief | Profession::BountyHunter, false))
         )
-        || ctx.state.item_count(KEY) == 0
-    {
+}
+
+fn pirate(ctx: &Ctx<'_>) -> Option<Pirate> {
+    if ctx.state.item_count(KEY) == 0 {
         return None;
     }
     let me = ctx.pos();
@@ -52,7 +74,7 @@ pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
         .iter()
         .filter(|(_, d)| d.template == CHEST && d.phase == CLOSED && dist3d(me, d.pos) <= 90.0)
         .min_by(|(_, a), (_, b)| dist3d(me, a.pos).total_cmp(&dist3d(me, b.pos)))?;
-    Some(Hunt {
+    Some(Pirate {
         chest,
         pos: doodad.pos,
         stage: Stage::Approach,
@@ -61,6 +83,28 @@ pub(super) fn find(ctx: &Ctx<'_>) -> Option<Hunt> {
 }
 
 impl Hunt {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::Map(_) => "following a treasure map",
+            Self::Pirate(_) => "opening a Pirate Treasure Chest",
+        }
+    }
+
+    pub(super) fn tick(&mut self, ctx: &mut Ctx<'_>, walker: &mut Walker) -> GoalStatus {
+        match self {
+            Self::Map(hunt) => hunt.tick(ctx, walker),
+            Self::Pirate(hunt) => hunt.tick(ctx, walker),
+        }
+    }
+
+    pub(super) fn stop(&self, ctx: &Ctx<'_>) {
+        if let Self::Map(hunt) = self {
+            hunt.stop(ctx);
+        }
+    }
+}
+
+impl Pirate {
     pub(super) fn tick(&mut self, ctx: &mut Ctx<'_>, walker: &mut Walker) -> GoalStatus {
         let state = ctx
             .state

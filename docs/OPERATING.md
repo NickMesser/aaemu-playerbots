@@ -412,10 +412,12 @@ contributions collected that week, including the cost of postage, and keeps the 
 Bot members collect allowances from their guildmaster. The director remembers receipts so it can
 consider the added buying power when deciding what to do.
 
-Set `[guild] treasure_hunts = true` to let Thief and Bounty Hunter guild members open nearby
-Pirate Treasure Chests. A bot needs a Freedich Island Treasure Chest Key in its own bag. It uses
-the normal unlock skill and counts a successful hunt after the key and loot change on the server.
-Confirmed copper is eligible for the guild's commission, and the director sees the hunt count.
+Set `[guild] treasure_hunts = true` to let Thief and Bounty Hunter guild members hunt for treasure.
+With an owned coordinate map and at least 50 labor, a bot can walk to its authored dig site up to
+600 metres away on land outside closed or active war zones. It digs and takes the chest after
+the server consumes the map and exposes the loot. A bot with a Freedich Island Treasure Chest
+Key can also open a nearby Pirate Treasure Chest. The journal counts server-confirmed loot, the
+director sees the hunt count, and confirmed copper is eligible for the guild's commission.
 
 A Trader guild with a configured `trade_pack_orders` recipe can set `trade_loan_copper` on its
 treasury. A member who cannot afford the estimated cost of tradable ingredients can request up

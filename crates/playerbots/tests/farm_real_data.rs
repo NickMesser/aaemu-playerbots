@@ -424,6 +424,7 @@ impl Rig {
                     id: self.sim.next_item,
                     grade: 0,
                     count,
+                    treasure: None,
                 }
             }
         };

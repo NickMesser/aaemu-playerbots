@@ -1110,6 +1110,7 @@ fn the_state_follows_the_equipment_its_grades_and_gems() {
                 template: CHEST_30,
                 grade: 4,
                 count: 1,
+                treasure: None,
             },
             InvItem {
                 slot: 5,
@@ -1117,6 +1118,7 @@ fn the_state_follows_the_equipment_its_grades_and_gems() {
                 template: HEAD_22,
                 grade: 0,
                 count: 1,
+                treasure: None,
             },
         ]),
     }));
@@ -1194,6 +1196,7 @@ fn the_state_follows_the_equipment_its_grades_and_gems() {
         id: 90,
         grade: 2,
         count: 1,
+        treasure: None,
     }]));
     assert_eq!(
         s.equipment.iter().find(|e| e.id == 90).map(|e| e.grade),

@@ -93,6 +93,26 @@ impl Contest {
         self.claim_at(key, bot, self.now_ms());
     }
 
+    /// Claims a target only when nobody else holds a current claim on it.
+    pub fn try_claim(&self, key: u64, bot: u32) -> bool {
+        let now = self.now_ms();
+        let mut map = self.claims.lock();
+        if map.get(&key).is_some_and(|holders| {
+            holders
+                .iter()
+                .any(|&(other, end)| other != bot && end > now)
+        }) {
+            return false;
+        }
+        if !map.contains_key(&key) && map.len() >= MAX_KEYS {
+            Self::make_room(&mut map, now);
+        }
+        let holders = map.entry(key).or_default();
+        holders.clear();
+        holders.push((bot, now + CLAIM_MS));
+        true
+    }
+
     /// Bot `bot` is done with `key`.
     pub fn release(&self, key: u64, bot: u32) {
         let mut map = self.claims.lock();

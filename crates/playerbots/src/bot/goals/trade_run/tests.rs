@@ -179,6 +179,7 @@ impl Fake {
                 id: 9001,
                 grade: 0,
                 count: 1,
+                treasure: None,
             }],
             force_removed: SmallVec::new(),
         })));
@@ -301,6 +302,7 @@ fn bag_item(slot: u8, template: u32, count: i32) -> WorldEvent {
             id: 100 + u64::from(slot),
             grade: 0,
             count,
+            treasure: None,
         }],
         force_removed: SmallVec::new(),
     }))

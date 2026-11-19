@@ -358,6 +358,7 @@ mod tests {
             id: u64::from(slot) + 1000,
             grade: 0,
             count,
+            treasure: None,
         }
     }
 

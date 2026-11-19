@@ -41,6 +41,12 @@ impl QuestNeeds {
         if let Some((item, count)) = work::customer::reserved(ctx) {
             needs.add(item, count);
         }
+        if work::treasure::allowed(ctx) {
+            let map = work::treasure::TREASURE_MAP;
+            if let Ok(count) = u32::try_from(ctx.state.item_count(map)) {
+                needs.add(map, count);
+            }
+        }
         needs
     }
 

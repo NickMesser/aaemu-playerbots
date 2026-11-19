@@ -907,6 +907,7 @@ mod tests {
                     id: 5,
                     grade: 0,
                     count: 3,
+                    treasure: None,
                 },
                 ItemChange::CountUpdate {
                     slot_type: SLOT_BAG,

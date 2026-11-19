@@ -515,7 +515,7 @@ pub struct GuildCfg {
     pub player_craft_orders: bool,
     /// Pack recipes Trader guild members provision and run.
     pub trade_pack_orders: std::collections::BTreeMap<String, u32>,
-    /// Let Thieves and Bounty Hunters open Pirate Treasure Chests with their own keys.
+    /// Let Thieves and Bounty Hunters hunt treasure with owned maps and keys.
     pub treasure_hunts: bool,
     /// Contributions paid to the current bot guildmaster, by server guild ID.
     pub treasuries: std::collections::BTreeMap<String, crate::bot::guild::treasury::Terms>,
