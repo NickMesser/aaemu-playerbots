@@ -86,11 +86,12 @@ pub enum Side {
     Buy,
 }
 
-/// The guild allowance approved for a negotiated purchase.
+/// The guild budget or contract approved for a negotiated purchase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Funding {
     Training(u32),
     FarmLand(u32),
+    SupplyContract(u32, u32),
 }
 
 /// An advertisement of this bot that is standing.
@@ -235,6 +236,8 @@ pub struct Env<'a> {
     pub audience: usize,
     /// Whether a character is one of our bots.
     pub is_bot: &'a dyn Fn(&str) -> bool,
+    /// Whether a seller is eligible for the approved funding.
+    pub permits_supplier: &'a dyn Fn(Option<Funding>, &str) -> bool,
     /// Whether the seller knows this buyer as a trusted companion.
     pub trusted_companion: &'a dyn Fn(&str) -> bool,
     /// How much of an advertised item the bot wants and what it pays at most per unit, given the
@@ -585,6 +588,9 @@ impl AdState {
                 self.keep(t, reply, medium, env);
             }
             Side::Buy => {
+                if !(env.permits_supplier)(l.funding, &h.sender) {
+                    return;
+                }
                 // somebody answers "WTB": what do they have, at what price
                 let mut t = Talk::buyer(
                     &h.sender,
@@ -636,6 +642,14 @@ impl AdState {
         }
         if h.line.sell_ad {
             // goods for sale: do we want them?
+            let funding = env
+                .needs
+                .iter()
+                .find(|need| need.template == template)
+                .and_then(|need| need.funding);
+            if !(env.permits_supplier)(funding, &h.sender) {
+                return;
+            }
             let Some((want, ceiling)) = (env.interest)(template, qty, unit) else {
                 return;
             };
@@ -647,11 +661,7 @@ impl AdState {
                 ceiling,
                 env.now_ms,
             );
-            t.funding = env
-                .needs
-                .iter()
-                .find(|need| need.template == template)
-                .and_then(|need| need.funding);
+            t.funding = funding;
             let ask_first = env.rng.u8(..100) < ASK_FIRST_PERCENT;
             let speech = t.open_as_buyer(unit, ask_first);
             if speech.is_some() {
@@ -689,6 +699,10 @@ impl AdState {
     }
 
     fn talk_line(&mut self, i: usize, h: &Heard, medium: Medium, may: bool, env: &mut Env<'_>) {
+        if !(env.permits_supplier)(self.talks[i].funding, &h.sender) {
+            self.talks[i].close(Closed::Declined);
+            return;
+        }
         if self.talks[i].role == Role::Seller && !may {
             self.talks[i].close(Closed::Declined);
             self.say(env, medium, &h.sender, Speech::Decline(Decline::SoldOut));
@@ -771,8 +785,14 @@ impl AdState {
         }
         // what to say: goods for sale first, what the bot needs now and then
         let wants_buy = !env.needs.is_empty() && env.money >= 500;
+        let contract = wants_buy
+            && env
+                .needs
+                .iter()
+                .any(|need| matches!(need.funding, Some(Funding::SupplyContract(..))));
         let sell = self.best_surplus(env);
         let side_sell = match (sell.is_some(), wants_buy) {
+            (true, true) if contract => false,
             (true, true) => env.rng.u8(..100) < 70,
             (true, false) => true,
             (false, true) => false,

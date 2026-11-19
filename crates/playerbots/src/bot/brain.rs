@@ -915,6 +915,11 @@ impl Brain {
         if let Some(order) = super::goals::work::customer::summary(ctx) {
             context.push_str(&order);
         }
+        if master {
+            if let Some(contract) = super::guild::supply::summary(ctx, id) {
+                context.push_str(&contract);
+            }
+        }
         if let Some(allowance) = super::goals::work::training::Allowance::for_order(
             ctx,
             super::goals::work::selected_order(ctx),

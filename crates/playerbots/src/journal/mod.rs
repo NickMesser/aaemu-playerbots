@@ -105,6 +105,9 @@ pub struct Journal {
     pub escorts_completed: u32,
     /// Unpaid commissions and confirmed contributions by server guild.
     pub guild_treasury: BTreeMap<u32, crate::bot::guild::treasury::Account>,
+    /// Confirmed contracted purchases by server guild.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub guild_supply_receipts: BTreeMap<u32, crate::bot::guild::supply::Receipt>,
     /// Copper claimed from authenticated guild contribution mail by this guildmaster.
     pub guild_copper_received: u64,
     /// Recent sales whose items and copper changed as agreed.

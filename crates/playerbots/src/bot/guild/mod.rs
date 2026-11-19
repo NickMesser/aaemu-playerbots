@@ -50,6 +50,7 @@ pub mod profession;
 pub mod recovery;
 pub mod report;
 pub mod siege;
+pub mod supply;
 pub mod treasury;
 
 use aa_proto::guild::GuildEvent;

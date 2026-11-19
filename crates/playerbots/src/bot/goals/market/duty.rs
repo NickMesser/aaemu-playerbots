@@ -15,6 +15,7 @@ use super::report;
 use crate::bot::cmd::GoalKind;
 use crate::bot::ctx::Ctx;
 use crate::bot::goals::{trade, work};
+use crate::bot::guild::supply;
 use crate::bot::market::ads::board::{self, Peer, PEER_FRESH_MS};
 use crate::bot::market::ads::lines::{self, Meet, Words};
 use crate::bot::market::ads::names;
@@ -212,6 +213,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let recovery_orders = crate::bot::guild::recovery::shopping(ctx);
     let recovery_stock = crate::bot::guild::recovery::stock(ctx);
     let land_order = crate::bot::guild::land::shopping(ctx);
+    let supply_contract = supply::shopping(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);
     let st = &mut *ctx.state;
     let inner = st.market.inner_mut();
@@ -302,11 +304,18 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
         needs.retain(|need| need.template != order.template);
         needs.insert(0, order);
     }
+    if let Some(order) = supply_contract {
+        needs.retain(|need| need.template != order.template);
+        needs.insert(0, order);
+    }
     let audience = board.audience(name, group, unix) + usize::from(real_near);
     let index = names::global(world);
     let units = &st.units;
     let item_name = |t: u32| world.item_name(t).unwrap_or("goods").to_owned();
     let is_bot = |n: &str| hub.chat.names.contains(n);
+    let permits_supplier = |funding, name: &str| {
+        supply::permits_supplier(&cfg.guild, &hub.guilds, funding, name, None)
+    };
     let trusted_companion = |name: &str| {
         let Some(character) = units.values().find(|unit| {
             unit.kind == UnitKind::Character
@@ -391,6 +400,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
         money,
         audience,
         is_bot: &is_bot,
+        permits_supplier: &permits_supplier,
         trusted_companion: &trusted_companion,
         interest: &interest,
         place: &mut place,

@@ -10,7 +10,7 @@
 //! | Reasons | Meaning |
 //! | --- | --- |
 //! | 9, 10, 35 | loot of a monster or a doodad, loot all, auto-loot |
-//! | 29 | craft product picked up |
+//! | 27, 29 | finished craft saved to the bag or picked up |
 //! | 37, 38 | quest reward, quest supply |
 //! | 42, 43 | gathering skill effects (a skill that gives an item) |
 //! | 54 | bought from a vendor |
@@ -59,6 +59,8 @@ pub mod reason {
     pub const LOOT_ALL: u8 = 10;
     /// A GM command (`/item add`).
     pub const GM: u8 = 11;
+    /// A completed craft paid its product into the bag and consumed the inputs.
+    pub const CRAFT_ACT_SAVED: u8 = 27;
     /// A craft product was picked up.
     pub const CRAFT_PICKUP_PRODUCT: u8 = 29;
     /// A doodad's item was taken automatically.
@@ -88,10 +90,11 @@ pub mod reason {
 }
 
 /// The reasons whose gains count as the bot's own (see the module docs).
-pub const CLEAN_REASONS: [u8; 9] = [
+pub const CLEAN_REASONS: [u8; 10] = [
     reason::LOOT,
     reason::LOOT_ALL,
     reason::AUTO_LOOT_DOODAD_ITEM,
+    reason::CRAFT_ACT_SAVED,
     reason::CRAFT_PICKUP_PRODUCT,
     reason::QUEST_COMPLETE,
     reason::QUEST_SUPPLY_ITEMS,
@@ -430,7 +433,7 @@ mod tests {
 
     #[test]
     fn the_clean_reasons_are_the_honest_ones_and_gm_is_not() {
-        for r in [9, 10, 35, 29, 37, 38, 42, 43, 54] {
+        for r in [9, 10, 35, 27, 29, 37, 38, 42, 43, 54] {
             assert!(is_clean_reason(r), "{r}");
         }
         for r in [
@@ -474,10 +477,7 @@ mod tests {
         }
         assert_eq!(m.clean_count(600), 0);
         // each clean reason adds
-        for (i, r) in [9u8, 10, 35, 29, 37, 38, 42, 43, 54]
-            .into_iter()
-            .enumerate()
-        {
+        for (i, r) in CLEAN_REASONS.into_iter().enumerate() {
             let template = 7000 + i as u32;
             apply(
                 &mut m,
@@ -486,6 +486,27 @@ mod tests {
             );
             assert_eq!(m.clean_count(template), 2, "reason {r}");
         }
+    }
+
+    #[test]
+    fn a_saved_craft_credits_its_product_and_debits_its_inputs() {
+        let mut market = super::super::MarketState::default();
+        let mut bag = bag_of(&[]);
+        apply(
+            &mut market,
+            &mut bag,
+            &task(reason::LOOT, &[added(0, 8008, 5)]),
+        );
+        apply(
+            &mut market,
+            &mut bag,
+            &task(
+                reason::CRAFT_ACT_SAVED,
+                &[added(1, 8343, 1), grew(0, 8008, -3)],
+            ),
+        );
+        assert_eq!(market.clean_count(8343), 1);
+        assert_eq!(market.clean_count(8008), 2);
     }
 
     #[test]

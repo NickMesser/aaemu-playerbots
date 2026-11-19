@@ -531,6 +531,8 @@ pub struct GuildCfg {
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
     /// Maximum copper per tax certificate for a Potato guild member's garden placement.
     pub farm_tax_prices: std::collections::BTreeMap<String, u32>,
+    /// One finite purchase by a named guildmaster from another configured guild.
+    pub supply_contracts: std::collections::BTreeMap<String, crate::bot::guild::supply::Contract>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Approved camp placement sites for a bot guildmaster with a siege camp.
@@ -598,6 +600,7 @@ impl Default for GuildCfg {
             recovery_supplies: Default::default(),
             training_material_prices: Default::default(),
             farm_tax_prices: Default::default(),
+            supply_contracts: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
             siege_camp_bids: Default::default(),
@@ -1563,6 +1566,14 @@ impl Config {
                     && (1..=100_000).contains(price)
             }),
             "guild.farm_tax_prices must name Potato guilds with rank allowances and valid certificate prices"
+        );
+        ensure!(
+            g.supply_contracts.iter().all(|(guild, contract)| {
+                guild.parse().is_ok_and(|id| contract.valid(id))
+                    && g.treasuries.contains_key(guild)
+                    && g.professions.contains_key(&contract.supplier.to_string())
+            }),
+            "guild.supply_contracts must name buying guilds with treasuries and different configured supplier guilds"
         );
         ensure!(
             g.siege_zones.len() <= 16

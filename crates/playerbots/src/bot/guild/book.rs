@@ -210,6 +210,21 @@ impl GuildBook {
         self.inner.lock().guilds.get(&id).cloned()
     }
 
+    /// Whether an online bot reports this name and character in the specified guild.
+    pub fn has_member(&self, guild: u32, name: &str, character: Option<u32>, now: u64) -> bool {
+        let g = self.inner.lock();
+        g.guilds.get(&guild).is_some_and(|guild| {
+            guild.bots.iter().any(|bot| {
+                g.cards.get(bot).is_some_and(|card| {
+                    card.guild == guild.id
+                        && now.saturating_sub(card.seen_ms) <= CARD_FRESH_MS
+                        && card.name.eq_ignore_ascii_case(name)
+                        && character.is_none_or(|id| card.char_id == id)
+                })
+            })
+        })
+    }
+
     /// Whether another guild may be founded: the guilds the bots run and the foundings under way
     /// are fewer than `max`.
     pub fn room_for_guild(&self, max: u32, now_ms: u64) -> bool {

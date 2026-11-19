@@ -15,7 +15,7 @@ use crate::bot::ctx::Ctx;
 use crate::bot::goals::trade::{Deal, Plan, Trade};
 use crate::bot::goals::work::training;
 use crate::bot::goals::{FailReason, GoalStatus};
-use crate::bot::guild::land;
+use crate::bot::guild::{land, supply};
 use crate::bot::market::ads::lines::{Meet, Speech};
 use crate::bot::market::ads::talk::{Closed, Role};
 use crate::bot::market::ads::{AdState, Agreed, Funding};
@@ -315,6 +315,17 @@ impl Run {
                         }
                         Some(Funding::FarmLand(guild)) => {
                             land::can_pay(ctx, guild, template, d.qty, d.unit)
+                        }
+                        Some(Funding::SupplyContract(guild, id)) => {
+                            unit.is_some_and(|(_, _, character)| {
+                                supply::permits_supplier(
+                                    &ctx.cfg.guild,
+                                    &ctx.hub.guilds,
+                                    d.funding,
+                                    &d.peer,
+                                    Some(character),
+                                )
+                            }) && supply::can_pay(ctx, guild, id, template, d.qty, d.unit)
                         }
                         None => true,
                     };
@@ -633,6 +644,9 @@ impl Run {
                     }
                     Some(Funding::FarmLand(guild)) => {
                         land::note_purchase(ctx, guild, a.qty, a.total as u64)
+                    }
+                    Some(Funding::SupplyContract(guild, id)) => {
+                        supply::note_purchase(ctx, guild, id, a.template, a.qty, a.total)
                     }
                     None => {
                         crate::bot::guild::recovery::note_purchase(ctx, a.template, a.qty, a.total)

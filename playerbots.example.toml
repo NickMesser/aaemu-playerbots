@@ -210,6 +210,9 @@ treasure_hunts = false
 # Set weekly_support_copper in the treasury to replenish approved potions and restorative food or drink by trade.
 # Set fund_gear in the treasury to let members spend the same allowance at gear merchants.
 # recovery_supplies = { "42" = [{ item = 8518, unit_copper = 800, stock = 2 }] }
+# A guildmaster can buy a fixed quantity from bots in another configured guild through native trade.
+# Set the buyer's server character ID, treasury and price limit. Use a higher ID for a new contract.
+# supply_contracts = { "42" = { id = 1, buyer_character = 11, supplier = 43, item = 8008, quantity = 20, unit_copper = 50 } }
 # Fund a Crafter guild's active proficiency recipe up to these copper prices per ingredient.
 # The guild must pay rank allowances through its treasury.
 # training_material_prices = { "43" = { "8008" = 50 } }
