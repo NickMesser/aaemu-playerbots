@@ -120,6 +120,7 @@ pub struct LearnCtx<'a> {
 pub struct Learner {
     next_ms: u64,
     pending: Option<(u32, u64)>,
+    /// One entry per refused skill in the archetype's learn order.
     failed: SmallVec<[(u32, u8); 4]>,
     /// The bot's abilities, kept up to date by its own swaps (`None` until the first tick).
     abilities: Option<[u8; 3]>,
@@ -152,9 +153,6 @@ impl Learner {
             } else if c.now_ms.saturating_sub(sent) > ANSWER_WAIT_MS {
                 self.pending = None;
                 self.refused = self.refused.saturating_add(1);
-                if self.failed.len() >= 4 {
-                    self.failed.remove(0);
-                }
                 self.failed.retain(|f| f.0 != skill);
                 self.failed.push((skill, c.level));
             } else {
@@ -365,6 +363,29 @@ mod tests {
         // a level later it tries again
         let out = l.tick(&ctx(9100, 2, &known, &b, &a)).expect("retry");
         assert_eq!(out.opcode, op::CSLearnSkillPacket);
+    }
+
+    #[test]
+    fn more_than_four_ignored_requests_do_not_cycle() {
+        let mut a = arch();
+        a.skill_learn_order = vec![100, 101, 102, 103, 104];
+        let b = Book(
+            a.skill_learn_order
+                .iter()
+                .map(|&id| (id, skill(1, 1, true)))
+                .collect(),
+        );
+        let mut learner = Learner::default();
+        let mut now = 1_000;
+        for &id in &a.skill_learn_order {
+            let request = learner.tick(&ctx(now, 1, &[], &b, &a)).unwrap();
+            assert_eq!(request.body, id.to_le_bytes());
+            now += ANSWER_WAIT_MS + 1;
+        }
+        assert!(learner.tick(&ctx(now, 1, &[], &b, &a)).is_none());
+        assert_eq!(learner.counts(), (0, 5));
+        let retry = learner.tick(&ctx(now + 1, 2, &[], &b, &a)).unwrap();
+        assert_eq!(retry.body, 100u32.to_le_bytes());
     }
 
     #[test]
