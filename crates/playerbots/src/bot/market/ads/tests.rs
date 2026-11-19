@@ -125,6 +125,32 @@ fn said(ads: &mut AdState, now: u64) -> Vec<Due> {
 }
 
 #[test]
+fn an_unaffordable_order_does_not_block_other_ingredient_ads() {
+    let mut rig = Rig::new("Ann");
+    rig.money = 600;
+    rig.surplus.clear();
+    rig.needs = vec![
+        Need {
+            template: HAY,
+            qty: 6,
+            order_price: Some(500),
+        },
+        Need {
+            template: ORE,
+            qty: 12,
+            order_price: Some(20),
+        },
+    ];
+    let mut ads = AdState::default();
+    rig.step(&mut ads, 1);
+    let listing = ads.listing.expect("an affordable order");
+    assert_eq!(
+        (listing.template, listing.qty, listing.quote.ask),
+        (ORE, 10, 20)
+    );
+}
+
+#[test]
 fn only_talk_about_buying_and_selling_is_kept() {
     let mut a = AdState::default();
     a.on_chat(2, "Bob", "anyone seen the dragon?", 1);

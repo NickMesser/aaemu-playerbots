@@ -209,6 +209,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let inner = st.market.inner_mut();
     let surplus = surplus_of(&inner.ledger, world, &st.bag, &item_needs);
     let tradable = |t| world.item_facts(t).is_some_and(ItemFacts::tradable);
+    let prices = VendorPrices(world);
     let mut needs = wanted_goods(&st.bag, money, bot_id, unix, tradable);
     if money >= SHOP_MONEY {
         if let Some(craft) = guild_recipe.filter(|c| st.me.level >= c.req_level) {
@@ -223,7 +224,10 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
                             Need {
                                 template,
                                 qty,
-                                order_price: None,
+                                order_price: prices
+                                    .quote(template)
+                                    .filter(|_| craft.is_pack)
+                                    .map(|q| q.ask),
                             },
                         );
                     }
@@ -231,7 +235,6 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
             }
         }
     }
-    let prices = VendorPrices(world);
     let requested = match work_order {
         Some((work::Order::Gather { item, doodad }, _))
             if world.gather_doodads(item).contains(&doodad) =>

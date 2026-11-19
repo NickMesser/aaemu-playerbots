@@ -842,20 +842,27 @@ impl AdState {
 
     /// What the bot would like to buy: `(template, units, quote)`.
     fn best_need(&self, env: &mut Env<'_>) -> Option<(u32, u32, Quote)> {
-        let n = env
+        let affordable = |need: &Need| {
+            let quote = need.quote(env.prices)?;
+            let budget = (env.money / 3 / i64::from(quote.ceiling.max(1))).max(0);
+            let qty = need.qty.min(u32::try_from(budget).unwrap_or(u32::MAX));
+            (qty > 0).then_some((need.template, qty, quote))
+        };
+        if let Some(order) = env
             .needs
             .iter()
-            .find(|need| need.order_price.is_some())
-            .or_else(|| {
-                let index = env.rng.usize(..env.needs.len().max(1));
-                env.needs.get(index)
-            })?;
-        let q = n.quote(env.prices)?;
-        // never plan to spend more than a third of the purse
-        let afford =
-            u32::try_from((env.money / 3 / i64::from(q.ceiling.max(1))).max(0)).unwrap_or(u32::MAX);
-        let qty = n.qty.min(afford);
-        (qty > 0).then_some((n.template, qty, q))
+            .filter(|need| need.order_price.is_some())
+            .find_map(affordable)
+        {
+            return Some(order);
+        }
+        let index = env.rng.usize(..env.needs.len().max(1));
+        env.needs
+            .iter()
+            .cycle()
+            .skip(index)
+            .take(env.needs.len())
+            .find_map(affordable)
     }
 }
 
