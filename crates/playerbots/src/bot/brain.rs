@@ -989,7 +989,7 @@ impl Brain {
                         a.unpaid_commission, a.support_received
                     ));
                     if a.support_supplies_spent > 0 {
-                        context.push_str(&format!(" I spent {} of my rank allowance on recovery supplies.", a.support_supplies_spent));
+                        context.push_str(&format!(" I spent {} of my rank allowance on supplies.", a.support_supplies_spent));
                     }
                     if a.support_gear_spent > 0 {
                         context.push_str(&format!(" I spent {} of my rank allowance on gear.", a.support_gear_spent));
