@@ -738,6 +738,8 @@ pub struct PartyCfg {
     pub follow_into_dungeons: bool,
     /// Adventurer guild members take trade-pack escort requests from their party leader.
     pub trade_escorts: bool,
+    /// Copper agreed before an escort and payable after arrival. Zero keeps escorts free.
+    pub trade_escort_fee_copper: u32,
     /// Companions ask a player loot master for a share of dungeon and combat loot.
     pub loot_share_requests: bool,
     /// A bot declines the invitation of a player whose level (when it is known) differs from its
@@ -757,6 +759,7 @@ impl Default for PartyCfg {
             chat_commands: false,
             follow_into_dungeons: false,
             trade_escorts: false,
+            trade_escort_fee_copper: 0,
             loot_share_requests: false,
             max_level_gap: 10,
             max_companions: 8,
@@ -1690,6 +1693,11 @@ impl Config {
             "guild.churn_per_hour must be a number in 0..=60"
         );
         let pt = &self.party;
+        ensure!(
+            pt.trade_escort_fee_copper == 0
+                || (pt.trade_escorts && pt.trade_escort_fee_copper <= 100_000),
+            "party.trade_escort_fee_copper requires trade escorts and must be at most 100,000"
+        );
         ensure!(
             pt.max_level_gap >= 1,
             "party.max_level_gap must be at least 1"

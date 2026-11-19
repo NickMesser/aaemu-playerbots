@@ -291,6 +291,8 @@ chat_commands = false
 follow_into_dungeons = false
 # Adventurer guild members accept trade-pack escort requests from their party leader.
 trade_escorts = false
+# For paid escorts, set a price. The leader can whisper "escort accept", then "escort pay" on arrival.
+trade_escort_fee_copper = 0
 # A bot declines the invitation of a player whose level (when known) is more than this far from its own.
 max_level_gap = 10
 # This process has at most this many bots in the parties of real players (more are declined) ...

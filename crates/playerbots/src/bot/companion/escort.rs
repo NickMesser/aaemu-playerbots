@@ -1,5 +1,7 @@
 //! A player's party can arrange a guard for a carried trade pack or sport catch.
 
+pub mod payment;
+
 use crate::bot::ctx::Ctx;
 use crate::bot::goals::{fish, social::whisper_packet};
 use crate::bot::guild::profession::{membership, Profession};
@@ -14,10 +16,12 @@ const FISH_STAND_ARRIVAL_M: f32 = 8.0;
 #[derive(Debug, Clone)]
 pub struct Escort {
     leader: u32,
+    guild: u32,
     name: Box<str>,
     team: u32,
     pack: u32,
     sport_catch: bool,
+    fee_copper: u32,
     until: u64,
     active: bool,
     attacker: Option<(u32, u64)>,
@@ -57,15 +61,15 @@ fn tell(ctx: &mut Ctx<'_>, name: &str, message: &str) {
 }
 
 pub fn request(ctx: &mut Ctx<'_>, name: &str, leader: u32, text: &str) -> bool {
-    if !ctx.cfg.party.trade_escorts
-        || !matches!(
-            text.trim().to_ascii_lowercase().as_str(),
-            "escort" | "escort cancel"
-        )
-    {
+    if !ctx.cfg.party.trade_escorts {
         return false;
     }
-    if text.trim().eq_ignore_ascii_case("escort cancel") {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("escort pay") {
+        payment::request(ctx, leader, name);
+        return true;
+    }
+    if text.eq_ignore_ascii_case("escort cancel") {
         let m = mem_of(ctx.state);
         if m.escort.as_ref().is_some_and(|job| job.leader == leader) {
             m.escort = None;
@@ -73,12 +77,25 @@ pub fn request(ctx: &mut Ctx<'_>, name: &str, leader: u32, text: &str) -> bool {
         }
         return true;
     }
-    if !matches!(membership(ctx), Some((_, Profession::Adventurer, false))) {
+    let accept = text.eq_ignore_ascii_case("escort accept");
+    if !accept && !text.eq_ignore_ascii_case("escort") {
+        return false;
+    }
+    let Some((guild, Profession::Adventurer, false)) = membership(ctx) else {
         tell(
             ctx,
             name,
             "A member of an Adventurer guild can take that job.",
         );
+        return true;
+    };
+    if let Some(invoice) = payment::outstanding(ctx) {
+        let reply = if invoice.customer == leader {
+            "Your last escort is complete. Whisper 'escort pay' to settle it."
+        } else {
+            "I have an unsettled escort and can't take another yet."
+        };
+        tell(ctx, name, reply);
         return true;
     }
     let Some(team) = ctx.state.team().filter(|t| t.in_team()).map(|t| t.team_id) else {
@@ -103,15 +120,28 @@ pub fn request(ctx: &mut Ctx<'_>, name: &str, leader: u32, text: &str) -> bool {
         );
         return true;
     }
+    let fee_copper = ctx.cfg.party.trade_escort_fee_copper;
+    if fee_copper != 0 && !accept {
+        tell(
+            ctx,
+            name,
+            &format!(
+                "I charge {fee_copper} copper after arrival. Whisper 'escort accept' to hire me."
+            ),
+        );
+        return true;
+    }
     let until = ctx.now_ms + ESCORT_MS;
     let mem = mem_of(ctx.state);
     if mem.escort.is_none() {
         mem.escort = Some(Escort {
             leader,
+            guild,
             name: name.into(),
             team,
             pack,
             sport_catch,
+            fee_copper,
             until,
             active: false,
             attacker: None,
@@ -187,7 +217,7 @@ pub fn tick(ctx: &mut Ctx<'_>, accompanying: bool, available: bool) -> bool {
         && ctx.now_ms < job.until
         && ctx.state.team().is_some_and(|t| t.team_id == job.team)
         && super::duty::leader_char(ctx) == Some(job.leader)
-        && matches!(membership(ctx), Some((_, Profession::Adventurer, false)));
+        && membership(ctx) == Some((job.guild, Profession::Adventurer, false));
     if !valid {
         tell(
             ctx,
@@ -232,15 +262,25 @@ pub fn tick(ctx: &mut Ctx<'_>, accompanying: bool, available: bool) -> bool {
         if dist3d(ctx.pos(), carrier.pos) <= 14.0
             && at_destination(ctx, carrier, pack, job.sport_catch)
         {
+            let invoice = payment::Invoice::new(job.guild, job.leader, job.fee_copper);
             ctx.hub.journal.update(ctx.persona.id, |j| {
                 j.escorts_completed = j.escorts_completed.saturating_add(1);
+                if let Some(invoice) = invoice {
+                    j.escort_invoice = Some(invoice);
+                }
             });
             ctx.log
                 .say(format!("escort: reached {destination} with {}", job.name));
+            let fee = invoice.map_or_else(String::new, |fee| {
+                format!(
+                    " Whisper 'escort pay' when you're nearby to pay {} copper.",
+                    fee.copper
+                )
+            });
             tell(
                 ctx,
                 &job.name,
-                &format!("We reached {destination}. Your escort is complete."),
+                &format!("We reached {destination}. Your escort is complete.{fee}"),
             );
             return false;
         }

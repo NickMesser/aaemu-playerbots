@@ -38,6 +38,7 @@ use aa_world::Vec3;
 
 use crate::bot::companion::command::Say;
 use crate::bot::companion::enter::{Facts, Intent, Leader, Machine, Phase};
+use crate::bot::companion::escort::payment::Payment;
 use crate::bot::companion::follow::{self, Action, Inputs};
 use crate::bot::companion::lead::{self, Rec, Sight, ENTRANCE_M};
 use crate::bot::companion::{self as comp, Mode};
@@ -76,6 +77,7 @@ pub struct Companion {
 #[derive(Debug)]
 struct Run {
     machine: Machine,
+    escort_payment: Option<Box<Payment>>,
     /// The bot rests (the follow rule said so on the last decision).
     resting: bool,
     /// Where the leader was last in view.
@@ -107,6 +109,7 @@ impl Run {
     fn new() -> Run {
         Run {
             machine: Machine::new(),
+            escort_payment: None,
             resting: false,
             sight: Sight::default(),
             main_pos: None,
@@ -216,9 +219,18 @@ impl Companion {
         }
     }
 
+    pub fn handles_trade(&self) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.escort_payment.is_some())
+    }
+
     /// Called when the goal ends, fails or is interrupted (stop motion, close windows).
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
         if let Some(run) = self.run.as_deref_mut() {
+            if let Some(mut payment) = run.escort_payment.take() {
+                payment.stop(ctx);
+            }
             if run.resting {
                 run.resting = false;
                 manner::rest_end(ctx);
@@ -271,6 +283,17 @@ impl Run {
         let Some(leader) = comp::leader_char(ctx) else {
             return GoalStatus::Done;
         };
+        if self.escort_payment.is_none() {
+            self.escort_payment = Payment::start(ctx, leader).map(Box::new);
+        }
+        if let Some(payment) = self.escort_payment.as_mut() {
+            if payment.tick(ctx, leader) {
+                self.word = "collecting an escort fee";
+                return GoalStatus::Running;
+            }
+            payment.stop(ctx);
+            self.escort_payment = None;
+        }
         let lead = lead_of(ctx, leader);
         self.note_sight(ctx, &lead);
         let state = lead::leader_state(&lead::In {

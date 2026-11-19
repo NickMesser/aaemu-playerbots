@@ -457,8 +457,11 @@ impl Brain {
         }
         // Market duty: negotiates in the trade chat whatever the bot does; a sale agreed there
         // starts the market goal (the meeting and the trade).
+        let escort_trade =
+            matches!(&self.goal, Some(Goal::Companion(companion)) if companion.handles_trade());
         if !pack_busy
             && super::goals::market::duty(ctx, self.goal.as_ref().map(Goal::kind))
+            && !escort_trade
             && !self.is_disabled(GoalKind::Market)
         {
             self.start_goal(ctx, GoalKind::Market, None);
@@ -477,7 +480,8 @@ impl Brain {
             && self.guild_work_allowed(ctx, GoalKind::Work)
         {
             self.start_goal(ctx, GoalKind::Work, None);
-        } else if !matches!(&self.goal, Some(Goal::Work(work)) if work.handles_trade())
+        } else if !escort_trade
+            && !matches!(&self.goal, Some(Goal::Work(work)) if work.handles_trade())
             && super::goals::trade::unsolicited(
                 ctx,
                 running,
@@ -914,6 +918,9 @@ impl Brain {
         }
         if let Some(order) = super::goals::work::customer::summary(ctx) {
             context.push_str(&order);
+        }
+        if let Some(payment) = super::companion::escort::payment::summary(ctx) {
+            context.push_str(&payment);
         }
         if master {
             if let Some(contract) = super::guild::supply::summary(ctx, id) {

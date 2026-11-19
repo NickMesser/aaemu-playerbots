@@ -191,7 +191,8 @@ pub fn note_receipt(ctx: &Ctx<'_>, work: GoalKind, copper: u64) {
     let Some(terms) = ctx.cfg.guild.treasuries.get(&guild.to_string()) else {
         return;
     };
-    if !role.goals().contains(&work) || copper == 0 {
+    let escort = role == profession::Profession::Adventurer && work == GoalKind::Companion;
+    if !(role.goals().contains(&work) || escort) || copper == 0 {
         return;
     }
     let commission = copper.saturating_mul(u64::from(terms.commission_percent)) / 100;

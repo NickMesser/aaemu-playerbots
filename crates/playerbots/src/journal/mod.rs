@@ -103,6 +103,11 @@ pub struct Journal {
     pub scouting_reports: u32,
     /// Trade escorts that reached a buyer with the party leader and cargo.
     pub escorts_completed: u32,
+    /// Unpaid fee for the most recent completed Adventurer escort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escort_invoice: Option<crate::bot::companion::escort::payment::Invoice>,
+    /// Escort fees confirmed through a trade.
+    pub escort_fees_copper: u64,
     /// Unpaid commissions and confirmed contributions by server guild.
     pub guild_treasury: BTreeMap<u32, crate::bot::guild::treasury::Account>,
     /// Confirmed contracted purchases by server guild.

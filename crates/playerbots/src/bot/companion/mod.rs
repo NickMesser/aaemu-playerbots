@@ -96,6 +96,8 @@ pub struct Mem {
     pub dungeon_told: bool,
     /// Current trade escort offered by the party leader.
     pub escort: Option<escort::Escort>,
+    /// The escort customer asked to open the payment trade until this bot time.
+    pub escort_payment_until: Option<u64>,
     /// Whispers waiting to be sent.
     pub replies: SmallVec<[Reply; 2]>,
     /// Players who asked for an invitation `(name hash, bot clock)`.

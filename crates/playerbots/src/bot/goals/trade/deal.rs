@@ -362,6 +362,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cash_only_fee_requires_the_exact_amount_and_the_customer() {
+        let deal = Deal::fixed(Plan::default(), &[], 20);
+        let check = |identity, items: &[(u32, i32)], copper| {
+            let trade = window(Offer::default(), theirs(items, copper));
+            verify(&deal, &trade, identity, &no_worth)
+        };
+        assert_eq!(check(Identity::Match, &[], 19), Verdict::Wait);
+        assert_eq!(check(Identity::Match, &[], 20), Verdict::Ok);
+        assert_eq!(
+            check(Identity::Match, &[], 21),
+            Verdict::Refuse(Refusal::ExtraMoney)
+        );
+        assert_eq!(
+            check(Identity::Match, &[(8008, 1)], 20),
+            Verdict::Refuse(Refusal::ExtraItem)
+        );
+        assert_eq!(
+            check(Identity::Mismatch, &[], 20),
+            Verdict::Refuse(Refusal::WrongPartner)
+        );
+    }
+
+    #[test]
     fn a_swapped_or_extra_item_is_refused() {
         let d = sell_ore();
         let v = |o: Offer| verify(&d, &window(mine_ore(4, 10), o), Identity::Match, &no_worth);
