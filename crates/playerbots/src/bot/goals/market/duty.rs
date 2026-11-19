@@ -213,6 +213,7 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
     let recovery_orders = crate::bot::guild::recovery::shopping(ctx);
     let recovery_stock = crate::bot::guild::recovery::stock(ctx);
     let land_order = crate::bot::guild::land::shopping(ctx);
+    let lure_order = crate::bot::goals::fish::supplies::shopping(ctx);
     let supply_contract = supply::shopping(ctx);
     let item_needs = QuestNeeds::for_bot(ctx);
     let st = &mut *ctx.state;
@@ -301,6 +302,10 @@ pub fn duty(ctx: &mut Ctx<'_>, running: Option<GoalKind>) -> bool {
         needs.insert(0, order);
     }
     if let Some(order) = land_order {
+        needs.retain(|need| need.template != order.template);
+        needs.insert(0, order);
+    }
+    if let Some(order) = lure_order {
         needs.retain(|need| need.template != order.template);
         needs.insert(0, order);
     }

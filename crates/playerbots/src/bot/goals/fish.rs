@@ -1,5 +1,7 @@
 //! Sport fishing at an active school and selling the resulting backpack to a fish stand.
 
+pub(crate) mod supplies;
+
 use aa_proto::{cs, sc_world::BACKPACK_SLOT};
 use aa_world::{
     doodad::{FishChum, FishSale},
@@ -87,9 +89,12 @@ fn has_supplies(ctx: &Ctx<'_>) -> bool {
             && i32::from(ctx.state.me.labor) >= i32::from(skill.labor)
             && ctx.state.cooldown_ready(CAST, ctx.now_ms)
             && !ctx.world.fish_sales().is_empty()
-            && (mainhand(ctx).is_some_and(|item| RODS.contains(&item.template))
-                || bag_rod(ctx).is_some())
+            && has_rod(ctx)
     })
+}
+
+fn has_rod(ctx: &Ctx<'_>) -> bool {
+    mainhand(ctx).is_some_and(|item| RODS.contains(&item.template)) || bag_rod(ctx).is_some()
 }
 
 fn mainhand<'a>(ctx: &'a Ctx<'_>) -> Option<&'a aa_proto::sc_world::EquipSlot> {

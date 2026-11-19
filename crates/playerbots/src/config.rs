@@ -496,6 +496,8 @@ impl Default for MarketCfg {
 pub struct GuildCfg {
     /// Server guild ID (a decimal string in TOML) to its profession.
     pub professions: std::collections::BTreeMap<String, crate::bot::guild::profession::Profession>,
+    /// Same-profession guilds whose eligible members take priority on a war patrol.
+    pub war_rivals: std::collections::BTreeMap<String, Vec<u32>>,
     /// Potato guild ID to the seed or produce item members should grow.
     pub farm_orders: std::collections::BTreeMap<String, u32>,
     /// Seed items a Potato guild compares using confirmed market prices.
@@ -531,6 +533,8 @@ pub struct GuildCfg {
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
     /// Maximum copper per tax certificate for a Potato guild member's garden placement.
     pub farm_tax_prices: std::collections::BTreeMap<String, u32>,
+    /// Maximum copper per sport fishing lure bought from a Gatherer member's rank allowance.
+    pub fishing_lure_prices: std::collections::BTreeMap<String, u32>,
     /// One finite purchase by a named guildmaster from another configured guild.
     pub supply_contracts: std::collections::BTreeMap<String, crate::bot::guild::supply::Contract>,
     /// Guild ids and the dominion zone groups they may help attack or defend.
@@ -585,6 +589,7 @@ impl Default for GuildCfg {
     fn default() -> Self {
         Self {
             professions: Default::default(),
+            war_rivals: Default::default(),
             farm_orders: Default::default(),
             farm_choices: Default::default(),
             farm_leases: Default::default(),
@@ -600,6 +605,7 @@ impl Default for GuildCfg {
             recovery_supplies: Default::default(),
             training_material_prices: Default::default(),
             farm_tax_prices: Default::default(),
+            fishing_lure_prices: Default::default(),
             supply_contracts: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
@@ -1571,12 +1577,32 @@ impl Config {
             "guild.farm_tax_prices must name Potato guilds with rank allowances and valid certificate prices"
         );
         ensure!(
+            g.fishing_lure_prices.iter().all(|(guild, price)| {
+                g.professions.get(guild) == Some(&crate::bot::guild::profession::Profession::Gatherer)
+                    && g.treasuries.get(guild).is_some_and(|terms| terms.weekly_support_copper > 0)
+                    && (1..=100_000).contains(price)
+            }),
+            "guild.fishing_lure_prices must name Gatherer guilds with rank allowances and valid lure prices"
+        );
+        ensure!(
             g.supply_contracts.iter().all(|(guild, contract)| {
                 guild.parse().is_ok_and(|id| contract.valid(id))
                     && g.treasuries.contains_key(guild)
                     && g.professions.contains_key(&contract.supplier.to_string())
             }),
             "guild.supply_contracts must name buying guilds with treasuries and different configured supplier guilds"
+        );
+        ensure!(
+            g.war_rivals.iter().all(|(guild, rivals)| {
+                g.professions.get(guild).is_some_and(|role| {
+                    !rivals.is_empty()
+                        && rivals.iter().all(|id| {
+                            let rival = id.to_string();
+                            &rival != guild && g.professions.get(&rival) == Some(role)
+                        })
+                })
+            }),
+            "guild.war_rivals must name different configured guilds with the same profession"
         );
         ensure!(
             g.siege_zones.len() <= 16

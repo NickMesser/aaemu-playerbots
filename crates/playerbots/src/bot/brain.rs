@@ -869,6 +869,18 @@ impl Brain {
             "personal time"
         };
         let mut context = format!("Guild {id}, {} profession, {state}.", role.title());
+        let rivals = profession::war_rivals(ctx);
+        if !rivals.is_empty() {
+            context.push_str(&format!(
+                " We prioritize eligible rivals from guilds {rivals:?} on war patrols."
+            ));
+        }
+        if let Some(order) = super::goals::fish::supplies::shopping(ctx) {
+            context.push_str(&format!(
+                " The rank allowance can buy {} sport fishing lures on the market.",
+                order.qty
+            ));
+        }
         if let Some(siege) = siege {
             context.push(' ');
             context.push_str(&siege);

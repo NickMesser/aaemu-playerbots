@@ -62,6 +62,18 @@ pub fn membership(ctx: &Ctx<'_>) -> Option<(u32, Profession, bool)> {
     Some((log.id, profession, log.is_owner(member.char_id)))
 }
 
+/// Rivalry affects regular members during war patrols and uses live bot membership.
+pub fn war_rivals<'a>(ctx: &Ctx<'a>) -> &'a [u32] {
+    let rivals = &ctx.cfg.guild.war_rivals;
+    if rivals.is_empty() {
+        return &[];
+    }
+    let Some((guild, _, false)) = membership(ctx) else {
+        return &[];
+    };
+    rivals.get(&guild.to_string()).map_or(&[], Vec::as_slice)
+}
+
 pub fn farm_order(ctx: &Ctx<'_>) -> Option<u32> {
     if ctx.cfg.guild.farm_orders.is_empty() && ctx.cfg.guild.farm_choices.is_empty() {
         return None;
@@ -187,6 +199,18 @@ trade_pack_orders = { "43" = 6223 }
             "[guild]\nprofessions = { '42' = 'potato' }\ntrade_pack_orders = { '42' = 6223 }",
         ] {
             assert!(crate::config::Config::parse(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn rivals_must_be_different_configured_guilds_of_the_same_profession() {
+        let base = "[guild]\nprofessions = { '42' = 'potato', '44' = 'potato', '43' = 'trader' }\n";
+        let cfg =
+            crate::config::Config::parse(&format!("{base}war_rivals = {{ '42' = [44] }}")).unwrap();
+        assert_eq!(cfg.guild.war_rivals["42"], [44]);
+        for rival in [0, 42, 43, 45] {
+            let text = format!("{base}war_rivals = {{ '42' = [{rival}] }}");
+            assert!(crate::config::Config::parse(&text).is_err());
         }
     }
 }

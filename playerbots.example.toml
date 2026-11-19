@@ -194,7 +194,9 @@ enabled = false
 # Long-run share of autonomous play spent on a configured guild profession (50 to 75).
 work_percent = 60
 # Server guild IDs are strings in these tables. Examples:
-# professions = { "42" = "potato", "43" = "trader" }
+# professions = { "42" = "potato", "43" = "trader", "44" = "crafter", "45" = "gatherer", "46" = "potato" }
+# war_rivals = { "42" = [46] }  # prefer eligible opposing bots whose guild has the same profession
+# fishing_lure_prices = { "45" = 1000 }  # Gatherer guild rank allowance covers up to six sport lures
 # farm_orders = { "42" = 12345 }  # seed or produce item template
 # farm_choices = { "42" = [12345, 12346] }  # seed templates compared using recent sales
 # farm_leases = { "42" = [{ house = 123, rent_copper = 20 }] }  # guild-shared garden by native house ID

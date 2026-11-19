@@ -533,6 +533,16 @@ fn territory_patrol(ctx: &Ctx<'_>, available: impl Fn(u16) -> bool) -> Option<Te
     territory_site(ctx, available).map(|site| TerritoryAssignment { site, rift: None })
 }
 
+fn rival_guild(ctx: &Ctx<'_>, rivals: &[u32], object: u32, unix_ms: u64) -> Option<u32> {
+    if rivals.is_empty() {
+        return None;
+    }
+    let character = ctx.state.unit(object)?;
+    let bot = ctx.hub.bot_id_of(character.id)?;
+    let card = ctx.hub.guilds.card(bot, unix_ms)?;
+    rivals.contains(&card.guild).then_some(card.guild)
+}
+
 pub fn territory_patrol_ready(ctx: &Ctx<'_>) -> bool {
     if !(ctx.cfg.pvp.enabled && ctx.cfg.pvp.warzone) {
         return false;
@@ -709,6 +719,19 @@ impl Machine {
                     .find(|war| assigned.is_some_and(|a| a.site.zone_group == war.group))
                     .copied()
             })
+            .or_else(|| {
+                let rivals = crate::bot::guild::profession::war_rivals(ctx);
+                if rivals.is_empty() {
+                    return None;
+                }
+                let group = ctx.world.zone_info_at(me[0], me[1])?.group;
+                let war = list.iter().find(|war| war.group == group)?;
+                let unix = crate::hub::unix_ms();
+                scan::hunted(ctx, HUNT_M)
+                    .iter()
+                    .any(|candidate| rival_guild(ctx, rivals, candidate.obj, unix).is_some())
+                    .then_some(*war)
+            })
             .or_else(|| pick_war(&list, roll));
         let Some(war) = chosen else {
             return self.fail(ctx, FailReason::NoTarget, "no war to join");
@@ -879,7 +902,9 @@ impl Machine {
                     .is_some_and(|u| u.id == case.target)
             })
         });
-        let c = lead
+        let rivals = crate::bot::guild::profession::war_rivals(ctx);
+        let unix = crate::hub::unix_ms();
+        let (c, rival) = lead
             .and_then(|case| {
                 cands.iter().find(|c| {
                     ctx.state
@@ -888,7 +913,18 @@ impl Machine {
                         .is_some_and(|u| u.id == case.target)
                 })
             })
-            .or_else(|| cands.iter().min_by(|a, b| a.dist.total_cmp(&b.dist)))?;
+            .map(|candidate| (candidate, None))
+            .or_else(|| {
+                cands
+                    .iter()
+                    .map(|candidate| (candidate, rival_guild(ctx, rivals, candidate.obj, unix)))
+                    .min_by(|(a, a_guild), (b, b_guild)| {
+                        a_guild
+                            .is_none()
+                            .cmp(&b_guild.is_none())
+                            .then_with(|| a.dist.total_cmp(&b.dist))
+                    })
+            })?;
         let obj = c.obj;
         let odds = scan::weigh(ctx, obj);
         let hp = ctx.state.me.hp_pct();
@@ -903,6 +939,10 @@ impl Machine {
         }
         match verdict {
             Engage::Attack => {
+                if let Some(guild) = rival {
+                    ctx.log
+                        .say(format!("warzone: prioritizing rival guild {guild}"));
+                }
                 if ctx.motion.is_moving() {
                     ctx.motion.stop();
                 }

@@ -50,6 +50,9 @@ impl QuestNeeds {
         for (item, stock) in crate::bot::guild::recovery::stock(ctx) {
             needs.add(item, stock);
         }
+        if let Some((item, stock)) = crate::bot::goals::fish::supplies::reserve(ctx) {
+            needs.add(item, stock);
+        }
         needs
     }
 

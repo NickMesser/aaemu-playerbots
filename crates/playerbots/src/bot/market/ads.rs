@@ -91,6 +91,7 @@ pub enum Side {
 pub enum Funding {
     Training(u32),
     FarmLand(u32),
+    Fishing(u32),
     SupplyContract(u32, u32),
 }
 

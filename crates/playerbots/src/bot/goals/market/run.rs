@@ -316,6 +316,11 @@ impl Run {
                         Some(Funding::FarmLand(guild)) => {
                             land::can_pay(ctx, guild, template, d.qty, d.unit)
                         }
+                        Some(Funding::Fishing(guild)) => {
+                            crate::bot::goals::fish::supplies::can_pay(
+                                ctx, guild, template, d.qty, d.unit,
+                            )
+                        }
                         Some(Funding::SupplyContract(guild, id)) => {
                             unit.is_some_and(|(_, _, character)| {
                                 supply::permits_supplier(
@@ -644,6 +649,14 @@ impl Run {
                     }
                     Some(Funding::FarmLand(guild)) => {
                         land::note_purchase(ctx, guild, a.qty, a.total as u64)
+                    }
+                    Some(Funding::Fishing(guild)) => {
+                        crate::bot::goals::fish::supplies::note_purchase(
+                            ctx,
+                            guild,
+                            a.qty,
+                            a.total as u64,
+                        )
                     }
                     Some(Funding::SupplyContract(guild, id)) => {
                         supply::note_purchase(ctx, guild, id, a.template, a.qty, a.total)
