@@ -833,7 +833,8 @@ impl Bot {
             return;
         };
         let me = &self.state.me;
-        if me.dead || self.combat.duel.in_duel() {
+        // Zero hit points arrive before the death packet that names the killer.
+        if me.obj == 0 || (me.dead && *obj != me.obj) || self.combat.duel.in_duel() {
             return;
         }
         if *killer == me.obj {
@@ -917,14 +918,21 @@ impl Bot {
         if alliance == 0 {
             return;
         }
+        let automatic = object == me.obj || self.shared.hub.is_bot_char(victim);
         self.shared.hub.bounties.report(
             crate::hub::unix_ms(),
             attacker,
             victim,
             alliance,
             zone.group,
-            object == me.obj || self.shared.hub.is_bot_char(victim),
+            automatic,
         );
+        if object == me.obj {
+            if let Some(name) = attacker.name.as_deref() {
+                self.log
+                    .say(format!("bounty: reported {name} for the trade pack ambush"));
+            }
+        }
     }
 
     fn record_bounty_kill(&self, object: u32) {
