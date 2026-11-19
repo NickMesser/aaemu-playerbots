@@ -29,6 +29,7 @@ const REEL_CUE_MAX_AGE_MS: u64 = 1_500;
 const FOLLOW_FISH_M: f32 = 45.0;
 const KEEP_FISH_M: f32 = 30.0;
 const LOOT_REACH_M: f32 = 4.0;
+const SALE_REACH_M: f32 = 3.0;
 // A fish can surface at the bobber when it dies, some distance from the pursuer.
 const LAND_WAIT_MS: u64 = 90_000;
 const ROD_CHANGE_BUFF: u32 = 5795;
@@ -599,7 +600,7 @@ impl Fish {
                     return GoalStatus::Failed(FailReason::NoTarget);
                 };
                 let (id, template) = (pack.id, pack.template);
-                if let Some((object, sale)) = nearby_stand(ctx, template) {
+                if let Some((object, sale)) = nearby_stand(ctx, template, ctx.pos(), SALE_REACH_M) {
                     let money = ctx.state.me.money;
                     ctx.motion.stop();
                     ctx.send(cs::start_skill_doodad(sale.skill, ctx.state.me.obj, object));
@@ -678,7 +679,7 @@ impl Fish {
             .filter_map(|sale| ctx.world.nearest_doodad_spawn(sale.stand, from))
             .filter(|p| !ctx.in_war_zone(p.x, p.y))
             .min_by(|a, b| a.dist2d(from).total_cmp(&b.dist2d(from)));
-        let destination = if nearby_stand(ctx, pack.template).is_some() {
+        let destination = if nearby_stand(ctx, pack.template, ctx.pos(), SALE_REACH_M).is_some() {
             me
         } else if let Some(p) = dest {
             [p.x, p.y, p.z]
@@ -725,11 +726,16 @@ impl Fish {
     }
 }
 
-fn nearby_stand(ctx: &Ctx<'_>, item: u32) -> Option<(u32, FishSale)> {
+pub(crate) fn nearby_stand(
+    ctx: &Ctx<'_>,
+    item: u32,
+    from: [f32; 3],
+    range: f32,
+) -> Option<(u32, FishSale)> {
     ctx.state
         .doodads
         .iter()
-        .filter(|(_, d)| dist3d(ctx.pos(), d.pos) <= 3.0)
+        .filter(|(_, d)| dist3d(from, d.pos) <= range)
         .find_map(|(&id, d)| {
             ctx.world
                 .fish_sales()
@@ -829,6 +835,10 @@ mod tests {
             now_ms: 1000,
             real_player_near: false,
         };
+        let carrier = [107.0, 100.0, 100.0];
+        assert_eq!(nearby_stand(&ctx, sale.item, carrier, 8.0).unwrap().0, 40);
+        assert!(nearby_stand(&ctx, sale.item, carrier, SALE_REACH_M).is_none());
+        assert!(nearby_stand(&ctx, 1, carrier, 8.0).is_none());
         let mut goal = Fish::default();
         assert_eq!(goal.tick(&mut ctx), GoalStatus::Running);
         assert_eq!(goal.tick(&mut ctx), GoalStatus::Running);

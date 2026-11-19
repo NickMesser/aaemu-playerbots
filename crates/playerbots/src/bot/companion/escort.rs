@@ -1,7 +1,7 @@
-//! A player's party can arrange a guard for a carried trade pack.
+//! A player's party can arrange a guard for a carried trade pack or sport catch.
 
 use crate::bot::ctx::Ctx;
-use crate::bot::goals::social::whisper_packet;
+use crate::bot::goals::{fish, social::whisper_packet};
 use crate::bot::guild::profession::{membership, Profession};
 use crate::bot::pvp::rules::{self, Purpose, Rules, Target};
 use crate::bot::state::{dist3d, BotState, Unit, UnitKind};
@@ -9,6 +9,7 @@ use crate::bot::state::{dist3d, BotState, Unit, UnitKind};
 use super::{duty::mem_of, Mode};
 
 const ESCORT_MS: u64 = 20 * 60_000;
+const FISH_STAND_ARRIVAL_M: f32 = 8.0;
 
 #[derive(Debug, Clone)]
 pub struct Escort {
@@ -16,6 +17,7 @@ pub struct Escort {
     name: Box<str>,
     team: u32,
     pack: u32,
+    sport_catch: bool,
     until: u64,
     active: bool,
     attacker: Option<(u32, u64)>,
@@ -40,6 +42,14 @@ fn at_buyer(ctx: &Ctx<'_>, leader: &Unit, pack: u32) -> bool {
                 && buyers.contains(&npc.id)
                 && dist3d(leader.pos, npc.pos) <= 10.0
         })
+}
+
+fn at_destination(ctx: &Ctx<'_>, carrier: &Unit, pack: u32, sport_catch: bool) -> bool {
+    if sport_catch {
+        fish::nearby_stand(ctx, pack, carrier.pos, FISH_STAND_ARRIVAL_M).is_some()
+    } else {
+        at_buyer(ctx, carrier, pack)
+    }
 }
 
 fn tell(ctx: &mut Ctx<'_>, name: &str, message: &str) {
@@ -75,14 +85,21 @@ pub fn request(ctx: &mut Ctx<'_>, name: &str, leader: u32, text: &str) -> bool {
         return false;
     };
     let Some((pack, carrier)) = nearby_carrier(ctx, leader) else {
-        tell(ctx, name, "Stand near me with your trade pack.");
-        return true;
-    };
-    if ctx.world.specialty_buyers(pack).is_empty() || at_buyer(ctx, carrier, pack) {
         tell(
             ctx,
             name,
-            "Bring a trade pack that still needs a trip to a buyer.",
+            "Stand near me with your trade pack or sport catch.",
+        );
+        return true;
+    };
+    let sport_catch = ctx.world.fish_sales().iter().any(|sale| sale.item == pack);
+    if (!sport_catch && ctx.world.specialty_buyers(pack).is_empty())
+        || at_destination(ctx, carrier, pack, sport_catch)
+    {
+        tell(
+            ctx,
+            name,
+            "Bring a trade pack or sport catch that still needs a trip to a buyer.",
         );
         return true;
     }
@@ -94,6 +111,7 @@ pub fn request(ctx: &mut Ctx<'_>, name: &str, leader: u32, text: &str) -> bool {
             name: name.into(),
             team,
             pack,
+            sport_catch,
             until,
             active: false,
             attacker: None,
@@ -178,6 +196,11 @@ pub fn tick(ctx: &mut Ctx<'_>, accompanying: bool, available: bool) -> bool {
         );
         return false;
     }
+    let destination = if job.sport_catch {
+        "a fish stand"
+    } else {
+        "a buyer"
+    };
     if !job.active {
         if !available {
             tell(ctx, &job.name, "I'm off duty right now.");
@@ -188,31 +211,36 @@ pub fn tick(ctx: &mut Ctx<'_>, accompanying: bool, available: bool) -> bool {
         mem.come = 0;
         mem.dungeon = None;
         job.active = true;
-        tell(ctx, &job.name, "I'll guard you on the way to a buyer.");
-        ctx.log.say(format!(
-            "escort: guarding {} and their trade pack",
-            job.name
-        ));
+        let cargo = if job.sport_catch {
+            "sport catch"
+        } else {
+            "trade pack"
+        };
+        tell(
+            ctx,
+            &job.name,
+            &format!("I'll guard you on the way to {destination}."),
+        );
+        ctx.log
+            .say(format!("escort: guarding {} and their {cargo}", job.name));
     }
     if let Some((pack, carrier)) = nearby_carrier(ctx, job.leader) {
         if pack != job.pack {
-            tell(
-                ctx,
-                &job.name,
-                "Your trade pack is gone, so the escort is over.",
-            );
+            tell(ctx, &job.name, "Your cargo is gone, so the escort is over.");
             return false;
         }
-        if dist3d(ctx.pos(), carrier.pos) <= 14.0 && at_buyer(ctx, carrier, pack) {
+        if dist3d(ctx.pos(), carrier.pos) <= 14.0
+            && at_destination(ctx, carrier, pack, job.sport_catch)
+        {
             ctx.hub.journal.update(ctx.persona.id, |j| {
                 j.escorts_completed = j.escorts_completed.saturating_add(1);
             });
             ctx.log
-                .say(format!("escort: reached a buyer with {}", job.name));
+                .say(format!("escort: reached {destination} with {}", job.name));
             tell(
                 ctx,
                 &job.name,
-                "We reached a buyer. Your escort is complete.",
+                &format!("We reached {destination}. Your escort is complete."),
             );
             return false;
         }

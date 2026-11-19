@@ -286,6 +286,9 @@ pub fn context(ctx: &Ctx<'_>) -> Option<String> {
             " The guild holds a castle and has {sites} resource or trade patrol sites."
         ));
     }
+    if !rift_patrols(ctx).is_empty() {
+        summary.push_str(" The guild can patrol enabled rifts during an active war.");
+    }
     Some(summary)
 }
 

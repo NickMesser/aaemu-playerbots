@@ -487,8 +487,9 @@ last quote and available cost estimate to the director.
 ### Trade escorts
 
 With `[party] trade_escorts = true`, the leader of a player party can whisper `escort` to an Adventurer
-guild member in that party. Start within 45 metres of the bot with a trade pack equipped. The bot
-follows and assists through the normal party combat rules until both reach a buyer for that pack.
+guild member in that party. Start within 45 metres of the bot with a trade pack or landed sport
+catch equipped. The bot follows and assists through the normal party combat rules until both
+reach an eligible trade buyer or fish stand.
 When PvP and the relevant target type are enabled, the escort can also defend the carrier against a
 nearby hostile character after seeing it land a hit.
 The escort uses professional work time and ends if the pack is lost, the party breaks up, or 20
