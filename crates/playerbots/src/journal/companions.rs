@@ -5,6 +5,7 @@ use super::JournalBook;
 const MAX_COMPANIONS: usize = 32;
 const SESSION_GAP_SECS: u64 = 30 * 60;
 const BLOODLUST_MEMORY_GAP_SECS: u64 = 15 * 60;
+const THEFT_MEMORY_GAP_SECS: u64 = 15 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mediation {
@@ -125,6 +126,8 @@ pub struct Relationship {
     last_party: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_bloodlust: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_theft: Option<u64>,
 }
 
 impl Relationship {
@@ -158,6 +161,23 @@ impl Relationship {
 
     pub fn remembers_bloodlust(&self) -> bool {
         self.last_bloodlust.is_some()
+    }
+
+    pub fn witnessed_theft(&mut self, at: u64, outlaw: f32) -> bool {
+        if self
+            .last_theft
+            .is_some_and(|last| at.saturating_sub(last) < THEFT_MEMORY_GAP_SECS)
+        {
+            return false;
+        }
+        self.last_theft = Some(at);
+        let loss = ((1.0 - outlaw.clamp(0.0, 1.0)) * 20.0).round() as i8;
+        self.change_trust(-loss);
+        true
+    }
+
+    pub fn remembers_theft(&self) -> bool {
+        self.last_theft.is_some()
     }
 }
 
@@ -267,6 +287,21 @@ mod tests {
         assert_eq!(lawful.trust, -15);
         assert!(lawful.witnessed_bloodlust(100 + BLOODLUST_MEMORY_GAP_SECS, 1.0));
         assert_eq!(lawful.trust, -15);
+    }
+
+    #[test]
+    fn theft_memory_survives_reconnect_and_groups_nearby_evidence() {
+        let mut relationship = Relationship::default();
+        assert!(relationship.witnessed_theft(100, 0.1));
+        assert_eq!(relationship.trust, -18);
+
+        let saved = serde_json::to_string(&relationship).unwrap();
+        let mut reopened: Relationship = serde_json::from_str(&saved).unwrap();
+        assert!(reopened.remembers_theft());
+        assert!(!reopened.witnessed_theft(100, 0.1));
+        assert!(!reopened.witnessed_theft(101, 0.1));
+        assert!(reopened.witnessed_theft(100 + THEFT_MEMORY_GAP_SECS, 0.9));
+        assert_eq!(reopened.trust, -20);
     }
 
     #[test]

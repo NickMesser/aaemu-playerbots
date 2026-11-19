@@ -259,6 +259,8 @@ pub struct DoodadInfo {
     pub phase: u32,
     /// Owner character id (0 = none).
     pub owner_id: u32,
+    /// Creation time in Unix seconds, or 0 when unavailable.
+    pub plant_time: u32,
     /// Quest glow value (non-zero = highlighted for a quest).
     pub quest_glow: u32,
     /// The doodad has an item to loot.
@@ -2129,7 +2131,8 @@ fn read_doodad(s: &mut PacketStream) -> Res<DoodadInfo> {
     let has_loot = s.read_bool()?;
     let phase = s.read_u32()?;
     let owner_id = s.read_u32()?;
-    skip(s, 8 + 4 + 4 + 4 + 8)?; // ucc id, item template, type2, time left, plant time
+    skip(s, 8 + 4 + 4 + 4)?; // ucc id, item template, type2, time left
+    let plant_time = u32::try_from(s.read_i64()?).unwrap_or(0);
     let quest_glow = s.read_u32()?;
     skip(s, 4 + 4 + 1 + 4 + 4)?; // family, puzzle group, owner type, owner db id, data
     Ok(DoodadInfo {
@@ -2140,6 +2143,7 @@ fn read_doodad(s: &mut PacketStream) -> Res<DoodadInfo> {
         parent_obj,
         phase,
         owner_id,
+        plant_time,
         quest_glow,
         has_loot,
     })

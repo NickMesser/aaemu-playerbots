@@ -760,6 +760,7 @@ impl Bot {
             }
         }
         if let ServerEvent::World(WorldEvent::DoodadsCreated(list)) = &mut ev {
+            self.record_companion_theft(list);
             let world = &self.shared.world;
             list.retain(|d| keep_doodad(world, d));
             if list.is_empty() {
@@ -1007,6 +1008,56 @@ impl Bot {
                 );
             }
         });
+    }
+
+    fn record_companion_theft(&self, evidence: &[DoodadInfo]) {
+        let Some(team) = self.state.team().filter(|team| team.in_team()) else {
+            return;
+        };
+        if !self.state.me.spawned || self.state.place.loading() {
+            return;
+        }
+        let now = crate::hub::unix_ms() / 1_000;
+        for doodad in evidence {
+            let Some(at) = recent_theft_footprints(doodad, now) else {
+                continue;
+            };
+            let (x, y, z) = doodad.pos;
+            let site = [x, y, z];
+            let Some(actor) = self.state.units.get(&doodad.owner_obj).filter(|actor| {
+                actor.kind == UnitKind::Character
+                    && actor.id == doodad.owner_id
+                    && actor.id != self.state.me.char_id
+                    && state::dist3d(self.state.me.pos, site) <= 30.0
+                    && state::dist3d(actor.pos, site) <= 8.0
+                    && team.members.iter().any(|member| member.char_id == actor.id)
+            }) else {
+                continue;
+            };
+            let Some(name) = actor.name.as_deref() else {
+                continue;
+            };
+            let remembered = self.shared.hub.journal.update(self.entry.id, |journal| {
+                let mut remembered = false;
+                journal.relationships.update(actor.id, |record| {
+                    remembered = record.witnessed_theft(at, self.persona.profile.outlaw);
+                });
+                if remembered {
+                    journal.notes.push_clean(
+                        at,
+                        &format!(
+                            "Saw fresh theft footprints left by {name} while we were in a party."
+                        ),
+                    );
+                }
+                remembered
+            });
+            if remembered {
+                self.log.say(format!(
+                    "companion: remembered theft evidence left by {name}"
+                ));
+            }
+        }
     }
 
     /// A pong: its first field is the bot clock at which the ping left.
@@ -1689,6 +1740,17 @@ fn jittered(d: Duration, rng: &mut fastrand::Rng) -> Duration {
     d.mul_f32(0.5 + rng.f32())
 }
 
+fn recent_theft_footprints(doodad: &DoodadInfo, now: u64) -> Option<u64> {
+    // The server creates these two footprints after a successful theft. The creation time
+    // distinguishes fresh evidence from older footprints streamed into view on a walk.
+    let at = u64::from(doodad.plant_time);
+    (matches!(doodad.template, 3313 | 3314)
+        && at != 0
+        && at <= now.saturating_add(2)
+        && now.saturating_sub(at) <= 10)
+        .then_some(at)
+}
+
 /// Whether a doodad is worth remembering: it can be used, looted, crafted at, or a quest wants it
 /// (or it is a trade pack on the ground, which the gank goal picks up).
 fn keep_doodad(world: &World, d: &DoodadInfo) -> bool {
@@ -1705,6 +1767,30 @@ fn keep_doodad(world: &World, d: &DoodadInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_fresh_footprints_count_as_theft_evidence() {
+        let evidence = DoodadInfo {
+            obj: 3,
+            template: 3313,
+            pos: (14_000.0, 9_000.0, 88.0),
+            owner_obj: 42,
+            parent_obj: 0,
+            phase: 1,
+            owner_id: 12,
+            plant_time: 100,
+            quest_glow: 0,
+            has_loot: false,
+        };
+        assert_eq!(recent_theft_footprints(&evidence, 110), Some(100));
+        assert_eq!(recent_theft_footprints(&evidence, 111), None);
+        assert_eq!(recent_theft_footprints(&evidence, 96), None);
+        let bloodstain = DoodadInfo {
+            template: 877,
+            ..evidence
+        };
+        assert_eq!(recent_theft_footprints(&bloodstain, 100), None);
+    }
 
     /// Sizes of the per-bot structures, printed with `--nocapture` for the memory estimate in
     /// `docs/OPERATING.md`; the asserts keep them from growing unnoticed.

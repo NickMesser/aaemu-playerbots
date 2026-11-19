@@ -1039,7 +1039,7 @@ fn write_doodad(s: &mut PacketStream, obj: u32, template: u32, phase: u32) {
         .write_u32(0) // item template
         .write_u32(0) // type2
         .write_u32(0) // time left
-        .write_i64(0) // plant time
+        .write_i64(1_800_000_000) // plant time
         .write_u32(3) // quest glow
         .write_i32(0) // family
         .write_i32(-1) // puzzle group
@@ -1057,6 +1057,7 @@ fn doodad(obj: u32, template: u32, phase: u32) -> DoodadInfo {
         parent_obj: 0,
         phase,
         owner_id: 1001,
+        plant_time: 1_800_000_000,
         quest_glow: 3,
         has_loot: true,
     }

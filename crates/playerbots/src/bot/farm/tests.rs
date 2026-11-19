@@ -85,6 +85,7 @@ fn doodad(obj: u32, template: u32, owner: u32, phase: u32, x: f32, y: f32) -> Do
         parent_obj: 0,
         phase,
         owner_id: owner,
+        plant_time: 0,
         quest_glow: 0,
         has_loot: false,
     }

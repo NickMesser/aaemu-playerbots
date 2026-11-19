@@ -259,6 +259,9 @@ impl Services for Hub {
             if record.remembers_bloodlust() {
                 memory.push_str(" You saw this player enable Bloodlust while in your party.");
             }
+            if record.remembers_theft() {
+                memory.push_str(" You saw fresh theft footprints left by this player while in your party.");
+            }
             Some(memory)
         })
     }

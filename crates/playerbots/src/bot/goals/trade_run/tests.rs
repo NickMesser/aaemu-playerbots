@@ -143,6 +143,7 @@ impl Fake {
             parent_obj: 0,
             phase: 1,
             owner_id: 0,
+            plant_time: 0,
             quest_glow: 0,
             has_loot: false,
         }]));
@@ -163,6 +164,7 @@ impl Fake {
             parent_obj: 0,
             phase: 1,
             owner_id: 0,
+            plant_time: 0,
             quest_glow: 0,
             has_loot: false,
         }]));

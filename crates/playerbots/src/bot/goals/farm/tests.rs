@@ -380,6 +380,7 @@ impl Rig {
                                 parent_obj: 0,
                                 phase: GROWING,
                                 owner_id: ME,
+                                plant_time: 0,
                                 quest_glow: 0,
                                 has_loot: false,
                             };
