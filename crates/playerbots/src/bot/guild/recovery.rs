@@ -34,7 +34,14 @@ pub fn supports(profession: Profession) -> bool {
     )
 }
 
-type Supplies<'a> = [Option<&'a Supply>; 2];
+#[derive(Clone, Copy)]
+struct Restorative<'a> {
+    supply: &'a Supply,
+    buff: Option<u32>,
+}
+
+// Direct health and mana supplies, followed by their regeneration counterparts.
+type Supplies<'a> = [Option<Restorative<'a>>; 4];
 
 fn supplies<'a>(ctx: &Ctx<'a>) -> Option<(u32, Supplies<'a>)> {
     if ctx.cfg.guild.recovery_supplies.is_empty() {
@@ -47,25 +54,32 @@ fn supplies<'a>(ctx: &Ctx<'a>) -> Option<(u32, Supplies<'a>)> {
         return None;
     }
     let rank = ctx.state.guild.log()?.member(ctx.state.me.char_id)?.role;
-    let mut supplies: Supplies<'_> = [None, None];
+    let mut supplies: Supplies<'_> = [None; 4];
     for supply in ctx.cfg.guild.recovery_supplies.get(&guild.to_string())? {
         if supply.min_rank > rank {
             continue;
         }
         let recovery = ctx.world.item_recovery(supply.item);
-        for (slot, restores) in supplies.iter_mut().zip([recovery.health, recovery.mana]) {
-            if restores && slot.is_none_or(|current| supply.min_rank > current.min_rank) {
-                *slot = Some(supply);
+        let effects = [
+            recovery.health.then_some(None),
+            recovery.mana.then_some(None),
+            (recovery.health_regen != 0).then_some(Some(recovery.health_regen)),
+            (recovery.mana_regen != 0).then_some(Some(recovery.mana_regen)),
+        ];
+        for (slot, effect) in supplies.iter_mut().zip(effects) {
+            let Some(buff) = effect else { continue };
+            if slot.is_none_or(|current| supply.min_rank > current.supply.min_rank) {
+                *slot = Some(Restorative { supply, buff });
             }
         }
     }
     Some((guild, supplies))
 }
 
-pub fn stock(ctx: &Ctx<'_>) -> SmallVec<[(u32, u32); 2]> {
+pub fn stock(ctx: &Ctx<'_>) -> SmallVec<[(u32, u32); 4]> {
     let mut stock = SmallVec::new();
     if let Some((_, supplies)) = supplies(ctx) {
-        for supply in supplies.into_iter().flatten() {
+        for Restorative { supply, .. } in supplies.into_iter().flatten() {
             let entry = (supply.item, u32::from(supply.stock));
             if !stock.contains(&entry) {
                 stock.push(entry);
@@ -75,13 +89,13 @@ pub fn stock(ctx: &Ctx<'_>) -> SmallVec<[(u32, u32); 2]> {
     stock
 }
 
-pub fn shopping(ctx: &Ctx<'_>) -> SmallVec<[Need; 2]> {
+pub fn shopping(ctx: &Ctx<'_>) -> SmallVec<[Need; 4]> {
     let mut needs = SmallVec::new();
     let Some((guild, supplies)) = supplies(ctx) else {
         return needs;
     };
     let mut balance = allowance_budget(ctx, guild);
-    for supply in supplies.into_iter().flatten() {
+    for Restorative { supply, .. } in supplies.into_iter().flatten() {
         if needs.iter().any(|need: &Need| need.template == supply.item)
             || !ctx
                 .world
@@ -112,12 +126,16 @@ pub fn note_purchase(ctx: &Ctx<'_>, item: u32, quantity: i64, total: i64) {
     let Some((guild, supplies)) = supplies(ctx) else {
         return;
     };
-    if !supplies.into_iter().flatten().any(|supply| {
-        supply.item == item
-            && quantity > 0
-            && quantity <= i64::from(supply.stock)
-            && total == quantity * i64::from(supply.unit_copper)
-    }) {
+    if !supplies
+        .into_iter()
+        .flatten()
+        .any(|Restorative { supply, .. }| {
+            supply.item == item
+                && quantity > 0
+                && quantity <= i64::from(supply.stock)
+                && total == quantity * i64::from(supply.unit_copper)
+        })
+    {
         return;
     }
     let charged = ctx.hub.journal.update(ctx.persona.id, |journal| {
@@ -140,12 +158,16 @@ pub fn use_during_rest(ctx: &mut Ctx<'_>) -> bool {
     let Some((_, supplies)) = supplies(ctx) else {
         return false;
     };
-    let needs = [ctx.state.me.hp_pct() < 70, ctx.state.me.mp_pct() < 55];
+    let health = ctx.state.me.hp_pct() < 70;
+    let mana = ctx.state.me.mp_pct() < 55;
     let ready = supplies
         .into_iter()
-        .zip(needs)
-        .find_map(|(supply, needed)| {
-            let supply = supply.filter(|_| needed)?;
+        .zip([health, mana, health, mana])
+        .find_map(|(restorative, needed)| {
+            let Restorative { supply, buff } = restorative.filter(|_| needed)?;
+            if buff.is_some_and(|buff| ctx.state.buffs.iter().any(|&(_, id)| id == buff)) {
+                return None;
+            }
             let (_, item) = ctx.state.find_item(supply.item)?;
             let skill = ctx.world.item_use_skill(supply.item);
             (skill != 0 && ctx.state.cooldown_ready(skill, ctx.now_ms)).then_some((skill, *item))

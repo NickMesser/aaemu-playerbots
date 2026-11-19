@@ -207,7 +207,7 @@ auction_flips = false
 treasure_hunts = false
 # trade_pack_orders = { "43" = 6223 }  # a Trader guild's assigned pack recipe and ingredient order
 # treasuries = { "42" = { weekly_dues_copper = 100, commission_percent = 5, reserve_copper = 10000 } }
-# Set weekly_support_copper in the treasury to replenish approved potions by trade.
+# Set weekly_support_copper in the treasury to replenish approved potions and restorative food or drink by trade.
 # Set fund_gear in the treasury to let members spend the same allowance at gear merchants.
 # recovery_supplies = { "42" = [{ item = 8518, unit_copper = 800, stock = 2 }] }
 # Fund a Crafter guild's active proficiency recipe up to these copper prices per ingredient.
