@@ -189,6 +189,16 @@ pub struct RelationshipView {
     pub shared_parties: u16,
     pub trust: i8,
     pub preference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_dungeon_defeat: Option<DungeonDefeatView>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct DungeonDefeatView {
+    pub dungeon: String,
+    pub enemy: String,
+    pub enemy_template: u32,
+    pub at_unix_secs: u64,
 }
 
 /// What is around a bot.

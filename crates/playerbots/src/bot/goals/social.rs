@@ -262,6 +262,14 @@ impl Services for Hub {
             if record.remembers_theft() {
                 memory.push_str(" You saw fresh theft footprints left by this player while in your party.");
             }
+            if let Some(defeat) = &record.last_dungeon_defeat {
+                use std::fmt::Write;
+                let _ = write!(
+                    memory,
+                    " While in a party with this player, {} defeated you in {}. If they bring up another attempt, suggest regrouping, recovering or filling missing party roles, in a way that fits your personality.",
+                    defeat.enemy, defeat.dungeon
+                );
+            }
             Some(memory)
         })
     }

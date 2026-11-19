@@ -845,14 +845,16 @@ impl Bot {
         if *obj != me.obj {
             return;
         }
-        let Some(attacker) = self
-            .state
-            .units
-            .get(killer)
-            .filter(|u| u.kind == UnitKind::Character && u.id != me.char_id)
-        else {
+        let Some(attacker) = self.state.units.get(killer) else {
             return;
         };
+        if attacker.kind == UnitKind::Npc {
+            self.record_companion_dungeon_defeat(attacker.id);
+            return;
+        }
+        if attacker.kind != UnitKind::Character || attacker.id == me.char_id {
+            return;
+        }
         if !self.shared.cfg.party.join_player_parties && !self.shared.hub.is_bot_char(attacker.id) {
             return;
         }
@@ -865,6 +867,68 @@ impl Bot {
             j.relationships
                 .update(attacker.id, |r| r.change_trust(loss));
         });
+    }
+
+    fn record_companion_dungeon_defeat(&self, enemy_template: u32) {
+        if !self.shared.cfg.party.join_player_parties
+            || !self.state.place.in_instance()
+            || self.state.place.loading()
+        {
+            return;
+        }
+        let Some(team) = self.state.team().filter(|team| team.in_team()) else {
+            return;
+        };
+        let world = &self.shared.world;
+        let zone_key = self.state.place.zone_key();
+        let Some(dungeon) = world
+            .dungeons()
+            .iter()
+            .find(|dungeon| u32::from(dungeon.zone_key) == zone_key)
+        else {
+            return;
+        };
+        let Some(enemy) = world.npc(enemy_template) else {
+            return;
+        };
+        let witnesses: smallvec::SmallVec<[u32; 5]> = team
+            .members
+            .iter()
+            .filter(|member| {
+                member.char_id != self.state.me.char_id
+                    && self.state.units.get(&member.obj_id).is_some_and(|unit| {
+                        unit.kind == UnitKind::Character && unit.id == member.char_id
+                    })
+            })
+            .map(|member| member.char_id)
+            .collect();
+        if witnesses.is_empty() {
+            return;
+        }
+        let defeat = crate::journal::DungeonDefeat {
+            dungeon: dungeon.name.clone(),
+            enemy: enemy.name.clone(),
+            enemy_template,
+            at_unix_secs: crate::hub::unix_ms() / 1_000,
+        };
+        self.shared.hub.journal.update(self.entry.id, |journal| {
+            for character in witnesses {
+                journal.relationships.update(character, |record| {
+                    record.last_dungeon_defeat = Some(defeat.clone());
+                });
+            }
+            journal.notes.push_clean(
+                defeat.at_unix_secs,
+                &format!(
+                    "{} defeated me while I was in a party in {}.",
+                    defeat.enemy, defeat.dungeon
+                ),
+            );
+        });
+        self.log.say(format!(
+            "companion: remembered being defeated by {} in {}",
+            defeat.enemy, defeat.dungeon
+        ));
     }
 
     fn record_pack_death(&self, object: u32, killer: u32) {

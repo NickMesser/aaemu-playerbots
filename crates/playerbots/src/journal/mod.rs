@@ -43,7 +43,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub use companions::{Mediation, MediationReply, Preference, Relationships};
+pub use companions::{DungeonDefeat, Mediation, MediationReply, Preference, Relationships};
 pub use gear::GearNotes;
 pub use notes::{Note, Notes, MAX_NOTES, MAX_NOTE_CHARS};
 pub use seen::{Seen, MAX_ZONES};

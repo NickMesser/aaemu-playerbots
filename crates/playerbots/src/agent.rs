@@ -290,6 +290,14 @@ pub fn observation(g: &SlotInner, journal: &Journal, now_ms: u64) -> pb_web::Obs
             shared_parties: r.shared_parties,
             trust: r.trust,
             preference: r.preference.map(|p| p.label().to_owned()),
+            last_dungeon_defeat: r.last_dungeon_defeat.as_ref().map(|defeat| {
+                pb_web::agent::DungeonDefeatView {
+                    dungeon: defeat.dungeon.to_string(),
+                    enemy: defeat.enemy.to_string(),
+                    enemy_template: defeat.enemy_template,
+                    at_unix_secs: defeat.at_unix_secs,
+                }
+            }),
         })
         .collect();
     o
@@ -422,6 +430,17 @@ mod tests {
         };
         let mut j = Journal::default();
         j.seen.add_zone(4);
+        j.relationships.update(7, |record| {
+            record.last_dungeon_defeat = Some(crate::journal::DungeonDefeat {
+                dungeon: "Sharpwind Mines".into(),
+                enemy: "Stonebrother Colossus".into(),
+                enemy_template: 11363,
+                at_unix_secs: 2,
+            });
+        });
+        j.relationships.update(8, |_| {});
+        let saved = serde_json::to_vec(&j).unwrap();
+        let mut j: Journal = serde_json::from_slice(&saved).unwrap();
         for i in 0..12 {
             j.notes.push(i, &format!("note {i}"));
         }
@@ -436,6 +455,12 @@ mod tests {
         assert_eq!(o.notes.len(), OBSERVE_NOTES);
         assert_eq!(o.notes.last().unwrap(), "note 11");
         assert_eq!(o.zones_seen, 1);
+        let defeat = o.relationships[0].last_dungeon_defeat.as_ref().unwrap();
+        assert_eq!(o.relationships[0].character, 7);
+        assert_eq!(defeat.dungeon, "Sharpwind Mines");
+        assert_eq!(defeat.enemy, "Stonebrother Colossus");
+        assert_eq!(defeat.enemy_template, 11363);
+        assert!(o.relationships[1].last_dungeon_defeat.is_none());
         // offline: the bot's own view is stale and left out
         g.snap.activity = pb_web::Activity::Offline;
         let o = observation(&g, &j, 25_500);

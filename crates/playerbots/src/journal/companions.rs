@@ -128,6 +128,16 @@ pub struct Relationship {
     last_bloodlust: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_theft: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_dungeon_defeat: Option<DungeonDefeat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DungeonDefeat {
+    pub dungeon: Box<str>,
+    pub enemy: Box<str>,
+    pub enemy_template: u32,
+    pub at_unix_secs: u64,
 }
 
 impl Relationship {
