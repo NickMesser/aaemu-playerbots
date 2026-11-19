@@ -1318,7 +1318,11 @@ fn headline(phase: Phase) -> &'static str {
 }
 
 /// The auctioneer NPC in view that belongs to the planned spawn: `(object id, position)`.
-fn find_npc(st: &BotState, spot: Spot, from: [f32; 3]) -> Option<(u32, [f32; 3])> {
+pub(in crate::bot::goals) fn find_npc(
+    st: &BotState,
+    spot: Spot,
+    from: [f32; 3],
+) -> Option<(u32, [f32; 3])> {
     st.units
         .iter()
         .filter(|(_, u)| u.kind == UnitKind::Npc && u.id == spot.template && !u.dead())

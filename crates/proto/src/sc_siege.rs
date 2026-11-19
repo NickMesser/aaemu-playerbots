@@ -14,6 +14,7 @@ pub struct Team {
     pub members: Box<[u32]>,
 }
 
+pub const CAMP_AUCTION: u8 = 1;
 pub const DECLARATION: u8 = 2;
 pub const WARMUP: u8 = 3;
 pub const BATTLE: u8 = 4;

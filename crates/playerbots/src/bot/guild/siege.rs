@@ -186,6 +186,15 @@ pub struct Declaration {
     pub position: [f32; 2],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CampBid {
+    pub declaration: Declaration,
+    pub cycle: i64,
+    pub budget: i32,
+}
+
+pub const CAMP_START_COPPER: i32 = 5_000_000;
+
 // r208022 compact.sqlite3, siege_zones.declare_item_id keyed by zone_group_id.
 fn declaration_camp(group: u16) -> Option<u32> {
     Some(match group {
@@ -200,12 +209,15 @@ fn declaration_camp(group: u16) -> Option<u32> {
 }
 
 fn accepts_declaration(site: &Site, expedition: u32, position: [f32; 2]) -> bool {
+    site.siege.period == sc_siege::DECLARATION && camp_site(site, expedition, position)
+}
+
+fn camp_site(site: &Site, expedition: u32, position: [f32; 2]) -> bool {
     let [x, y, _] = site.position;
     let distance = (position[0] - x).hypot(position[1] - y);
     site.tower != 0
         && site.owner != 0
         && site.owner != expedition
-        && site.siege.period == sc_siege::DECLARATION
         && site.siege.attackers.expedition == 0
         && site.siege.radius_declare > 0
         && distance >= f32::from(site.siege.radius_declare) + CAMP_MARGIN_M
@@ -278,6 +290,48 @@ fn may_set_out(ctx: &Ctx<'_>) -> bool {
 }
 
 pub fn declaration(ctx: &Ctx<'_>) -> Option<Declaration> {
+    declaration_candidate(ctx, sc_siege::DECLARATION, |camp, _| {
+        ctx.state.find_item(camp).is_some()
+    })
+    .map(|(order, _)| order)
+}
+
+pub fn camp_bid(ctx: &Ctx<'_>) -> Option<CampBid> {
+    if ctx.cfg.bots.gm_bootstrap || !ctx.cfg.market.enabled || !ctx.cfg.market.auction {
+        return None;
+    }
+    let key = ctx.state.guild.log()?.id.to_string();
+    let limit = i64::from(*ctx.cfg.guild.siege_camp_bids.get(&key)?);
+    let reserve = ctx
+        .cfg
+        .guild
+        .treasuries
+        .get(&key)
+        .map_or(0, |terms| i64::from(terms.reserve_copper));
+    let budget = i32::try_from(limit.min(ctx.state.me.money.saturating_sub(reserve))).ok()?;
+    if budget < CAMP_START_COPPER {
+        return None;
+    }
+    let latest = ctx
+        .hub
+        .journal
+        .read(ctx.persona.id, |journal| journal.siege_camp_bid_cycle);
+    let (declaration, cycle) =
+        declaration_candidate(ctx, sc_siege::CAMP_AUCTION, |camp, cycle| {
+            cycle > latest && ctx.state.find_item(camp).is_none()
+        })?;
+    Some(CampBid {
+        declaration,
+        cycle,
+        budget,
+    })
+}
+
+fn declaration_candidate(
+    ctx: &Ctx<'_>,
+    period: u8,
+    wants_item: impl Fn(u32, i64) -> bool,
+) -> Option<(Declaration, i64)> {
     if !may_set_out(ctx) || ctx.cfg.guild.siege_declarations.is_empty() {
         return None;
     }
@@ -308,10 +362,15 @@ pub fn declaration(ctx: &Ctx<'_>) -> Option<Declaration> {
             let site = guild.sieges.sites.get(&group)?;
             let [cx, cy] = place.position;
             let distance = (cx - x).hypot(cy - y);
-            if distance > MAX_WALK_M || !accepts_declaration(site, expedition, place.position) {
+            let cycle = site.siege.started;
+            if site.siege.period != period
+                || !camp_site(site, expedition, place.position)
+                || !wants_item(camp, cycle)
+                || period == sc_siege::DECLARATION && distance > MAX_WALK_M
+                || period == sc_siege::CAMP_AUCTION && (cycle <= 0 || site.siege.durations[0] <= 0)
+            {
                 return None;
             }
-            ctx.state.find_item(camp)?;
             ctx.world
                 .zone_info_at(cx, cy)
                 .filter(|zone| zone.group == group)?;
@@ -325,11 +384,12 @@ pub fn declaration(ctx: &Ctx<'_>) -> Option<Declaration> {
                     camp,
                     position: place.position,
                 },
+                cycle,
                 distance,
             ))
         })
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(order, _)| order)
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .map(|(order, cycle, _)| (order, cycle))
 }
 
 pub fn declared_by(ctx: &Ctx<'_>, order: Declaration) -> bool {
@@ -388,6 +448,12 @@ pub fn context(ctx: &Ctx<'_>) -> Option<String> {
         summary.push_str(&format!(
             " I have the camp for the open declaration window in territory {}.",
             order.group
+        ));
+    }
+    if let Some(bid) = camp_bid(ctx) {
+        summary.push_str(&format!(
+            " The camp auction for territory {} is open and I can bid up to {} copper.",
+            bid.declaration.group, bid.budget
         ));
     }
     if let Some(order) = available(ctx, None) {

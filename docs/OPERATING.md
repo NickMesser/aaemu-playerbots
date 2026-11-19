@@ -413,7 +413,10 @@ entry gives a configured siege `zone_group` and a world `[x, y]` `position` outs
 declaration exclusion radius. During the announced declaration period, a bot guildmaster with
 the matching siege camp in its inventory can walk to the position and cast the camp's skill.
 The server confirms the declaration before the bot records it. Set the server's castle zone
-access for ordinary declarers before enabling this goal. Supply the matching camps separately.
+access for ordinary declarers before enabling this goal. You can supply camps separately or set
+`[guild] siege_camp_bids = { "43" = 5000000 }` to let the master of guild 43 bid on the matching system
+lot during the advertised auction period. The value is a copper ceiling. The bot keeps its
+treasury reserve, makes one bid attempt per cycle, and claims a win through normal auction mail.
 
 Use `[guild] territory_patrols` to designate nearby roads and resource sites for guilds that
 hold a castle. Each guild's entries give a `zone_group` and its world `[x, y]` `position`. With

@@ -508,6 +508,8 @@ pub struct GuildCfg {
     pub siege_zones: std::collections::BTreeMap<String, Vec<u16>>,
     /// Approved camp placement sites for a bot guildmaster with a siege camp.
     pub siege_declarations: std::collections::BTreeMap<String, Vec<TerritoryPatrol>>,
+    /// Maximum copper a guildmaster may commit to one authored siege camp auction per cycle.
+    pub siege_camp_bids: std::collections::BTreeMap<String, u32>,
     /// Optional priority cross-continent pack buyer for a Trader guild.
     pub voyage_buyers: std::collections::BTreeMap<String, u32>,
     /// Resource or route sites a castle-holding guild can patrol in active conflict.
@@ -553,6 +555,7 @@ impl Default for GuildCfg {
             treasuries: Default::default(),
             siege_zones: Default::default(),
             siege_declarations: Default::default(),
+            siege_camp_bids: Default::default(),
             voyage_buyers: Default::default(),
             territory_patrols: Default::default(),
             rift_patrols: Default::default(),
@@ -1463,6 +1466,13 @@ impl Config {
                     })
                 }),
             "guild.siege_declarations must give valid sites in the guild's configured siege zones"
+        );
+        ensure!(
+            g.siege_camp_bids.len() <= 16
+                && g.siege_camp_bids.iter().all(|(guild, &cap)| {
+                    g.siege_declarations.contains_key(guild) && cap != 0 && i32::try_from(cap).is_ok()
+                }),
+            "guild.siege_camp_bids must give positive signed copper limits for configured declarers"
         );
         ensure!(
             g.voyage_buyers.len() <= 16

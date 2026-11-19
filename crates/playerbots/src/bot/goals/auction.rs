@@ -67,6 +67,7 @@ use crate::roster::Temperament;
 
 use super::{FailReason, GoalStatus};
 
+pub(super) use machine::find_npc;
 pub use machine::{Run, Spot, Stack};
 
 /// A bot does not visit during its first minutes in the world.

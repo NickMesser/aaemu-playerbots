@@ -115,6 +115,8 @@ pub struct Journal {
     pub sieges_won: u32,
     pub sieges_held: u32,
     pub sieges_declared: u32,
+    /// The server's auction start timestamp for the most recent siege camp bid attempt.
+    pub siege_camp_bid_cycle: i64,
     /// Earliest wall-clock time when this character can set out for another rift patrol.
     pub rift_patrol_after_ms: u64,
 }

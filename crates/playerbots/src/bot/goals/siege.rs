@@ -1,5 +1,7 @@
 //! Declare war with the guild's camp, register for a siege, and fight for the tower.
 
+mod camp_auction;
+
 use aa_proto::{cs, sc_siege};
 
 use crate::bot::combat::{Combat, CombatStatus};
@@ -23,6 +25,7 @@ const AREA_M: f32 = 80.0;
 pub struct Goal {
     order: Option<Order>,
     declaration: Option<Declaration>,
+    camp_auction: Option<Box<camp_auction::Auction>>,
     joined: bool,
     fought: bool,
     attempts: u8,
@@ -39,6 +42,7 @@ pub fn score(ctx: &Ctx<'_>, _base: f32) -> f32 {
         Some(order) if order.period == sc_siege::BATTLE => 4.0,
         Some(order) if order.period == sc_siege::WARMUP => 2.0,
         _ if siege::declaration(ctx).is_some() => 2.0,
+        _ if camp_auction::Auction::new(ctx).is_some() => 1.5,
         _ => 0.0,
     }
 }
@@ -49,10 +53,16 @@ impl Goal {
             siege::available(ctx, None).filter(|order| order.period != sc_siege::DECLARATION);
         if self.order.is_none() {
             self.declaration = siege::declaration(ctx);
+            if self.declaration.is_none() {
+                self.camp_auction = camp_auction::Auction::new(ctx).map(Box::new);
+            }
         }
     }
 
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
+        if let Some(auction) = &mut self.camp_auction {
+            return auction.tick(ctx);
+        }
         if let Some(order) = self.declaration {
             return self.declare(ctx, order);
         }
@@ -215,6 +225,11 @@ impl Goal {
             out.push_str(&format!("siege {action} zone group {}", order.group));
         } else if let Some(order) = self.declaration {
             out.push_str(&format!("siege declaring war in territory {}", order.group));
+        } else if let Some(auction) = &self.camp_auction {
+            out.push_str(&format!(
+                "siege seeking the camp for territory {}",
+                auction.group()
+            ));
         } else {
             out.push_str("siege");
         }
