@@ -1,6 +1,7 @@
 //! Short bot-only parties for open-world exploration, grinding and quests.
 
 use aa_proto::cs;
+use aa_proto::sc_activity::quest_status;
 
 use super::work::{self, Work};
 use super::{FailReason, GoalStatus, Grind, Quest, Wander};
@@ -10,6 +11,8 @@ use crate::bot::ctx::Ctx;
 use crate::bot::party::{FieldActivity, PartyOrder, PartyPurpose};
 use crate::bot::pvp::walk::{Walk, Walker};
 use crate::bot::state::{dist2d, UnitKind};
+
+const PARTY_QUEST_REACH_M: f32 = 40.0;
 
 pub fn ready(ctx: &Ctx<'_>) -> bool {
     ctx.cfg.behavior.field_parties
@@ -45,6 +48,11 @@ pub struct Field {
     walker: Walker,
     outing: Option<Outing>,
     started: bool,
+    published_quest: Option<u32>,
+    quest_interaction: Option<Quest>,
+    last_quest_accept: u32,
+    last_quest_report: u32,
+    next_quest_offer_ms: u64,
 }
 
 impl Field {
@@ -103,6 +111,9 @@ impl Field {
             return GoalStatus::Running;
         };
         let (leader_char, _) = Dispatch::who(ctx.hub, order.leader);
+        let leader_bot = order.leader;
+        let party_id = order.party_id;
+        let shares_quests = order.purpose == PartyPurpose::Field(FieldActivity::Quest);
         if leader_char == 0 {
             return GoalStatus::Failed(FailReason::NoTarget);
         }
@@ -193,7 +204,17 @@ impl Field {
                 status
             }
             Some(Outing::Grind(grind)) => grind.tick(ctx, combat),
-            Some(Outing::Quest(quest)) => quest.tick(ctx),
+            Some(Outing::Quest(quest)) => {
+                let status = quest.tick(ctx);
+                let focus = quest.party_template();
+                if self.published_quest != focus {
+                    self.published_quest = focus;
+                    ctx.log.with_slot(|slot| {
+                        slot.field_quest = focus.map(|quest_id| (party_id, quest_id));
+                    });
+                }
+                status
+            }
             None => {
                 if ctx.combat.busy() {
                     return GoalStatus::Running;
@@ -213,7 +234,15 @@ impl Field {
                             .then_some(leader.pos)
                     });
                 if let Some(pos) = position {
-                    if dist2d(ctx.pos(), pos) < 6.0 {
+                    let distance = dist2d(ctx.pos(), pos);
+                    if shares_quests && distance <= PARTY_QUEST_REACH_M {
+                        if self.follow_party_quest(ctx, party_id, leader_bot) {
+                            return GoalStatus::Running;
+                        }
+                    } else if let Some(mut quest) = self.quest_interaction.take() {
+                        quest.stop(ctx);
+                    }
+                    if distance < 6.0 {
                         if ctx.motion.is_moving() {
                             ctx.motion.stop();
                             self.walker.reset();
@@ -223,10 +252,54 @@ impl Field {
                     if self.walker.step(ctx, [pos[0], pos[1]], 4.0) == Walk::Stuck {
                         return GoalStatus::Failed(FailReason::Stuck);
                     }
+                } else if let Some(mut quest) = self.quest_interaction.take() {
+                    quest.stop(ctx);
                 }
                 GoalStatus::Running
             }
         }
+    }
+
+    fn follow_party_quest(&mut self, ctx: &mut Ctx<'_>, party_id: u32, leader_bot: u32) -> bool {
+        if let Some(quest) = self.quest_interaction.as_mut() {
+            if quest.tick(ctx) == GoalStatus::Running && quest.interacting() {
+                return true;
+            }
+            quest.stop(ctx);
+            self.quest_interaction = None;
+        }
+        if ctx.now_ms < self.next_quest_offer_ms {
+            return false;
+        }
+        self.next_quest_offer_ms = ctx.now_ms + 3_000;
+        let Some((_, quest_id)) = ctx
+            .hub
+            .slot(leader_bot)
+            .and_then(|slot| slot.with(|slot| slot.field_quest))
+            .filter(|&(order, _)| order == party_id)
+        else {
+            return false;
+        };
+        let row = ctx.state.quests.row(quest_id);
+        let reporting = row.is_some_and(|row| row.status == quest_status::READY);
+        if !reporting && row.is_some() {
+            return false;
+        }
+        let last = if reporting {
+            &mut self.last_quest_report
+        } else {
+            &mut self.last_quest_accept
+        };
+        if *last == quest_id {
+            return false;
+        }
+        let Some(quest) = Quest::party_interaction(ctx, quest_id, reporting) else {
+            return false;
+        };
+        *last = quest_id;
+        self.quest_interaction = Some(quest);
+        self.walker.reset();
+        true
     }
 
     fn begin_outing(&mut self, ctx: &mut Ctx<'_>, activity: FieldActivity) {
@@ -291,6 +364,12 @@ impl Field {
 
     pub fn stop(&mut self, ctx: &mut Ctx<'_>) {
         ctx.coord.cancel(ctx.persona.id);
+        if self.published_quest.is_some() {
+            ctx.log.with_slot(|slot| slot.field_quest = None);
+        }
+        if let Some(mut quest) = self.quest_interaction.take() {
+            quest.stop(ctx);
+        }
         match &mut self.outing {
             Some(Outing::Explore(wander)) => wander.stop(ctx),
             Some(Outing::Forage(work)) => work.stop(ctx),
@@ -321,6 +400,7 @@ impl Field {
             Some(Outing::Forage(_)) => "Leading a foraging party",
             Some(Outing::Grind(_)) => "Leading a grinding party",
             Some(Outing::Quest(_)) => "Leading a questing party",
+            None if self.quest_interaction.is_some() => "Working on the party's quest",
             None if self.team_id != 0 => "Following the field party",
             None => "Looking for a nearby field party",
         });

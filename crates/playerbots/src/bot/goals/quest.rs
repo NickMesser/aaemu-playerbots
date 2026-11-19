@@ -212,6 +212,51 @@ impl Quest {
         self.0.start(ctx);
     }
 
+    pub(super) fn party_template(&self) -> Option<u32> {
+        matches!(self.0.mode, Mode::Accept | Mode::Work | Mode::TurnIn).then_some(self.0.quest)
+    }
+
+    /// A companion handles its own acceptance or report and follows the leader between them.
+    pub(super) fn party_interaction(
+        ctx: &mut Ctx<'_>,
+        quest_id: u32,
+        reporting: bool,
+    ) -> Option<Self> {
+        let mut quest = Self::default();
+        if reporting {
+            let template = ctx.world.quest(quest_id)?;
+            if !usable(ctx.state, quest_id, ctx.now_ms)
+                || !ctx
+                    .state
+                    .quests
+                    .row(quest_id)
+                    .is_some_and(|row| row.status == quest_status::READY)
+            {
+                return None;
+            }
+            let [x, y, z] = ctx.pos();
+            let facts = Env {
+                world: ctx.world,
+                from: Some(Vec3::new(x, y, z)),
+                navmesh: ctx.motion.uses_navmesh(),
+            };
+            objective::report_supported(&facts, template).ok()?;
+            quest.start(ctx);
+            quest.0.begin(ctx, quest_id, Mode::TurnIn, None);
+        } else {
+            let candidate = quest
+                .0
+                .find_candidate(ctx, select::NEAR_RADIUS, Some(quest_id))?;
+            quest.start(ctx);
+            quest.0.accept_candidate(ctx, candidate);
+        }
+        Some(quest)
+    }
+
+    pub(super) fn interacting(&self) -> bool {
+        matches!(self.0.mode, Mode::Accept | Mode::TurnIn)
+    }
+
     /// One tick.
     pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
         let status = self.0.tick(ctx);
@@ -728,11 +773,11 @@ impl Inner {
     /// The best acceptable quest within reach: within 300 m, else within 1500 m (a trivial one
     /// near the bot gives way to a worthwhile one farther away).
     fn scan(&self, ctx: &mut Ctx<'_>) -> Option<Candidate> {
-        let near = self.find_candidate(ctx, select::NEAR_RADIUS);
+        let near = self.find_candidate(ctx, select::NEAR_RADIUS, None);
         if near.as_ref().is_some_and(|c| !c.trivial) {
             return near;
         }
-        self.find_candidate(ctx, select::FAR_RADIUS).or(near)
+        self.find_candidate(ctx, select::FAR_RADIUS, None).or(near)
     }
 
     fn accept_candidate(&mut self, ctx: &mut Ctx<'_>, c: Candidate) {
@@ -994,7 +1039,12 @@ impl Inner {
     }
 
     /// The best acceptable quest the givers within `radius` offer.
-    fn find_candidate(&self, ctx: &mut Ctx<'_>, radius: f32) -> Option<Candidate> {
+    fn find_candidate(
+        &self,
+        ctx: &mut Ctx<'_>,
+        radius: f32,
+        focus: Option<u32>,
+    ) -> Option<Candidate> {
         let world = ctx.world;
         let state = &*ctx.state;
         let level = state.me.level;
@@ -1009,6 +1059,9 @@ impl Inner {
             |elig| {
                 let mut best: Option<Candidate> = None;
                 let mut consider = |quest_id: u32, giver: Giver, p: Vec3| {
+                    if focus.is_some_and(|id| id != quest_id) {
+                        return;
+                    }
                     let Some(quest) = world.quest(quest_id) else {
                         return;
                     };

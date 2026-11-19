@@ -65,6 +65,8 @@ pub struct SlotInner {
     pub log: VecDeque<LogLine>,
     /// Quest summary.
     pub quests: Vec<QuestLine>,
+    /// The coordinator order and current quest of an active field party leader.
+    pub field_quest: Option<(u32, u32)>,
     /// Extra rows of the detail panel.
     pub extra: Vec<(String, String)>,
     /// The route the bot is walking, map-plane `[x, y]` points (empty when none). Written by the
@@ -157,6 +159,7 @@ impl BotSlot {
         g.snap.online_secs = 0;
         g.path.clear();
         g.plots.clear();
+        g.field_quest = None;
         self.obj_id.store(0, Ordering::Relaxed);
     }
 }
