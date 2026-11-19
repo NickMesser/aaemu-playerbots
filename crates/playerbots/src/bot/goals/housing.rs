@@ -19,12 +19,11 @@
 //!   rounded up, plus a margin) with `/item add self`; **Create** sends `CSCreateHouse`.
 //! * A refusal (`SCErrorMsg` with a housing code) marks the spot bad and tries the next one, then
 //!   the next area, up to [`MAX_TRIES`] spots.
-//! * **Build** targets the house and uses the GM command `/build <n>` until the house is finished
-//!   (the batch size shrinks when the server does not advance).
+//! * **Build** uses the authored skill on supported one-action designs with the materials in hand.
+//!   With GM bootstrap it uses `/build <n>` until the house is finished.
 //!
-//! Without `gm_bootstrap` the goal only works when the bag already holds a design item and the
-//! tax certificates (otherwise it fails with a visible reason); a bot that owns a house goes home
-//! and rests there.
+//! Without `gm_bootstrap`, placing a house requires a design item and tax certificates in the bag.
+//! A bot that owns a house finishes supported construction when it has the materials, or goes home.
 
 mod log;
 pub mod spots;
@@ -32,13 +31,14 @@ pub mod spots;
 use std::fmt::Write as _;
 
 use aa_proto::cs::{self, CreateHouse};
+use aa_world::housing::BuildAction;
 use aa_world::HousingDesign;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::bot::ctx::Ctx;
 use crate::bot::motion::{MotionStatus, Pace, SWIM_THRESHOLD};
-use crate::bot::state::{dist2d, HouseBrief, Item, StateError};
+use crate::bot::state::{dist2d, dist3d, HouseBrief, Item, StateError};
 
 use super::{jitter_ms, FailReason, GoalStatus};
 
@@ -369,7 +369,7 @@ impl Housing {
     fn init(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
         if let Some(h) = ctx.state.houses.first().copied() {
             self.tl = h.tl;
-            if h.build_left > 0 && ctx.gm_allowed() {
+            if h.build_left > 0 && (ctx.gm_allowed() || supplied_build_action(ctx, h).is_some()) {
                 ctx.log.say(format!(
                     "housing: finishing the house ({} steps left)",
                     h.build_left
@@ -669,11 +669,12 @@ impl Housing {
                 };
                 self.tl = h.tl;
                 ctx.log.say(format!(
-                    "housing: built the {} (house {}) at {:.0}, {:.0}, {:.0}",
+                    "housing: placed the {} (house {}) at {:.0}, {:.0}, {:.0}",
                     plan.name, h.id, h.pos[0], h.pos[1], h.pos[2]
                 ));
                 sync_marker(ctx);
-                if ctx.gm_allowed() && h.build_left > 0 {
+                if h.build_left > 0 && (ctx.gm_allowed() || supplied_build_action(ctx, h).is_some())
+                {
                     self.enter_build(now, h.build_left);
                 } else {
                     self.phase = Phase::Linger;
@@ -746,6 +747,7 @@ impl Housing {
         self.build_left = left;
         self.build_n = (left.max(1) as u32).min(20);
         self.build_ms = 0;
+        self.moved = false;
     }
 
     fn build(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
@@ -769,6 +771,9 @@ impl Housing {
         let Some(obj) = ctx.state.house_log.obj_of(self.tl) else {
             return GoalStatus::Running;
         };
+        if !ctx.gm_allowed() {
+            return self.build_with_skill(ctx, h, obj);
+        }
         // (the GM build command works on the targeted house: `gm_build` targets it right
         // before the command)
         if self.build_ms != 0 && now.saturating_sub(self.build_ms) < BUILD_EVERY_MS {
@@ -784,6 +789,58 @@ impl Housing {
         let n = self.build_n.min(h.build_left.max(1) as u32);
         ctx.gm_build(obj, n);
         self.build_ms = now;
+        GoalStatus::Running
+    }
+
+    fn build_with_skill(&mut self, ctx: &mut Ctx<'_>, house: HouseBrief, obj: u32) -> GoalStatus {
+        let Some(action) = ctx
+            .world
+            .housing_design(house.template)
+            .and_then(|d| d.build_action)
+        else {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        };
+        let Some(skill) = ctx.world.skill(action.skill) else {
+            return GoalStatus::Failed(FailReason::NoTarget);
+        };
+        if self.build_ms != 0 {
+            if ctx.state.errors.iter().any(|&(at, error)| {
+                at >= self.build_ms
+                    && matches!(error, StateError::Skill { skill, .. } if skill == action.skill)
+            }) {
+                return GoalStatus::Failed(FailReason::Other("construction skill refused"));
+            }
+            return if ctx.now_ms.saturating_sub(self.build_ms)
+                > u64::from(skill.casting_time) + ANSWER_MS
+            {
+                GoalStatus::Failed(FailReason::Timeout)
+            } else {
+                GoalStatus::Running
+            };
+        }
+        if supplied_build_action(ctx, house).is_none() {
+            return GoalStatus::Failed(FailReason::Other("construction materials or labor needed"));
+        }
+        let reach = f32::from(skill.max_range).max(2.0);
+        if dist3d(ctx.pos(), house.pos) > reach - 0.5 {
+            if !self.moved {
+                self.moved = true;
+                ctx.travel(house.pos[0], house.pos[1], reach - 1.0, Pace::Run);
+            }
+            return match ctx.motion.status() {
+                MotionStatus::Failed(_) | MotionStatus::Arrived => {
+                    GoalStatus::Failed(FailReason::Stuck)
+                }
+                _ => GoalStatus::Running,
+            };
+        }
+        ctx.motion.stop();
+        self.build_ms = ctx.now_ms;
+        ctx.send(cs::start_skill_unit(skill.id, ctx.state.me.obj, obj));
+        ctx.log.say(format!(
+            "housing: using the construction skill {} on house {}",
+            skill.id, house.id
+        ));
         GoalStatus::Running
     }
 
@@ -820,6 +877,15 @@ impl Housing {
             }
         }
     }
+}
+
+fn supplied_build_action(ctx: &Ctx<'_>, house: HouseBrief) -> Option<BuildAction> {
+    let action = ctx.world.housing_design(house.template)?.build_action?;
+    let skill = ctx.world.skill(action.skill)?;
+    (house.build_left == 1
+        && ctx.state.item_count(action.material) >= i64::from(action.quantity)
+        && i32::from(ctx.state.me.labor) >= i32::from(skill.labor))
+    .then_some(action)
 }
 
 /// Whether the ground around (x, y) is land and level enough for a footprint of half-width
@@ -893,6 +959,7 @@ mod tests {
             tax,
             standard,
             steps: 1,
+            build_action: None,
             garden_radius: match design {
                 267 => 4.0,
                 172 => 7.5,

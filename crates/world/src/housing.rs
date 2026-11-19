@@ -12,6 +12,14 @@ use crate::baked::HousingAreaPoly;
 use crate::sql::{each_row, RowExt};
 use crate::text::{TextTable, Texts};
 
+/// A one-action construction step that consumes one type of bag material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuildAction {
+    pub skill: u32,
+    pub material: u32,
+    pub quantity: u32,
+}
+
 /// A house design a character can place with the matching design item.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HousingDesign {
@@ -28,6 +36,8 @@ pub struct HousingDesign {
     pub standard: bool,
     /// Number of build steps (`housing_build_steps`).
     pub steps: u8,
+    /// Authored action for a design whose construction takes only one supported cast.
+    pub build_action: Option<BuildAction>,
     /// Radius in metres of the garden around the house (`housings.garden_radius`): the free
     /// ground the server's placement check needs, 4.0 for a Scarecrow Garden, 7.5 for a cottage.
     pub garden_radius: f32,
@@ -61,6 +71,29 @@ impl Housing {
             "SELECT housing_id, COUNT(*) FROM housing_build_steps GROUP BY housing_id",
             |r| {
                 steps.insert(r.u32(0), r.u32(1));
+            },
+        )?;
+        let mut actions = FxHashMap::default();
+        each_row(
+            conn,
+            "SELECT b.housing_id, MAX(b.skill_id), MAX(e.consume_item_id), MAX(e.consume_item_count)
+             FROM housing_build_steps b JOIN skill_effects e ON e.skill_id = b.skill_id
+             WHERE b.step = 0 AND b.num_actions = 1 AND e.consume_item_id > 0
+               AND e.consume_item_count > 0
+               AND COALESCE(LOWER(e.consume_source_item), 'f') IN ('f', 'false', '0')
+             GROUP BY b.housing_id HAVING COUNT(*) = 1",
+            |r| {
+                let design = r.u32(0);
+                if steps.get(&design) == Some(&1) {
+                    actions.insert(
+                        design,
+                        BuildAction {
+                            skill: r.u32(1),
+                            material: r.u32(2),
+                            quantity: r.u32(3),
+                        },
+                    );
+                }
             },
         )?;
         let mut area_group = FxHashMap::default();
@@ -116,6 +149,7 @@ impl Housing {
                         tax: r.u32(3),
                         standard: r.flag(4),
                         steps: steps.get(&id).copied().unwrap_or(0).min(255) as u8,
+                        build_action: actions.get(&id).copied(),
                         garden_radius: r.f32(5),
                         name: texts.name_or(TextTable::Housing, id, r.text(1)),
                     });
@@ -236,13 +270,15 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE housings (id INT, name TEXT, category_id INT, taxation_id INT, garden_radius REAL);
              CREATE TABLE taxations (id INT, tax INT, SHOW NUM);
-             CREATE TABLE housing_build_steps (id INT, housing_id INT, step INT);
+             CREATE TABLE housing_build_steps (id INT, housing_id INT, step INT, skill_id INT, num_actions INT);
+             CREATE TABLE skill_effects (skill_id INT, consume_item_id INT, consume_item_count INT, consume_source_item TEXT);
              CREATE TABLE item_housings (id INT, item_id INT, design_id INT);
              CREATE TABLE housing_areas (id INT, housing_group_id INT);
              CREATE TABLE housing_group_categories (id INT, housing_group_id INT, category_id INT);
              INSERT INTO taxations VALUES (1, 0, 'f'), (2, 100000, 't'), (8, 50000, 't');
              INSERT INTO housings VALUES (172, 'small house', 1, 2, 7.5), (267, 'scarecrow', 16, 8, 4.0), (5, 'no item', 1, 2, 7.5), (6, 'no tax row', 17, 99, NULL), (8, 'siege part', 3, 2, 12.0), (9, 'free', 1, 1, 9);
-             INSERT INTO housing_build_steps VALUES (1, 172, 1), (2, 172, 2), (3, 172, 3), (4, 267, 1);
+             INSERT INTO housing_build_steps VALUES (1, 172, 0, 18553, 1), (2, 172, 1, 18553, 1), (3, 172, 2, 18553, 1), (4, 267, 0, 18553, 1);
+             INSERT INTO skill_effects VALUES (18553, 8337, 1, 'f');
              INSERT INTO item_housings VALUES (106, 21166, 172), (58, 15596, 267), (59, 999, 5), (60, 7, 6), (61, 8, 8), (62, 9, 9);
              INSERT INTO housing_areas VALUES (52, 1), (60, 14), (61, 11);
              INSERT INTO housing_group_categories VALUES (1, 1, 1), (2, 1, 16), (3, 14, 1), (4, 14, 17);",
@@ -266,6 +302,15 @@ mod tests {
         assert_eq!((d.item, d.category, d.tax, d.steps), (15596, 16, 50000, 1));
         assert_eq!(&*d.name, "Scarecrow Garden");
         assert_eq!(h.design(172).unwrap().steps, 3);
+        assert_eq!(h.design(172).unwrap().build_action, None);
+        assert_eq!(
+            d.build_action,
+            Some(BuildAction {
+                skill: 18553,
+                material: 8337,
+                quantity: 1
+            })
+        );
         // the footprint comes from the data (a missing value reads as 0, an integer as a float)
         assert_eq!(d.garden_radius, 4.0);
         assert_eq!(h.design(172).unwrap().garden_radius, 7.5);
