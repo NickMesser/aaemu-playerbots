@@ -13,6 +13,7 @@ use crate::bot::state::{dist3d, ChatIn, UnitKind};
 use crate::hub::unix_ms;
 
 const COMMISSION_MS: u64 = 60 * 60_000;
+const PICKUP_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commission {
@@ -25,6 +26,8 @@ pub struct Commission {
     name: Box<str>,
     expires_ms: u64,
     ready: Option<Stock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pickup_until_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +148,22 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
         }
         return cancelled;
     }
+    if text.trim().eq_ignore_ascii_case("collect") {
+        let Some(mut commission) = active(ctx).filter(|c| c.customer == customer) else {
+            return false;
+        };
+        if stock_slot(ctx, &commission).is_none() {
+            tell(ctx, who, "I'm still working on your craft order.");
+        } else if nearby_buyer(ctx, line.sender_obj, &commission).is_none() {
+            tell(ctx, who, "Come a little closer for the trade.");
+        } else {
+            commission.pickup_until_ms = Some(unix_ms() + PICKUP_MS);
+            ctx.hub
+                .journal
+                .update(ctx.persona.id, |j| j.craft_commission = Some(commission));
+        }
+        return true;
+    }
     let Some((guild, craft)) = recipe(ctx) else {
         return false;
     };
@@ -166,7 +185,7 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
         let response = if existing.customer != customer {
             "I'm working on another customer's order."
         } else if existing.ready() {
-            "Your order is ready. Send me a trade request when you're here."
+            "Your order is ready. Whisper 'craft collect' when you're here."
         } else {
             "I still have your order and will tell you when it's ready."
         };
@@ -183,6 +202,7 @@ pub(in crate::bot::goals) fn on_whisper(ctx: &mut Ctx<'_>, line: &ChatIn) -> boo
         name: who.into(),
         expires_ms: unix_ms() + COMMISSION_MS,
         ready: None,
+        pickup_until_ms: None,
     };
     ctx.hub
         .journal
@@ -211,24 +231,39 @@ pub(super) fn crafted(ctx: &mut Ctx<'_>, recipe: u32) {
     tell(
         ctx,
         &commission.name,
-        "Your craft order is ready. Come by and send me a trade request.",
+        "Your craft order is ready. Come by and whisper 'craft collect'.",
     );
     ctx.hub
         .journal
         .update(ctx.persona.id, |j| j.craft_commission = Some(commission));
 }
 
-fn customer(ctx: &Ctx<'_>, c: &Commission) -> Option<[f32; 3]> {
-    let (object, received) = ctx.state.trade.incoming?;
-    if ctx.state.trade.window.is_some() || ctx.now_ms.saturating_sub(received) > INVITE_TTL_MS {
-        return None;
-    }
+fn nearby_buyer(ctx: &Ctx<'_>, object: u32, c: &Commission) -> Option<[f32; 3]> {
     let buyer = ctx.state.units.get(&object)?;
     (buyer.kind == UnitKind::Character
         && buyer.id == c.customer
         && !buyer.dead()
-        && dist3d(ctx.pos(), buyer.pos) <= 6.0)
+        && dist3d(ctx.pos(), buyer.pos) <= 5.0)
         .then_some(buyer.pos)
+}
+
+fn customer(ctx: &Ctx<'_>, c: &Commission) -> Option<([f32; 3], PairRole)> {
+    if ctx.state.trade.window.is_some() {
+        return None;
+    }
+    if let Some((object, received)) = ctx.state.trade.incoming {
+        return (ctx.now_ms.saturating_sub(received) <= INVITE_TTL_MS)
+            .then(|| nearby_buyer(ctx, object, c))
+            .flatten()
+            .map(|pos| (pos, PairRole::Responder));
+    }
+    if c.pickup_until_ms.is_none_or(|until| unix_ms() >= until) {
+        return None;
+    }
+    ctx.state
+        .units
+        .keys()
+        .find_map(|&object| nearby_buyer(ctx, object, c).map(|pos| (pos, PairRole::Initiator)))
 }
 
 pub(super) fn can_trade(ctx: &Ctx<'_>, c: &Commission) -> bool {
@@ -236,7 +271,7 @@ pub(super) fn can_trade(ctx: &Ctx<'_>, c: &Commission) -> bool {
 }
 
 pub fn requested_sale(ctx: &Ctx<'_>) -> bool {
-    ctx.state.trade.incoming.is_some() && active(ctx).is_some_and(|c| can_trade(ctx, &c))
+    active(ctx).is_some_and(|c| can_trade(ctx, &c))
 }
 
 #[derive(Debug)]
@@ -249,12 +284,12 @@ pub(super) struct Sale {
 }
 
 impl Sale {
-    pub(super) fn start(ctx: &mut Ctx<'_>, commission: Commission) -> Option<Self> {
-        let [x, y, _] = customer(ctx, &commission)?;
+    pub(super) fn start(ctx: &mut Ctx<'_>, mut commission: Commission) -> Option<Self> {
+        let ([x, y, _], role) = customer(ctx, &commission)?;
         let slot = stock_slot(ctx, &commission)?;
         let order = PairOrder {
             kind: PairKind::Trade,
-            role: PairRole::Responder,
+            role,
             partner_bot: 0,
             partner_char: commission.customer,
             partner_name: commission.name.clone(),
@@ -268,6 +303,11 @@ impl Sale {
         };
         let mut trade = Trade::for_deal(order, Deal::agreed(give, &[], commission.price));
         trade.start(ctx);
+        if commission.pickup_until_ms.take().is_some() {
+            ctx.hub.journal.update(ctx.persona.id, |j| {
+                j.craft_commission = Some(commission.clone());
+            });
+        }
         Some(Self {
             items_before: ctx.state.item_count(commission.item),
             money_before: ctx.state.me.money,
@@ -278,7 +318,10 @@ impl Sale {
     }
 
     pub(super) fn tick(&mut self, ctx: &mut Ctx<'_>) -> GoalStatus {
-        if active(ctx).as_ref() != Some(&self.commission) {
+        if !active(ctx).is_some_and(|mut c| {
+            c.pickup_until_ms = None;
+            c == self.commission
+        }) {
             return GoalStatus::Failed(FailReason::NoTarget);
         }
         if self.confirm_until.is_none() {

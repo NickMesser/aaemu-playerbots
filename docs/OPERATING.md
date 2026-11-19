@@ -370,8 +370,8 @@ market prices and trade confirmation.
 With `[guild] player_craft_orders = true` and `[market] enabled = true`, a nearby player can
 whisper a Crafter member `craft Stone Brick for 100c`. The item must be the tradeable output of
 the member's assigned recipe. The Crafter makes one batch using its own supplies and holds it
-for the buyer for up to one hour. The player sends a trade request when it's ready and pays the
-agreed amount in the trade window. They can withdraw the order with `craft cancel`. Each member
+for the buyer for up to one hour. The player whispers `craft collect` when nearby or sends a trade
+request, then pays the agreed amount in the trade window. They can withdraw the order with `craft cancel`. Each member
 handles one order at a time and saves it across restarts. Confirmed payments count toward the
 guild's market commission.
 
